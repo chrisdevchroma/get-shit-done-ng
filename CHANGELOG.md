@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- Hardened the prerelease channel against shell injection. The channel label is interpolated into a `npm view gsd-ng dist-tags.<channel>` `execSync` command in both `commands.cjs` and the update-check hook; a crafted `VERSION` file (e.g. a malicious project-local `.claude/gsd-ng/VERSION` read by the auto-running SessionStart hook) could smuggle shell metacharacters through. `parseChannel` in `semver-utils.cjs` now validates the channel against the npm dist-tag charset (letter-led alphanumeric) and returns `null` for anything else, neutralising both call sites. `commands.cjs` now derives its channel via the shared (guarded) `parseChannel` instead of an inline split.
+
+### Fixed
+- SessionStart update-check hook (`gsd-check-update.js`) now respects prerelease channels. The hook's child process was using a non-§11 `compareSemVer` (coerced `"0-dev"` to `NaN`), always queried `npm view gsd-ng version` (returns the `latest` dist-tag, not the user's channel), and paginated GitHub Releases unconditionally skipping prereleases for all users. Now: §11-compliant semver comparison via shared `semver-utils.cjs` module, channel-pinned `npm view gsd-ng dist-tags.<channel>` query for prerelease installs, and paginated channel-filtered GitHub Releases fallback for prerelease users (stable users keep the `/releases/latest` path). Channel tag selection is factored into a shared, unit-tested `selectLatestForChannel` helper that matches the channel exactly (`parseChannel(tag) === channel`) rather than by substring.
+
 ## [1.0.0-dev.9] - 2026-05-17
 
 ### Fixed

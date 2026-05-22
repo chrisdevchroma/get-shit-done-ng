@@ -40,6 +40,11 @@ const {
   getReadEditWriteAllowRules,
   RW_FORMS,
 } = require('./allowlist.cjs');
+const {
+  compareSemVer,
+  parseChannel,
+  selectLatestForChannel,
+} = require('./semver-utils.cjs');
 
 function cmdGenerateSlug(text) {
   if (!text) {
@@ -4469,54 +4474,6 @@ function cmdCleanup(cwd, options) {
 // ─── Update command ───────────────────────────────────────────────────────────
 
 /**
- * Compare two semver strings.
- * @returns {number} 1 if a > b, -1 if a < b, 0 if equal
- */
-// Implements semver §11 precedence (release > prerelease, identifier-by-identifier compare).
-function compareSemVer(a, b) {
-  const stripBuild = (v) => String(v).replace(/^v/, '').split('+')[0];
-  const [coreA, preA] = stripBuild(a).split(/-(.+)/);
-  const [coreB, preB] = stripBuild(b).split(/-(.+)/);
-
-  const pa = coreA.split('.').map(Number);
-  const pb = coreB.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
-    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
-  }
-
-  if (!preA && !preB) return 0;
-  if (!preA) return 1;
-  if (!preB) return -1;
-
-  const idsA = preA.split('.');
-  const idsB = preB.split('.');
-  const n = Math.min(idsA.length, idsB.length);
-  for (let i = 0; i < n; i++) {
-    const aId = idsA[i];
-    const bId = idsB[i];
-    const aNum = /^\d+$/.test(aId);
-    const bNum = /^\d+$/.test(bId);
-    if (aNum && bNum) {
-      const dA = Number(aId);
-      const dB = Number(bId);
-      if (dA > dB) return 1;
-      if (dA < dB) return -1;
-    } else if (aNum && !bNum) {
-      return -1;
-    } else if (!aNum && bNum) {
-      return 1;
-    } else {
-      if (aId > bId) return 1;
-      if (aId < bId) return -1;
-    }
-  }
-  if (idsA.length < idsB.length) return -1;
-  if (idsA.length > idsB.length) return 1;
-  return 0;
-}
-
-/**
  * Detect GSD install location (local or global).
  * Returns { isLocal, installPath, installedVersion } or null if not found.
  *
@@ -4684,9 +4641,7 @@ function cmdUpdate(cwd, options, _testOverrides) {
   const { isLocal, installedVersion } = installInfo;
   const installed = installedVersion;
 
-  const installedChannel = installed.includes('-')
-    ? installed.split('-')[1].split('.')[0] || null
-    : null;
+  const installedChannel = parseChannel(installed);
 
   // 2. Check latest version
   let latestVersion = null;
@@ -4797,13 +4752,12 @@ function cmdUpdate(cwd, options, _testOverrides) {
       const stdout = (githubResult.stdout || '').toString().trim();
       if (stdout) {
         if (installedChannel) {
-          const tags = stdout
-            .split('\n')
-            .map((t) => t.trim())
-            .filter((t) => /^\d+\.\d+\.\d+/.test(t));
-          if (tags.length > 0) {
-            tags.sort((a, b) => compareSemVer(b, a));
-            latestVersion = tags[0];
+          const picked = selectLatestForChannel(
+            stdout.split('\n').map((t) => t.trim()),
+            installedChannel,
+          );
+          if (picked) {
+            latestVersion = picked;
             updateSource = 'github';
           }
         } else if (/^\d+\.\d+\.\d+/.test(stdout)) {
@@ -4858,10 +4812,12 @@ function cmdUpdate(cwd, options, _testOverrides) {
   // Dry-execute short-circuit: returns install_command without shelling out.
   // Honors both `_testOverrides.dryExecute` (preferred) and the legacy
   // GSD_TEST_DRY_EXECUTE env hook for back-compat with subprocess tests.
+  const installTarget = `gsd-ng@${installedChannel || 'latest'}`;
+
   if (overrides.dryExecute || process.env.GSD_TEST_DRY_EXECUTE) {
     let installCommand;
     if (updateSource === 'npm') {
-      installCommand = `npx -y gsd-ng@latest ${installFlag}`;
+      installCommand = `npx -y ${installTarget} ${installFlag}`;
     } else {
       installCommand = `node install.js ${installFlag} (github tarball download)`;
     }
@@ -4875,9 +4831,9 @@ function cmdUpdate(cwd, options, _testOverrides) {
   }
 
   if (updateSource === 'npm') {
-    /* c8 ignore start — network: `npx -y gsd-ng@latest` shells out to npm. Exercised via dryExecute/GSD_TEST_DRY_EXECUTE short-circuit above (cmdUpdate dry-execute returns updated with install_command (npm) test). */
+    /* c8 ignore start — network: `npx -y gsd-ng@<channel>` shells out to npm. Exercised via dryExecute/GSD_TEST_DRY_EXECUTE short-circuit above (cmdUpdate dry-execute returns updated with install_command (npm) test). */
     try {
-      execSync(`npx -y gsd-ng@latest ${installFlag}`, {
+      execSync(`npx -y ${installTarget} ${installFlag}`, {
         stdio: 'inherit',
         timeout: 120000,
       });

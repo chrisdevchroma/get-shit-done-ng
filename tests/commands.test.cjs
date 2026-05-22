@@ -8303,6 +8303,25 @@ describe('sub-batch H: cmdUpdate execUpdate seam exercised', () => {
     assert.match(parsed.install_command, /npx -y gsd-ng@latest/);
   });
 
+  test('cmdUpdate dry-execute: prerelease install tracks its own channel (@dev, never @latest)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'gsd-ng', 'VERSION'),
+      '1.0.0-dev.9\n',
+    );
+    const r = runGsdTools(['update', '--json'], tmpDir, {
+      GSD_UPDATE_TEST_OVERRIDES: JSON.stringify({
+        latestVersion: '1.0.0-dev.10',
+        updateSource: 'npm',
+      }),
+      GSD_TEST_DRY_EXECUTE: '1',
+    });
+    assert.ok(r.success);
+    const parsed = JSON.parse(r.output);
+    assert.strictEqual(parsed.status, 'updated');
+    assert.match(parsed.install_command, /npx -y gsd-ng@dev\b/);
+    assert.doesNotMatch(parsed.install_command, /gsd-ng@latest/);
+  });
+
   test('cmdUpdate dry-execute returns updated with install_command (github)', () => {
     const r = runGsdTools(['update', '--json'], tmpDir, {
       GSD_UPDATE_TEST_OVERRIDES: JSON.stringify({

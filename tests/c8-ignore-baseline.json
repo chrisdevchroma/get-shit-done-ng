@@ -14,6 +14,7 @@
   "gsd-ng/bin/lib/phase.cjs": 0,
   "gsd-ng/bin/lib/roadmap.cjs": 0,
   "gsd-ng/bin/lib/security.cjs": 0,
+  "gsd-ng/bin/lib/semver-utils.cjs": 0,
   "gsd-ng/bin/lib/state.cjs": 0,
   "gsd-ng/bin/lib/template-processor.cjs": 0,
   "gsd-ng/bin/lib/template.cjs": 0,
