@@ -74,6 +74,32 @@ const { compareSemVer, normalizeTag, isSnapshot, parseChannel } =
         parseChannel: () => null,
       };
 
+// ── Session-gate decision function ────────────────────────────────────────────
+/**
+ * Pure decision function — no I/O, no side effects.
+ * Returns true only when a genuine primary session (source === 'startup')
+ * needs to run the update check (cache is stale or absent).
+ *
+ * @param {object} opts
+ * @param {string|undefined|null} opts.source - SessionStart stdin `source` field
+ * @param {number|null|undefined} opts.lastCheckedEpoch - Unix epoch (seconds) of last check
+ * @param {number} opts.nowEpoch - Current unix epoch (seconds)
+ * @param {number} opts.ttlSeconds - Cooldown window in seconds
+ * @param {object} [opts.env] - Environment object (defaults to {} if omitted)
+ * @returns {boolean}
+ */
+function shouldRunUpdateCheck({ source, lastCheckedEpoch, nowEpoch, ttlSeconds, env }) {
+  const e = env || {};
+  if (e.GSD_OFFLINE) return false;                   // offline always wins
+  if (source !== 'startup') return false;             // only genuine top-level sessions
+  if (lastCheckedEpoch == null) return true;          // never checked → stale
+  if (typeof lastCheckedEpoch !== 'number' || Number.isNaN(lastCheckedEpoch)) return true;
+  return (nowEpoch - lastCheckedEpoch) >= ttlSeconds; // wall-clock cooldown throttle
+}
+
+// Wall-clock cooldown constant for the primary npm/check path
+const PRIMARY_CHECK_TTL = 3600; // seconds — matches githubTtl used inside the child
+
 // ── Child source builder ───────────────────────────────────────────────────────
 /**
  * Build the JS source string for the detached child process.
@@ -331,6 +357,7 @@ if (process.env.GSD_TEST_MODE) {
     isSnapshot,
     parseChannel,
     buildChildSource,
+    shouldRunUpdateCheck,
   };
   return;
 }
@@ -353,21 +380,49 @@ if (!process.env.GSD_SIMULATE_SANDBOX) {
   }
 }
 
-// Run check in background (spawn detached process)
-const childSource = buildChildSource({
-  cacheFile,
-  projectVersionFile,
-  globalVersionFile,
-  semverUtilsPath,
-  githubOwner: 'chrisdevchroma',
-  githubRepo: 'gsd-ng',
-  githubTtl: 3600,
-  assetName: 'gsd-ng.tar.gz',
-});
+// Read stdin to get the SessionStart payload (source, session_id, cwd, etc.)
+// Mirror gsd-context-monitor.js idiom exactly.
+let input = '';
+const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  clearTimeout(stdinTimeout);
+  try {
+    const data = JSON.parse(input);
+    const source = data && data.source;
 
-const child = spawn(process.execPath, ['-e', childSource], {
-  stdio: 'ignore',
-  detached: true,
-});
+    // Read cache's last-checked epoch defensively (null if cache absent/corrupt)
+    let lastCheckedEpoch = null;
+    try { lastCheckedEpoch = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).checked ?? null; } catch (e) {}
 
-child.unref();
+    const nowEpoch = Math.floor(Date.now() / 1000);
+
+    // Gate: only run the update check for genuine primary sessions with a stale cache
+    if (!shouldRunUpdateCheck({ source, lastCheckedEpoch, nowEpoch, ttlSeconds: PRIMARY_CHECK_TTL, env: process.env })) {
+      process.exit(0);
+    }
+
+    // Spawn the detached background child (only on a true decision)
+    const childSource = buildChildSource({
+      cacheFile,
+      projectVersionFile,
+      globalVersionFile,
+      semverUtilsPath,
+      githubOwner: 'chrisdevchroma',
+      githubRepo: 'gsd-ng',
+      githubTtl: 3600,
+      assetName: 'gsd-ng.tar.gz',
+    });
+
+    const child = spawn(process.execPath, ['-e', childSource], {
+      stdio: 'ignore',
+      detached: true,
+    });
+
+    child.unref();
+    // Do NOT exit after unref() — let the detached child outlive the parent (mirrors original behavior)
+  } catch (e) {
+    process.exit(0); // silent fail — never block / never network on bad input
+  }
+});
