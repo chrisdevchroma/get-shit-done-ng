@@ -4,7 +4,7 @@
 
 **gsd-ng is a next-generation hard fork of GSD, optimized for Claude Code and GitHub Copilot CLI.**
 
-Forked from [gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done).
+Forked from [open-gsd/get-shit-done-redux](https://github.com/open-gsd/get-shit-done-redux).
 
 **A light-weight and powerful meta-prompting, context engineering and spec-driven development system.**
 
