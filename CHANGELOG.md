@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.11] - 2026-05-23
+
 ### Added
 - Expanded prompt-injection detection for untrusted Markdown. The scanner now flags, as high-confidence blocks, links that use the `javascript:` scheme, links with non-safelisted `data:` URIs (only raster image types — png, jpeg, gif, webp, avif — are allowed; SVG and others are rejected), links with embedded `user:pass@` credentials, and links carrying secret-bearing query parameters (tokens, API keys, passwords, and similar). It also raises a medium-confidence advisory when a link or file reference points at a credential path such as `~/.ssh`, `~/.aws/credentials`, a `.pem`, or a `.env` file. Every detection rule now carries a stable identifier and a human-readable description, and scan results are reported as self-documenting `identifier: description` strings instead of raw regex dumps.
 
