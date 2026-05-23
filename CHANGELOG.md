@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.10] - 2026-05-23
+
 ### Security
 - Hardened the prerelease channel against shell injection. The channel label is interpolated into a `npm view gsd-ng dist-tags.<channel>` `execSync` command in both `commands.cjs` and the update-check hook; a crafted `VERSION` file (e.g. a malicious project-local `.claude/gsd-ng/VERSION` read by the auto-running SessionStart hook) could smuggle shell metacharacters through. `parseChannel` in `semver-utils.cjs` now validates the channel against the npm dist-tag charset (letter-led alphanumeric) and returns `null` for anything else, neutralising both call sites. `commands.cjs` now derives its channel via the shared (guarded) `parseChannel` instead of an inline split.
 
