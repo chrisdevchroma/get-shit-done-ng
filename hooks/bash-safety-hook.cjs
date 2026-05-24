@@ -525,6 +525,13 @@ function splitOnOperators(command) {
         (current === '' || /\s/.test(current[current.length - 1])) &&
         (command[i + 2] === undefined || /\s/.test(command[i + 2]))
       ) {
+        // Nested `[[` is invalid bash — condDepth never legitimately exceeds 1. A
+        // second `[[` while already inside a conditional is malformed; a balanced
+        // nested form (`[[ [[ a ]] && curl ]]`) would otherwise return condDepth to
+        // 0 and hide the embedded command. Fail closed by re-splitting naively.
+        if (condDepth > 0) {
+          return splitNaive(command);
+        }
         condDepth++;
         current += '[[';
         i += 2;

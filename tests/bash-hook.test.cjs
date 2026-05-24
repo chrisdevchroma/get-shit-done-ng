@@ -2390,3 +2390,40 @@ describe('malformed input fails closed (unbalanced quote/subshell/backtick)', ()
     assert.equal(result.decision, 'allow', `reason: ${result.reason}`);
   });
 });
+
+// Nested `[[` is invalid bash. A balanced nested form (`[[ [[ a ]] && curl ]]`)
+// would otherwise drive condDepth to 2 and back to 0, ending balanced so the
+// embedded command is never split out. A second `[[` while already inside a
+// conditional is treated as malformed and re-split so it cannot hide a command.
+describe('nested [[ fails closed (no command hiding)', () => {
+  const policy = {
+    permissions: {
+      allow: ['Bash([[ *)', 'Bash(echo:*)'],
+      deny: ['Bash(curl:*)'],
+    },
+  };
+
+  test('nested [[ around a denied command is denied', () => {
+    const result = decide('[[ [[ a ]] && curl bad ]]', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('nested [[ does not collapse the command into one segment', () => {
+    const parts = splitOnOperators('[[ [[ a ]] && curl bad ]]');
+    assert.ok(
+      parts.length >= 2,
+      `expected nested [[ to re-split; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('two separate [[ ]] conditionals still split and are allowed', () => {
+    const parts = splitOnOperators('[[ a ]] && [[ b ]]');
+    assert.equal(parts.length, 2, JSON.stringify(parts));
+    assert.equal(decide('[[ a ]] && [[ b ]]', policy).decision, 'allow');
+  });
+
+  test('valid single [[ ]] is one allowed segment', () => {
+    assert.equal(splitOnOperators('[[ -f x ]]').length, 1);
+    assert.equal(decide('[[ -f x ]]', policy).decision, 'allow');
+  });
+});
