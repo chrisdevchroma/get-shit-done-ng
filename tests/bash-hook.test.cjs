@@ -2179,3 +2179,109 @@ describe('BASH-HOOK-PARITY-REGRESSION: edge cases across all 6 fixes', () => {
     );
   });
 });
+
+// ── OL1: bracket tests and [[ ]] no-split ─────────────────────────────────────
+// Tests for allowlisting [ (POSIX test) and [[ (bash conditional), plus the
+// condDepth state machine that suppresses operator splitting inside [[ ]].
+
+describe('OL1: bracket tests and [[ ]] no-split', () => {
+  // Settings that include both new bracket allow entries plus echo for compound tests
+  const bracketSettings = {
+    permissions: {
+      allow: ['Bash([ *)', 'Bash([[ *)', 'Bash(echo:*)'],
+      deny: [],
+    },
+  };
+
+  // Test A: single bracket allow
+  test('A: [ -f "$t" ] is auto-approved by the allowlist', () => {
+    const result = decide('[ -f "$t" ]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test B: compound command using single bracket auto-approves
+  test('B: while/read loop with [ bracket ] is auto-approved', () => {
+    const result = decide(
+      'while read t; do [ -f "$t" ] && echo ok || echo no; done',
+      bracketSettings,
+    );
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test C: double bracket allow
+  test('C: [[ -f "$t" ]] is auto-approved by the allowlist', () => {
+    const result = decide('[[ -f "$t" ]]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test D: NO split inside [[ ]] — internal && is not a split operator
+  test('D: splitOnOperators([[ -n "$x" && -f "$t" ]]) returns length 1', () => {
+    const parts = splitOnOperators('[[ -n "$x" && -f "$t" ]]');
+    assert.equal(
+      parts.length,
+      1,
+      `expected 1 part; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('D: decide([[ -n "$x" && -f "$t" ]]) is auto-approved', () => {
+    const result = decide('[[ -n "$x" && -f "$t" ]]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test E: regression — single bracket still splits on operators between brackets
+  test('E: splitOnOperators("[ a ] && [ b ]") returns length 2 (still splits)', () => {
+    const parts = splitOnOperators('[ a ] && [ b ]');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  // Test F: regression — operator OUTSIDE [[ ]] still splits
+  test('F: splitOnOperators("[[ -f x ]] && echo hi") returns length 2', () => {
+    const parts = splitOnOperators('[[ -f x ]] && echo hi');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('F: decide("[[ -f x ]] && echo hi", bracketSettings) is allow', () => {
+    const result = decide('[[ -f x ]] && echo hi', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test G: edge — character class does NOT open a [[ ]] region
+  // [[:alpha:]] is followed by ':' not whitespace, so it is NOT the [[ keyword
+  test('G: splitOnOperators("grep [[:alpha:]] file && echo hi") returns length 2', () => {
+    const parts = splitOnOperators('grep [[:alpha:]] file && echo hi');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+});
