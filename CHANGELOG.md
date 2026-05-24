@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `/gsd:update` self-update no longer fails with `Error: --runtime required` on installs of v1.0.0-dev.11 and later; the required `--runtime` flag is now passed to the installer across all update paths (npm and GitHub-release tarball).
+
 ## [1.0.0-dev.11] - 2026-05-23
 
 ### Added
