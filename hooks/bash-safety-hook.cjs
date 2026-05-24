@@ -353,6 +353,7 @@ function splitOnOperators(command) {
   let doubleQuote = false;
   let depth = 0; // $() subshell depth
   let backtick = false;
+  let condDepth = 0; // [[ ]] bash conditional-keyword depth
   let i = 0;
 
   while (i < command.length) {
@@ -462,6 +463,47 @@ function splitOnOperators(command) {
       continue;
     }
 
+    // ── [[ / ]] conditional-keyword tracking (depth===0, outside quotes/subshells/backticks) ──
+    // Treats `[[` and `]]` as keyword tokens only when whitespace-delimited (bash semantics).
+    // This prevents `[[:alpha:]]` (character class, followed by `:`) and glob/array syntax
+    // from opening a conditional region.
+    //
+    // FAIL-SAFE: when the open-heuristic is uncertain, do NOT open a region. Erring toward
+    // MORE splitting causes passthrough/manual-prompt (current behavior), never a bypass.
+    // Erring toward LESS splitting could merge an unchecked command — so keep open strict.
+    //
+    // Only runs when depth===0 and !backtick (no subshell/backtick context).
+    if (depth === 0 && !backtick) {
+      // Detect `[[` open: two '[' chars, previous char is start-of-string or whitespace,
+      // char immediately after `[[` is whitespace or end-of-string.
+      if (
+        ch === '[' &&
+        next === '[' &&
+        (current === '' || /\s/.test(current[current.length - 1])) &&
+        (command[i + 2] === undefined || /\s/.test(command[i + 2]))
+      ) {
+        condDepth++;
+        current += '[[';
+        i += 2;
+        continue;
+      }
+
+      // Detect `]]` close: two ']' chars, condDepth > 0, previous char is whitespace
+      // (a real `]]` is always preceded by whitespace in a bash conditional).
+      if (
+        ch === ']' &&
+        next === ']' &&
+        condDepth > 0 &&
+        current.length > 0 &&
+        /\s/.test(current[current.length - 1])
+      ) {
+        condDepth--;
+        current += ']]';
+        i += 2;
+        continue;
+      }
+    }
+
     // Inside subshell or backtick: don't split
     if (depth > 0 || backtick) {
       current += ch;
@@ -469,7 +511,17 @@ function splitOnOperators(command) {
       continue;
     }
 
-    // ── Operator detection (only at depth==0, outside quotes) ──
+    // ── Inside [[ ]] conditional: operators are literal test content, not split points ──
+    // All of &&, ||, |, ;, \n are internal to the conditional expression and must not
+    // cause a split. This block runs AFTER [[ / ]] detection above, so closers are still
+    // recognized when condDepth reaches 0.
+    if (condDepth > 0) {
+      current += ch;
+      i++;
+      continue;
+    }
+
+    // ── Operator detection (only at depth==0, condDepth===0, outside quotes) ──
 
     // && operator
     if (ch === '&' && next === '&') {
