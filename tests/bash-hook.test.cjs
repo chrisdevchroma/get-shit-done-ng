@@ -2343,10 +2343,8 @@ describe('unclosed [[ fails closed (no command hiding)', () => {
   });
 });
 
-// The same fail-open shape exists for an unterminated quote, subshell, or backtick
-// (all bash syntax errors): the tracking absorbs the unparsed tail into one
-// segment that hides a denied command. The end-of-scan guard re-splits naively,
-// and extractSubshells surfaces a command left inside an unterminated $()/backtick.
+// Unterminated quotes/subshells/backticks are bash syntax errors, but the hook must
+// still fail closed so a denied command in the unparsed tail cannot hide.
 describe('malformed input fails closed (unbalanced quote/subshell/backtick)', () => {
   const policy = {
     permissions: {
@@ -2391,10 +2389,8 @@ describe('malformed input fails closed (unbalanced quote/subshell/backtick)', ()
   });
 });
 
-// Nested `[[` is invalid bash. A balanced nested form (`[[ [[ a ]] && curl ]]`)
-// would otherwise drive condDepth to 2 and back to 0, ending balanced so the
-// embedded command is never split out. A second `[[` while already inside a
-// conditional is treated as malformed and re-split so it cannot hide a command.
+// Nested `[[` is invalid bash; the hook must still fail closed rather than absorb
+// the embedded command into one allow-matched segment.
 describe('nested [[ fails closed (no command hiding)', () => {
   const policy = {
     permissions: {
