@@ -28,7 +28,7 @@ jobs:
       - name: Validate package.json files allowlist
         shell: bash
         run: |
-          ALLOWED='bin commands gsd-ng agents hooks'
+          ALLOWED='bin commands gsd-ng agents hooks CHANGELOG.md'
           FILES=$(node -p "require('./package.json').files.join(' ')")
           for entry in $FILES; do
             if ! echo "$ALLOWED" | grep -qw "$entry"; then
@@ -36,6 +36,10 @@ jobs:
               exit 1
             fi
           done
+          if ! echo "$FILES" | grep -qw "CHANGELOG.md"; then
+            echo "::error::package.json files MUST include CHANGELOG.md (npm does not auto-pack it into the tarball)"
+            exit 1
+          fi
           echo "package.json files OK: $FILES"
 
   changelog-check:
