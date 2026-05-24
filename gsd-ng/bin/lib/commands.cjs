@@ -25,6 +25,7 @@ const {
   error,
   findPhaseInternal,
   planningPaths,
+  getEngineRuntime,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { MODEL_PROFILES, EFFORT_PROFILES } = require('./model-profiles.cjs');
@@ -4540,12 +4541,12 @@ function detectInstallLocation(cwd) {
  * the bundled install.js. Extracted from cmdUpdate as a separate function
  * so tests can inject a fake `execUpdate` via `_testOverrides.execUpdate`.
  *
- * @param {{ version: string, installFlag: string, url: string }} args
+ * @param {{ version: string, installFlag: string, runtime: string, url: string }} args
  * @returns {{ success: boolean, error?: string }}
  */
 /* c8 ignore start — network+filesystem ops: download tarball, extract via tar binary, exec install.js. Tested via execUpdate seam injection (cmdUpdate — execUpdate seam describe block). */
 function _downloadAndInstallTarball(args) {
-  const { installFlag, url: tarballUrl } = args;
+  const { installFlag, url: tarballUrl, runtime } = args;
   const tmpExtractDir = path.join(os.tmpdir(), 'gsd-update-' + Date.now());
   const tarballPath = path.join(tmpExtractDir, 'gsd-ng.tar.gz');
   const extractDir = path.join(tmpExtractDir, 'extracted');
@@ -4597,7 +4598,7 @@ function _downloadAndInstallTarball(args) {
     // Run install.js
     const installResult = spawnSync(
       'node',
-      [path.join(extractDir, 'bin', 'install.js'), installFlag],
+      [path.join(extractDir, 'bin', 'install.js'), installFlag, '--runtime', runtime],
       {
         stdio: 'inherit',
         timeout: 120000,
@@ -4813,13 +4814,14 @@ function cmdUpdate(cwd, options, _testOverrides) {
   // Honors both `_testOverrides.dryExecute` (preferred) and the legacy
   // GSD_TEST_DRY_EXECUTE env hook for back-compat with subprocess tests.
   const installTarget = `gsd-ng@${installedChannel || 'latest'}`;
+  const runtime = getEngineRuntime();
 
   if (overrides.dryExecute || process.env.GSD_TEST_DRY_EXECUTE) {
     let installCommand;
     if (updateSource === 'npm') {
-      installCommand = `npx -y ${installTarget} ${installFlag}`;
+      installCommand = `npx -y ${installTarget} ${installFlag} --runtime ${runtime}`;
     } else {
-      installCommand = `node install.js ${installFlag} (github tarball download)`;
+      installCommand = `node install.js ${installFlag} --runtime ${runtime} (github tarball download)`;
     }
     return output({
       status: 'updated',
@@ -4833,7 +4835,7 @@ function cmdUpdate(cwd, options, _testOverrides) {
   if (updateSource === 'npm') {
     /* c8 ignore start — network: `npx -y gsd-ng@<channel>` shells out to npm. Exercised via dryExecute/GSD_TEST_DRY_EXECUTE short-circuit above (cmdUpdate dry-execute returns updated with install_command (npm) test). */
     try {
-      execSync(`npx -y ${installTarget} ${installFlag}`, {
+      execSync(`npx -y ${installTarget} ${installFlag} --runtime ${runtime}`, {
         stdio: 'inherit',
         timeout: 120000,
       });
@@ -4851,6 +4853,7 @@ function cmdUpdate(cwd, options, _testOverrides) {
     const execResult = exec({
       version: latestVersion,
       installFlag,
+      runtime,
       url: `https://github.com/chrisdevchroma/gsd-ng/releases/download/${latestVersion}/gsd-ng.tar.gz`,
     });
     if (execResult && execResult.success === false) {
