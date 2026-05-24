@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- npm installs and updates now include `CHANGELOG.md`. Because `CHANGELOG.md` was missing from the package `files` list, the published tarball shipped no changelog, so installing or updating gsd-ng silently omitted it (and could wipe a previously installed copy). It is now packaged and installed with the rest of the project.
+
 ## [1.0.0-dev.12] - 2026-05-24
 
 ### Fixed
