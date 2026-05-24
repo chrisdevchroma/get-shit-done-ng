@@ -4598,7 +4598,12 @@ function _downloadAndInstallTarball(args) {
     // Run install.js
     const installResult = spawnSync(
       'node',
-      [path.join(extractDir, 'bin', 'install.js'), installFlag, '--runtime', runtime],
+      [
+        path.join(extractDir, 'bin', 'install.js'),
+        installFlag,
+        '--runtime',
+        runtime,
+      ],
       {
         stdio: 'inherit',
         timeout: 120000,
