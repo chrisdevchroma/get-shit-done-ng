@@ -28,7 +28,7 @@ jobs:
       - name: Validate package.json files allowlist
         shell: bash
         run: |
-          ALLOWED='bin commands gsd-ng agents hooks'
+          ALLOWED='bin commands gsd-ng agents hooks CHANGELOG.md'
           FILES=$(node -p "require('./package.json').files.join(' ')")
           for entry in $FILES; do
             if ! echo "$ALLOWED" | grep -qw "$entry"; then

@@ -10,7 +10,8 @@
     "commands",
     "gsd-ng",
     "agents",
-    "hooks"
+    "hooks",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "claude",
