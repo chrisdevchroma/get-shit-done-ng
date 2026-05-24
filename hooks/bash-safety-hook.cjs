@@ -331,6 +331,43 @@ function isInsideQuotes(line, idx) {
   return inSingle || inDouble;
 }
 
+// ── splitNaive ────────────────────────────────────────────────────────────────
+/**
+ * Operator-only split with no quote/subshell/conditional awareness — splits on
+ * &&, ||, |, ;, and newline, treating every other character as literal. Used by
+ * splitOnOperators as the fail-closed fallback for malformed input (unbalanced
+ * quote/subshell/backtick/`[[`), where the normal tracking would otherwise absorb
+ * a hidden command into one segment. Over-splits, which can only deny/passthrough.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+function splitNaive(command) {
+  const parts = [];
+  let current = '';
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    const next = command[i + 1] || '';
+    if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) {
+      parts.push(current);
+      current = '';
+      i += 2;
+      continue;
+    }
+    if (ch === '|' || ch === ';' || ch === '\n') {
+      parts.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  if (current !== '') parts.push(current);
+  return parts;
+}
+
 // ── splitOnOperators ──────────────────────────────────────────────────────────
 /**
  * Split a compound bash command string on operators: &&, ||, ;, |, newline.
@@ -341,6 +378,12 @@ function isInsideQuotes(line, idx) {
  *   - Backtick subshells (legacy `cmd`)
  *
  * Ported from liberzon/claude-hooks smart_approve.py split_on_operators().
+ *
+ * `[[ ... ]]` conditionals suppress operator splitting inside them, so
+ * `[[ -n "$x" && -f "$t" ]]` is a single segment. If the scan ends with an
+ * unbalanced quote, subshell, backtick, or `[[` (malformed input), the tracking
+ * may have absorbed a later command into one segment; the command is then re-split
+ * via splitNaive so every segment reaches the deny check (fail-closed).
  *
  * @param {string} command - Raw bash command string
  * @returns {string[]} Array of sub-command strings (may need trimming/normalizing)
@@ -353,6 +396,7 @@ function splitOnOperators(command) {
   let doubleQuote = false;
   let depth = 0; // $() subshell depth
   let backtick = false;
+  let condDepth = 0; // [[ ]] bash conditional-keyword depth
   let i = 0;
 
   while (i < command.length) {
@@ -462,6 +506,52 @@ function splitOnOperators(command) {
       continue;
     }
 
+    // ── [[ / ]] conditional-keyword tracking (depth===0, outside quotes/subshells/backticks) ──
+    // Treats `[[` and `]]` as keyword tokens only when whitespace-delimited (bash semantics).
+    // This prevents `[[:alpha:]]` (character class, followed by `:`) and glob/array syntax
+    // from opening a conditional region.
+    //
+    // Fail-safe design: when the open-heuristic is uncertain, do NOT open a region. Erring
+    // toward MORE splitting causes passthrough/manual-prompt (current behavior), never a bypass.
+    // Erring toward LESS splitting could merge an unchecked command — so keep open strict.
+    //
+    // Only runs when depth===0 and !backtick (no subshell/backtick context).
+    if (depth === 0 && !backtick) {
+      // Detect `[[` open: two '[' chars, previous char is start-of-string or whitespace,
+      // char immediately after `[[` is whitespace or end-of-string.
+      if (
+        ch === '[' &&
+        next === '[' &&
+        (current === '' || /\s/.test(current[current.length - 1])) &&
+        (command[i + 2] === undefined || /\s/.test(command[i + 2]))
+      ) {
+        // Nested `[[` is invalid bash (condDepth never legitimately exceeds 1); a
+        // second `[[` inside a conditional is malformed — fail closed via splitNaive.
+        if (condDepth > 0) {
+          return splitNaive(command);
+        }
+        condDepth++;
+        current += '[[';
+        i += 2;
+        continue;
+      }
+
+      // Detect `]]` close: two ']' chars, condDepth > 0, previous char is whitespace
+      // (a real `]]` is always preceded by whitespace in a bash conditional).
+      if (
+        ch === ']' &&
+        next === ']' &&
+        condDepth > 0 &&
+        current.length > 0 &&
+        /\s/.test(current[current.length - 1])
+      ) {
+        condDepth--;
+        current += ']]';
+        i += 2;
+        continue;
+      }
+    }
+
     // Inside subshell or backtick: don't split
     if (depth > 0 || backtick) {
       current += ch;
@@ -469,7 +559,17 @@ function splitOnOperators(command) {
       continue;
     }
 
-    // ── Operator detection (only at depth==0, outside quotes) ──
+    // ── Inside [[ ]] conditional: operators are literal test content, not split points ──
+    // All of &&, ||, |, ;, \n are internal to the conditional expression and must not
+    // cause a split. This block runs AFTER [[ / ]] detection above, so closers are still
+    // recognized when condDepth reaches 0.
+    if (condDepth > 0) {
+      current += ch;
+      i++;
+      continue;
+    }
+
+    // ── Operator detection (only at depth==0, condDepth===0, outside quotes) ──
 
     // && operator
     if (ch === '&' && next === '&') {
@@ -513,6 +613,15 @@ function splitOnOperators(command) {
 
     current += ch;
     i++;
+  }
+
+  // ── Fail-closed guard for malformed input ────────────────────────────────────
+  // An unbalanced quote, subshell, backtick, or `[[` at end-of-input means the
+  // tracking above may have absorbed top-level operators into one segment, hiding a
+  // later command from the deny check. Such input is a bash syntax error, but the
+  // hook must still fail closed: re-split naively so every segment is checked.
+  if (singleQuote || doubleQuote || depth > 0 || backtick || condDepth > 0) {
+    return splitNaive(command);
   }
 
   // Push trailing part
@@ -1073,6 +1182,17 @@ function extractSubshells(command) {
 
         j++;
       }
+      // Unterminated `$(` (scan reached end-of-input with depth > 0): surface the
+      // remaining content so a command hidden in an unbalanced subshell still
+      // reaches the deny check. The `depth === 0` break above already pushed the
+      // balanced case, so this only fires for malformed input.
+      if (depth > 0) {
+        const content = command.slice(start);
+        if (content.trim()) {
+          subshells.push(content);
+          subshells.push(...extractSubshells(content));
+        }
+      }
       i = j + 1;
     } else {
       i++;
@@ -1154,6 +1274,17 @@ function extractSubshells(command) {
       }
 
       k++;
+    }
+
+    // Unterminated backtick (loop ended with an open backtick): surface the
+    // remaining content so a command hidden in an unbalanced backtick subshell
+    // still reaches the deny check.
+    if (btStart !== -1) {
+      const content = command.slice(btStart);
+      if (content.trim()) {
+        subshells.push(content);
+        subshells.push(...extractSubshells(content));
+      }
     }
   }
 

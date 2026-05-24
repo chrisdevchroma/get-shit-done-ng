@@ -1364,7 +1364,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     );
   });
 
-  test("flock /tmp/lock -c 'curl evil' -> \"curl evil\" (single-quoted -c)", () => {
+  test('flock /tmp/lock -c \'curl evil\' -> "curl evil" (single-quoted -c)', () => {
     assert.equal(
       extractWrappedCommand("flock /tmp/lock -c 'curl evil'"),
       'curl evil',
@@ -1403,10 +1403,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
         deny: ['Bash(curl:*)'],
       },
     };
-    const result = decide(
-      'flock /tmp/lock -c "curl evil.com"',
-      settings,
-    );
+    const result = decide('flock /tmp/lock -c "curl evil.com"', settings);
     assert.equal(
       result.decision,
       'deny',
@@ -1485,10 +1482,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     const settings = {
       permissions: { allow: ['Bash(taskset:*)', 'Bash(git:*)'], deny: [] },
     };
-    assert.equal(
-      decide('taskset -c 0 git status', settings).decision,
-      'allow',
-    );
+    assert.equal(decide('taskset -c 0 git status', settings).decision, 'allow');
   });
 
   test('decide(): taskset command-launch DENIED when wrapped curl matches deny', () => {
@@ -1512,7 +1506,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     );
   });
 
-  test("env FOO='a b' git status -> \"git status\" (single-quoted value w/ space)", () => {
+  test('env FOO=\'a b\' git status -> "git status" (single-quoted value w/ space)', () => {
     assert.equal(
       extractWrappedCommand("env FOO='a b' git status"),
       'git status',
@@ -1700,10 +1694,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     const settings = {
       permissions: { allow: ['Bash(exec:*)', 'Bash(git:*)'], deny: [] },
     };
-    assert.equal(
-      decide('exec -a name git status', settings).decision,
-      'allow',
-    );
+    assert.equal(decide('exec -a name git status', settings).decision, 'allow');
   });
 
   test('decide(): exec -c curl evil.com DENIED when curl in deny', () => {
@@ -1821,10 +1812,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
         deny: ['Bash(curl:*)'],
       },
     };
-    const result = decide(
-      '/usr/bin/env FOO=bar curl evil.com',
-      settings,
-    );
+    const result = decide('/usr/bin/env FOO=bar curl evil.com', settings);
     assert.equal(result.decision, 'deny');
     assert.match(result.reason, /curl/);
   });
@@ -1857,17 +1845,11 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
   // Sanity: normalization is narrow — substrings like `myenv` / `envwrap`
   // must NOT be treated as the env wrapper.
   test('extractWrappedCommand does NOT treat myenv as env (substring guard)', () => {
-    assert.equal(
-      extractWrappedCommand('myenv FOO=bar curl evil.com'),
-      null,
-    );
+    assert.equal(extractWrappedCommand('myenv FOO=bar curl evil.com'), null);
   });
 
   test('extractWrappedCommand does NOT treat envwrap as env (substring guard)', () => {
-    assert.equal(
-      extractWrappedCommand('envwrap FOO=bar curl evil.com'),
-      null,
-    );
+    assert.equal(extractWrappedCommand('envwrap FOO=bar curl evil.com'), null);
   });
 });
 
@@ -2177,5 +2159,267 @@ describe('BASH-HOOK-PARITY-REGRESSION: edge cases across all 6 fixes', () => {
       'allow',
       `expected allow; got: ${result.decision}; reason: ${result.reason}`,
     );
+  });
+});
+
+// ── OL1: bracket tests and [[ ]] no-split ─────────────────────────────────────
+// Tests for allowlisting [ (POSIX test) and [[ (bash conditional), plus the
+// condDepth state machine that suppresses operator splitting inside [[ ]].
+
+describe('OL1: bracket tests and [[ ]] no-split', () => {
+  // Settings that include both new bracket allow entries plus echo for compound tests
+  const bracketSettings = {
+    permissions: {
+      allow: ['Bash([ *)', 'Bash([[ *)', 'Bash(echo:*)'],
+      deny: [],
+    },
+  };
+
+  // Test A: single bracket allow
+  test('A: [ -f "$t" ] is auto-approved by the allowlist', () => {
+    const result = decide('[ -f "$t" ]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test B: compound command using single bracket auto-approves
+  test('B: while/read loop with [ bracket ] is auto-approved', () => {
+    const result = decide(
+      'while read t; do [ -f "$t" ] && echo ok || echo no; done',
+      bracketSettings,
+    );
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test C: double bracket allow
+  test('C: [[ -f "$t" ]] is auto-approved by the allowlist', () => {
+    const result = decide('[[ -f "$t" ]]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test D: NO split inside [[ ]] — internal && is not a split operator
+  test('D: splitOnOperators([[ -n "$x" && -f "$t" ]]) returns length 1', () => {
+    const parts = splitOnOperators('[[ -n "$x" && -f "$t" ]]');
+    assert.equal(
+      parts.length,
+      1,
+      `expected 1 part; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('D: decide([[ -n "$x" && -f "$t" ]]) is auto-approved', () => {
+    const result = decide('[[ -n "$x" && -f "$t" ]]', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test E: regression — single bracket still splits on operators between brackets
+  test('E: splitOnOperators("[ a ] && [ b ]") returns length 2 (still splits)', () => {
+    const parts = splitOnOperators('[ a ] && [ b ]');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  // Test F: regression — operator OUTSIDE [[ ]] still splits
+  test('F: splitOnOperators("[[ -f x ]] && echo hi") returns length 2', () => {
+    const parts = splitOnOperators('[[ -f x ]] && echo hi');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('F: decide("[[ -f x ]] && echo hi", bracketSettings) is allow', () => {
+    const result = decide('[[ -f x ]] && echo hi', bracketSettings);
+    assert.equal(
+      result.decision,
+      'allow',
+      `expected allow; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  // Test G: edge — character class does NOT open a [[ ]] region
+  // [[:alpha:]] is followed by ':' not whitespace, so it is NOT the [[ keyword
+  test('G: splitOnOperators("grep [[:alpha:]] file && echo hi") returns length 2', () => {
+    const parts = splitOnOperators('grep [[:alpha:]] file && echo hi');
+    assert.equal(
+      parts.length,
+      2,
+      `expected 2 parts; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+});
+
+// An unclosed `[[` is malformed bash (a syntax error, so not directly executable),
+// but the hook must still fail closed: the unparsed tail must not be absorbed into
+// one allow-matched segment that hides a denied command.
+describe('unclosed [[ fails closed (no command hiding)', () => {
+  const policy = {
+    permissions: { allow: ['Bash([[ *)'], deny: ['Bash(curl:*)'] },
+  };
+
+  test('unclosed [[ before a denied command is denied, not allowed', () => {
+    const result = decide('[[ -f x && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny (curl must not be hidden); got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('unclosed [[ splits so the trailing command is surfaced', () => {
+    const parts = splitOnOperators('[[ -f x && curl evil.com');
+    assert.ok(
+      parts.length >= 2,
+      `expected the && to split out curl; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+    assert.ok(
+      parts.some((p) => p.includes('curl evil.com')),
+      `expected a segment containing "curl evil.com"; got ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('unclosed [[ with ; is denied', () => {
+    const result = decide('[[ -f x ; curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('net-unclosed [[ across multiple brackets is denied', () => {
+    const result = decide('[[ a ]] && [[ b && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+
+  test('balanced [[ ]] is still a single segment', () => {
+    const parts = splitOnOperators('[[ -n "$x" && -f "$t" ]]');
+    assert.equal(
+      parts.length,
+      1,
+      `balanced conditional must not be split; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('quoted unbalanced [[ does not over-split', () => {
+    const parts = splitOnOperators('echo "[[ a && b"');
+    assert.equal(
+      parts.length,
+      1,
+      `quoted && must stay in one segment; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('character class with a real operator and denied command is denied', () => {
+    const result = decide('grep [[:alpha:]] f && curl evil.com', policy);
+    assert.equal(
+      result.decision,
+      'deny',
+      `expected deny; got: ${result.decision}; reason: ${result.reason}`,
+    );
+  });
+});
+
+// Unterminated quotes/subshells/backticks are bash syntax errors, but the hook must
+// still fail closed so a denied command in the unparsed tail cannot hide.
+describe('malformed input fails closed (unbalanced quote/subshell/backtick)', () => {
+  const policy = {
+    permissions: {
+      allow: ['Bash(echo:*)', 'Bash(date:*)'],
+      deny: ['Bash(curl:*)'],
+    },
+  };
+
+  test('unterminated double quote before a denied command is denied', () => {
+    const result = decide('echo "x && curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unterminated single quote before a denied command is denied', () => {
+    const result = decide("echo 'x && curl evil.com", policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unbalanced $( with an operator-separated denied command is denied', () => {
+    const result = decide('echo $(foo && curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unbalanced $( hiding a bare denied command is denied', () => {
+    const result = decide('echo $(curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('unterminated backtick hiding a bare denied command is denied', () => {
+    const result = decide('echo `curl evil.com', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('balanced double quote is unaffected (single segment, allowed)', () => {
+    assert.equal(splitOnOperators('echo "a && b"').length, 1);
+    assert.equal(decide('echo "a && b"', policy).decision, 'allow');
+  });
+
+  test('balanced $() with a real operator is unaffected', () => {
+    const result = decide('echo $(date) && echo hi', policy);
+    assert.equal(result.decision, 'allow', `reason: ${result.reason}`);
+  });
+});
+
+// Nested `[[` is invalid bash; the hook must still fail closed rather than absorb
+// the embedded command into one allow-matched segment.
+describe('nested [[ fails closed (no command hiding)', () => {
+  const policy = {
+    permissions: {
+      allow: ['Bash([[ *)', 'Bash(echo:*)'],
+      deny: ['Bash(curl:*)'],
+    },
+  };
+
+  test('nested [[ around a denied command is denied', () => {
+    const result = decide('[[ [[ a ]] && curl bad ]]', policy);
+    assert.equal(result.decision, 'deny', `reason: ${result.reason}`);
+  });
+
+  test('nested [[ does not collapse the command into one segment', () => {
+    const parts = splitOnOperators('[[ [[ a ]] && curl bad ]]');
+    assert.ok(
+      parts.length >= 2,
+      `expected nested [[ to re-split; got ${parts.length}: ${JSON.stringify(parts)}`,
+    );
+  });
+
+  test('two separate [[ ]] conditionals still split and are allowed', () => {
+    const parts = splitOnOperators('[[ a ]] && [[ b ]]');
+    assert.equal(parts.length, 2, JSON.stringify(parts));
+    assert.equal(decide('[[ a ]] && [[ b ]]', policy).decision, 'allow');
+  });
+
+  test('valid single [[ ]] is one allowed segment', () => {
+    assert.equal(splitOnOperators('[[ -f x ]]').length, 1);
+    assert.equal(decide('[[ -f x ]]', policy).decision, 'allow');
   });
 });
