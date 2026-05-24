@@ -1,6 +1,6 @@
 {
   "name": "gsd-ng",
-  "version": "1.0.0-dev.11",
+  "version": "1.0.0-dev.12",
   "description": "A meta-prompting, context engineering and spec-driven development system for Claude Code.",
   "bin": {
     "gsd-ng": "bin/install.js"
