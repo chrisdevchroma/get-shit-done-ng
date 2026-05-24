@@ -8301,6 +8301,30 @@ describe('sub-batch H: cmdUpdate execUpdate seam exercised', () => {
     const parsed = JSON.parse(r.output);
     assert.strictEqual(parsed.status, 'updated');
     assert.match(parsed.install_command, /npx -y gsd-ng@latest/);
+    assert.match(parsed.install_command, /--runtime claude/);
+  });
+
+  test('cmdUpdate dry-execute threads --runtime copilot for npm path', () => {
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-copilot-marker-'),
+    );
+    fs.writeFileSync(path.join(markerDir, '.runtime'), 'copilot\n', 'utf-8');
+    try {
+      const r = runGsdTools(['update', '--json'], tmpDir, {
+        GSD_UPDATE_TEST_OVERRIDES: JSON.stringify({
+          latestVersion: '99.0.0',
+          updateSource: 'npm',
+        }),
+        GSD_TEST_DRY_EXECUTE: '1',
+        GSD_TEST_RUNTIME_MARKER_DIR: markerDir,
+      });
+      assert.ok(r.success);
+      const parsed = JSON.parse(r.output);
+      assert.match(parsed.install_command, /--runtime copilot/);
+      assert.doesNotMatch(parsed.install_command, /--runtime claude/);
+    } finally {
+      cleanup(markerDir);
+    }
   });
 
   test('cmdUpdate dry-execute: prerelease install tracks its own channel (@dev, never @latest)', () => {
@@ -8333,6 +8357,29 @@ describe('sub-batch H: cmdUpdate execUpdate seam exercised', () => {
     assert.ok(r.success);
     const parsed = JSON.parse(r.output);
     assert.match(parsed.install_command, /github tarball download/);
+    assert.match(parsed.install_command, /--runtime claude/);
+  });
+
+  test('cmdUpdate dry-execute threads --runtime copilot for github path', () => {
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-copilot-marker-'),
+    );
+    fs.writeFileSync(path.join(markerDir, '.runtime'), 'copilot\n', 'utf-8');
+    try {
+      const r = runGsdTools(['update', '--json'], tmpDir, {
+        GSD_UPDATE_TEST_OVERRIDES: JSON.stringify({
+          latestVersion: '99.0.0',
+          updateSource: 'github',
+        }),
+        GSD_TEST_DRY_EXECUTE: '1',
+        GSD_TEST_RUNTIME_MARKER_DIR: markerDir,
+      });
+      assert.ok(r.success);
+      const parsed = JSON.parse(r.output);
+      assert.match(parsed.install_command, /--runtime copilot/);
+    } finally {
+      cleanup(markerDir);
+    }
   });
 
   test('cmdUpdate execUpdate failure returns error status (in-process smoke)', () => {
