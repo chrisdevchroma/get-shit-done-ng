@@ -468,8 +468,8 @@ function splitOnOperators(command) {
     // This prevents `[[:alpha:]]` (character class, followed by `:`) and glob/array syntax
     // from opening a conditional region.
     //
-    // FAIL-SAFE: when the open-heuristic is uncertain, do NOT open a region. Erring toward
-    // MORE splitting causes passthrough/manual-prompt (current behavior), never a bypass.
+    // Fail-safe design: when the open-heuristic is uncertain, do NOT open a region. Erring
+    // toward MORE splitting causes passthrough/manual-prompt (current behavior), never a bypass.
     // Erring toward LESS splitting could merge an unchecked command — so keep open strict.
     //
     // Only runs when depth===0 and !backtick (no subshell/backtick context).

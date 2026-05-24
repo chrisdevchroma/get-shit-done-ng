@@ -1364,7 +1364,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     );
   });
 
-  test("flock /tmp/lock -c 'curl evil' -> \"curl evil\" (single-quoted -c)", () => {
+  test('flock /tmp/lock -c \'curl evil\' -> "curl evil" (single-quoted -c)', () => {
     assert.equal(
       extractWrappedCommand("flock /tmp/lock -c 'curl evil'"),
       'curl evil',
@@ -1403,10 +1403,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
         deny: ['Bash(curl:*)'],
       },
     };
-    const result = decide(
-      'flock /tmp/lock -c "curl evil.com"',
-      settings,
-    );
+    const result = decide('flock /tmp/lock -c "curl evil.com"', settings);
     assert.equal(
       result.decision,
       'deny',
@@ -1485,10 +1482,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     const settings = {
       permissions: { allow: ['Bash(taskset:*)', 'Bash(git:*)'], deny: [] },
     };
-    assert.equal(
-      decide('taskset -c 0 git status', settings).decision,
-      'allow',
-    );
+    assert.equal(decide('taskset -c 0 git status', settings).decision, 'allow');
   });
 
   test('decide(): taskset command-launch DENIED when wrapped curl matches deny', () => {
@@ -1512,7 +1506,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     );
   });
 
-  test("env FOO='a b' git status -> \"git status\" (single-quoted value w/ space)", () => {
+  test('env FOO=\'a b\' git status -> "git status" (single-quoted value w/ space)', () => {
     assert.equal(
       extractWrappedCommand("env FOO='a b' git status"),
       'git status',
@@ -1700,10 +1694,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
     const settings = {
       permissions: { allow: ['Bash(exec:*)', 'Bash(git:*)'], deny: [] },
     };
-    assert.equal(
-      decide('exec -a name git status', settings).decision,
-      'allow',
-    );
+    assert.equal(decide('exec -a name git status', settings).decision, 'allow');
   });
 
   test('decide(): exec -c curl evil.com DENIED when curl in deny', () => {
@@ -1821,10 +1812,7 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
         deny: ['Bash(curl:*)'],
       },
     };
-    const result = decide(
-      '/usr/bin/env FOO=bar curl evil.com',
-      settings,
-    );
+    const result = decide('/usr/bin/env FOO=bar curl evil.com', settings);
     assert.equal(result.decision, 'deny');
     assert.match(result.reason, /curl/);
   });
@@ -1857,17 +1845,11 @@ describe('BASH-HOOK-WRAPPER: extractWrappedCommand strips wrappers', () => {
   // Sanity: normalization is narrow — substrings like `myenv` / `envwrap`
   // must NOT be treated as the env wrapper.
   test('extractWrappedCommand does NOT treat myenv as env (substring guard)', () => {
-    assert.equal(
-      extractWrappedCommand('myenv FOO=bar curl evil.com'),
-      null,
-    );
+    assert.equal(extractWrappedCommand('myenv FOO=bar curl evil.com'), null);
   });
 
   test('extractWrappedCommand does NOT treat envwrap as env (substring guard)', () => {
-    assert.equal(
-      extractWrappedCommand('envwrap FOO=bar curl evil.com'),
-      null,
-    );
+    assert.equal(extractWrappedCommand('envwrap FOO=bar curl evil.com'), null);
   });
 });
 

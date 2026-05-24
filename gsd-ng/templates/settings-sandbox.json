@@ -42,6 +42,8 @@
       "Bash(tr *)",
       "Bash(jq *)",
       "Bash(test *)",
+      "Bash([ *)",
+      "Bash([[ *)",
       "Bash(touch *)",
       "Bash(chmod *)",
       "Bash(sed *)",
