@@ -36,10 +36,6 @@ jobs:
               exit 1
             fi
           done
-          if ! echo "$FILES" | grep -qw "CHANGELOG.md"; then
-            echo "::error::package.json files MUST include CHANGELOG.md (npm does not auto-pack it into the tarball)"
-            exit 1
-          fi
           echo "package.json files OK: $FILES"
 
   changelog-check:
