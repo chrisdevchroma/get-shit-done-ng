@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.13] - 2026-05-25
+
 ### Fixed
 - npm installs and updates now include `CHANGELOG.md`. Because `CHANGELOG.md` was missing from the package `files` list, the published tarball shipped no changelog, so installing or updating gsd-ng silently omitted it (and could wipe a previously installed copy). It is now packaged and installed with the rest of the project.
 - The bash command-safety hook now auto-approves shell conditional tests (`[ … ]` POSIX test and `[[ … ]]` bash conditional). Previously only `test` was allowlisted, so compound commands using bracket tests — e.g. `while read t; do [ -f "$t" ] && …; done` — fell through to a manual permission prompt for an operation that has no side effects. `splitOnOperators` now tracks `[[ … ]]` conditional-keyword depth and no longer splits on `&&`/`||`/`|`/`;` that appear *inside* a `[[ … ]]` construct, so `[[ -n "$x" && -f "$t" ]]` is treated as a single sub-command instead of two broken fragments. The sandbox template gains `Bash([ *)` and `Bash([[ *)` allowlist entries; single-bracket chaining (`[ a ] && [ b ]`) and operators outside `[[ … ]]` still split as before.
