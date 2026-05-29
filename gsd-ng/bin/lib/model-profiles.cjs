@@ -53,7 +53,6 @@ const MODEL_PROFILES = {
     budget: 'haiku',
   },
   'gsd-ui-researcher': { quality: 'opus', balanced: 'sonnet', budget: 'haiku' },
-  'gsd-ui-checker': { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
   'gsd-ui-auditor': { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
 };
 const VALID_PROFILES = Object.keys(MODEL_PROFILES['gsd-planner']);
@@ -132,7 +131,6 @@ const EFFORT_PROFILES = {
     balanced: 'inherit',
     budget: 'medium',
   },
-  'gsd-ui-checker': { quality: 'high', balanced: 'inherit', budget: 'medium' },
   'gsd-ui-auditor': { quality: 'high', balanced: 'inherit', budget: 'medium' },
 };
 

@@ -20,7 +20,6 @@ Model profiles control which Claude model each GSD agent uses. This allows balan
 | gsd-integration-checker | sonnet | sonnet | haiku |
 | gsd-nyquist-auditor | sonnet | sonnet | haiku |
 | gsd-ui-researcher | opus | sonnet | haiku |
-| gsd-ui-checker | sonnet | sonnet | haiku |
 | gsd-ui-auditor | sonnet | sonnet | haiku |
 
 ## Profile Philosophy
@@ -118,7 +117,6 @@ Effort profiles control the `effort:` frontmatter injected into agent spawn call
 | gsd-integration-checker | high | inherit | medium |
 | gsd-nyquist-auditor | high | inherit | medium |
 | gsd-ui-researcher | high | inherit | medium |
-| gsd-ui-checker | high | inherit | medium |
 | gsd-ui-auditor | high | inherit | medium |
 
 ### Valid Effort Values
