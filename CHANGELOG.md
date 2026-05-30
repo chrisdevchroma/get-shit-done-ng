@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.14] - 2026-05-30
+
 ### Changed
 - UI functionality is now strictly additive — it never blocks, prompts, or interrupts `/gsd:plan-phase`, `/gsd:execute-phase`, or `/gsd:verify-work`. The shadcn third-party registry-safety machinery has been removed in every site it touched: the `gsd-ui-checker` agent (dropping the roster from 16 to 15 agents), the `workflow.ui_safety_gate` config key (now rejected by `gsd config set`), the plan-phase keyword-grep gate, and the `npx shadcn view`/`diff` registry-vetting steps in the UI researcher/auditor and the UI design-spec template. UI design and audit — `gsd-ui-researcher`, `gsd-ui-auditor`, and the 6-pillar visual audit — are preserved, so gsd-ng can still design and develop UI systems for web/React projects; vetting third-party registries is now recommend-but-don't-block coaching guidance rather than an enforced gate.
 
