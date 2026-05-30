@@ -176,10 +176,8 @@ AI-generated frontends are visually inconsistent not because Claude Code is bad 
 1. Reads CONTEXT.md, RESEARCH.md, REQUIREMENTS.md for existing decisions
 2. Detects design system state (shadcn components.json, Tailwind config, existing tokens)
 3. shadcn initialization gate — offers to initialize if React/Next.js/Vite project has none
-4. Asks only unanswered design contract questions (spacing, typography, color, copywriting, registry safety)
+4. Asks only unanswered design contract questions (spacing, typography, color, copywriting)
 5. Writes `{phase}-UI-SPEC.md` to phase directory
-6. Validates against 6 dimensions (Copywriting, Visuals, Color, Typography, Spacing, Registry Safety)
-7. Revision loop if BLOCKED (max 2 iterations)
 
 **Output:** `{padded_phase}-UI-SPEC.md` in `.planning/phases/{phase-dir}/`
 
@@ -203,10 +201,9 @@ AI-generated frontends are visually inconsistent not because Claude Code is bad 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `workflow.ui_phase` | `true` | Generate UI design contracts for frontend phases |
-| `workflow.ui_safety_gate` | `true` | plan-phase prompts to run /gsd:ui-phase for frontend phases |
+| `workflow.ui_phase` | `true` | Enable UI design + audit features (master toggle) |
 
-Both follow the absent=enabled pattern. Disable via `/gsd:settings`.
+Follows the absent=enabled pattern. Disable via `/gsd:settings`.
 
 ### shadcn Initialization
 
@@ -218,14 +215,6 @@ For React/Next.js/Vite projects, the UI researcher offers to initialize shadcn i
 4. Preset encodes the entire design system — colors, border radius, fonts
 
 The preset string becomes a first-class GSD planning artifact, reproducible across phases and milestones.
-
-### Registry Safety Gate
-
-Third-party shadcn registries can inject arbitrary code. The safety gate requires:
-- `npx shadcn view {component}` — inspect before installing
-- `npx shadcn diff {component}` — compare against official
-
-Controlled by `workflow.ui_safety_gate` config toggle.
 
 ### Screenshot Storage
 
@@ -345,8 +334,7 @@ GSD stores project settings in `.planning/config.json`. Configure during `/gsd:n
     "plan_check": true,
     "verifier": true,
     "nyquist_validation": true,
-    "ui_phase": true,
-    "ui_safety_gate": true
+    "ui_phase": true
   },
   "git": {
     "branching_strategy": "none",
@@ -381,8 +369,7 @@ GSD stores project settings in `.planning/config.json`. Configure during `/gsd:n
 | `workflow.plan_check` | `true`, `false` | `true` | Plan verification loop (up to 3 iterations) |
 | `workflow.verifier` | `true`, `false` | `true` | Post-execution verification against phase goals |
 | `workflow.nyquist_validation` | `true`, `false` | `true` | Validation architecture research during plan-phase; 8th plan-check dimension |
-| `workflow.ui_phase` | `true`, `false` | `true` | Generate UI design contracts for frontend phases |
-| `workflow.ui_safety_gate` | `true`, `false` | `true` | plan-phase prompts to run /gsd:ui-phase for frontend phases |
+| `workflow.ui_phase` | `true`, `false` | `true` | Enable UI design + audit features (master toggle) |
 
 Disable these to speed up phases in familiar domains or when conserving tokens.
 

@@ -17,8 +17,8 @@ allowed-tools:
 
 <objective>
 Create a UI design contract (UI-SPEC.md) for a frontend phase.
-Orchestrates gsd-ui-researcher and gsd-ui-checker.
-Flow: Validate → Research UI → Verify UI-SPEC → Done
+Spawns gsd-ui-researcher to gather design preferences and write the contract.
+Flow: Validate → Research UI → Done
 </objective>
 
 <execution_context>

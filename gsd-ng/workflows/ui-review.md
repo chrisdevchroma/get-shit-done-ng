@@ -10,6 +10,18 @@ Retroactive 6-pillar visual audit of implemented frontend code. Standalone comma
 
 <process>
 
+## 0a. Check Feature Toggle
+
+```bash
+UI_ENABLED=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" config-get workflow.ui_phase --default "true")
+```
+
+**If `UI_ENABLED` is `false`:**
+```
+UI features disabled — set `workflow.ui_phase: true` in `.planning/config.json` to enable.
+```
+Exit workflow.
+
 ## 0. Initialize
 
 ```bash

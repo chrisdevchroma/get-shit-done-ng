@@ -38,8 +38,7 @@ Parse current values (default to `true` if not present):
 - `workflow.plan_check` — spawn plan checker during plan-phase
 - `workflow.verifier` — spawn verifier during execute-phase
 - `workflow.nyquist_validation` — validation architecture research during plan-phase (default: true if absent)
-- `workflow.ui_phase` — generate UI-SPEC.md design contracts for frontend phases (default: true if absent)
-- `workflow.ui_safety_gate` — prompt to run {{COMMAND_PREFIX}}ui-phase before planning frontend phases (default: true if absent)
+- `workflow.ui_phase` — enable UI design + audit features (master toggle for {{COMMAND_PREFIX}}ui-phase and {{COMMAND_PREFIX}}ui-review; default: true if absent)
 - `workflow.incremental_remap` — auto-update codebase docs after phase completion via gsd-incremental-mapper (default: true if absent)
 - `model_profile` — which model each agent uses (default: `balanced`)
 - `git.branching_strategy` — branching approach (default: `"none"`)
@@ -119,21 +118,12 @@ AskUserQuestion([
   // Note: Nyquist validation depends on research output. If research is disabled,
   // plan-phase automatically skips Nyquist steps (no RESEARCH.md to extract from).
   {
-    question: "Enable UI Phase? (generates UI-SPEC.md design contracts for frontend phases)",
+    question: "Enable UI features? (master toggle for {{COMMAND_PREFIX}}ui-phase and {{COMMAND_PREFIX}}ui-review)",
     header: "UI Phase",
     multiSelect: false,
     options: [
-      { label: "Yes (Recommended)", description: "Generate UI design contracts before planning frontend phases. Locks spacing, typography, color, and copywriting." },
-      { label: "No", description: "Skip UI-SPEC generation. Good for backend-only projects or API phases." }
-    ]
-  },
-  {
-    question: "Enable UI Safety Gate? (prompts to run {{COMMAND_PREFIX}}ui-phase before planning frontend phases)",
-    header: "UI Gate",
-    multiSelect: false,
-    options: [
-      { label: "Yes (Recommended)", description: "plan-phase asks to run {{COMMAND_PREFIX}}ui-phase first when frontend indicators detected." },
-      { label: "No", description: "No prompt — plan-phase proceeds without UI-SPEC check." }
+      { label: "Yes (Recommended)", description: "Enable UI design + audit features. {{COMMAND_PREFIX}}ui-phase generates UI-SPEC.md; {{COMMAND_PREFIX}}ui-review runs visual audits." },
+      { label: "No", description: "Disable UI features. {{COMMAND_PREFIX}}ui-phase and {{COMMAND_PREFIX}}ui-review exit with a friendly disabled message. Good for backend-only projects." }
     ]
   },
   {
@@ -326,7 +316,6 @@ Merge new settings into existing config.json:
     "auto_advance": true/false,
     "nyquist_validation": true/false,
     "ui_phase": true/false,
-    "ui_safety_gate": true/false,
     "incremental_remap": true/false
   },
   "git": {
@@ -390,8 +379,7 @@ Write `~/.gsd/defaults.json` with:
     "verifier": <current>,
     "auto_advance": <current>,
     "nyquist_validation": <current>,
-    "ui_phase": <current>,
-    "ui_safety_gate": <current>
+    "ui_phase": <current>
   }
 }
 ```
@@ -414,7 +402,6 @@ Display:
 | Auto-Advance         | {On/Off} |
 | Nyquist Validation   | {On/Off} |
 | UI Phase             | {On/Off} |
-| UI Safety Gate       | {On/Off} |
 | Incremental Remap    | {On/Off} |
 | Git Branching        | {None/Per Phase/Per Milestone} |
 | Target Branch        | {main/develop/custom} |

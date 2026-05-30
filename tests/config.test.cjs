@@ -11,8 +11,22 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup, resolveTmpDir } = require('./helpers.cjs');
-const { EFFORT_PROFILES, MODEL_PROFILES, getAgentToEffortMapForProfile, formatAgentToEffortMapAsTable } = require('../gsd-ng/bin/lib/model-profiles.cjs');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
+const {
+  runGsdTools,
+  createTempProject,
+  cleanup,
+  resolveTmpDir,
+} = require('./helpers.cjs');
+const {
+  EFFORT_PROFILES,
+  MODEL_PROFILES,
+  getAgentToEffortMapForProfile,
+  formatAgentToEffortMapAsTable,
+} = require('../gsd-ng/bin/lib/model-profiles.cjs');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +66,10 @@ describe('config-ensure-section command', () => {
     assert.strictEqual(typeof config.commit_docs, 'boolean');
     assert.strictEqual(typeof config.parallelization, 'boolean');
     assert.strictEqual(typeof config.branching_strategy, 'string');
-    assert.ok(config.workflow && typeof config.workflow === 'object', 'workflow should be an object');
+    assert.ok(
+      config.workflow && typeof config.workflow === 'object',
+      'workflow should be an object',
+    );
     assert.strictEqual(typeof config.workflow.research, 'boolean');
     assert.strictEqual(typeof config.workflow.plan_check, 'boolean');
     assert.strictEqual(typeof config.workflow.verifier, 'boolean');
@@ -79,19 +96,37 @@ describe('config-ensure-section command', () => {
   test('merges user defaults from defaults.json', () => {
     const tmpHome = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-home-'));
     fs.mkdirSync(path.join(tmpHome, '.gsd'), { recursive: true });
-    fs.writeFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), JSON.stringify({
-      model_profile: 'quality',
-      commit_docs: false,
-    }), 'utf-8');
+    fs.writeFileSync(
+      path.join(tmpHome, '.gsd', 'defaults.json'),
+      JSON.stringify({
+        model_profile: 'quality',
+        commit_docs: false,
+      }),
+      'utf-8',
+    );
 
     try {
-      const result = runGsdTools('config-ensure-section', tmpDir, { HOME: tmpHome });
+      const result = runGsdTools('config-ensure-section', tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       const config = readConfig(tmpDir);
-      assert.strictEqual(config.model_profile, 'quality', 'model_profile should be overridden');
-      assert.strictEqual(config.commit_docs, false, 'commit_docs should be overridden');
-      assert.strictEqual(typeof config.branching_strategy, 'string', 'branching_strategy should be a string');
+      assert.strictEqual(
+        config.model_profile,
+        'quality',
+        'model_profile should be overridden',
+      );
+      assert.strictEqual(
+        config.commit_docs,
+        false,
+        'commit_docs should be overridden',
+      );
+      assert.strictEqual(
+        typeof config.branching_strategy,
+        'string',
+        'branching_strategy should be a string',
+      );
     } finally {
       cleanup(tmpHome);
     }
@@ -101,18 +136,36 @@ describe('config-ensure-section command', () => {
   test('merges nested workflow keys from defaults.json preserving unset keys', () => {
     const tmpHome = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-home-'));
     fs.mkdirSync(path.join(tmpHome, '.gsd'), { recursive: true });
-    fs.writeFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), JSON.stringify({
-      workflow: { research: false },
-    }), 'utf-8');
+    fs.writeFileSync(
+      path.join(tmpHome, '.gsd', 'defaults.json'),
+      JSON.stringify({
+        workflow: { research: false },
+      }),
+      'utf-8',
+    );
 
     try {
-      const result = runGsdTools('config-ensure-section', tmpDir, { HOME: tmpHome });
+      const result = runGsdTools('config-ensure-section', tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       const config = readConfig(tmpDir);
-      assert.strictEqual(config.workflow.research, false, 'research should be overridden');
-      assert.strictEqual(typeof config.workflow.plan_check, 'boolean', 'plan_check should be a boolean');
-      assert.strictEqual(typeof config.workflow.verifier, 'boolean', 'verifier should be a boolean');
+      assert.strictEqual(
+        config.workflow.research,
+        false,
+        'research should be overridden',
+      );
+      assert.strictEqual(
+        typeof config.workflow.plan_check,
+        'boolean',
+        'plan_check should be a boolean',
+      );
+      assert.strictEqual(
+        typeof config.workflow.verifier,
+        'boolean',
+        'verifier should be a boolean',
+      );
     } finally {
       cleanup(tmpHome);
     }
@@ -204,11 +257,14 @@ describe('config-set command', () => {
   });
 
   test('rejects unknown config keys', () => {
-    const result = runGsdTools('config-set workflow.nyquist_validation_enabled false', tmpDir);
+    const result = runGsdTools(
+      'config-set workflow.nyquist_validation_enabled false',
+      tmpDir,
+    );
     assert.strictEqual(result.success, false);
     assert.ok(
       result.error.includes('Unknown config key'),
-      `Expected "Unknown config key" in error: ${result.error}`
+      `Expected "Unknown config key" in error: ${result.error}`,
     );
   });
 
@@ -218,9 +274,15 @@ describe('config-set command', () => {
   });
 
   test('rejects known invalid nyquist alias keys with a suggestion', () => {
-    const result = runGsdTools('config-set workflow.nyquist_validation_enabled false', tmpDir);
+    const result = runGsdTools(
+      'config-set workflow.nyquist_validation_enabled false',
+      tmpDir,
+    );
     assert.strictEqual(result.success, false);
-    assert.match(result.error, /Unknown config key: workflow\.nyquist_validation_enabled/);
+    assert.match(
+      result.error,
+      /Unknown config key: workflow\.nyquist_validation_enabled/,
+    );
     assert.match(result.error, /workflow\.nyquist_validation/);
 
     const config = readConfig(tmpDir);
@@ -270,7 +332,10 @@ describe('Phase 13 git config keys (GIT-01)', () => {
   });
 
   test('GIT-01 Test 4: config-set git.review_branch_template succeeds and writes template string', () => {
-    const result = runGsdTools(['config-set', 'git.review_branch_template', '{type}/{slug}'], tmpDir);
+    const result = runGsdTools(
+      ['config-set', 'git.review_branch_template', '{type}/{slug}'],
+      tmpDir,
+    );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const config = readConfig(tmpDir);
@@ -305,14 +370,32 @@ describe('Phase 13 git config keys (GIT-01)', () => {
 
     // Create a ROADMAP.md with a git-branching phase entry
     const roadmapContent = `# Milestone v2.0\n\n## Phase 13: Git Branching And Collaboration\n\n**Goal:** Add git branching support\n**Requirements:** GIT-01\n`;
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent, 'utf-8');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+      'utf-8',
+    );
 
     // Create the phase directory and a dummy plan
-    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration'), { recursive: true });
+    fs.mkdirSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+      ),
+      { recursive: true },
+    );
     fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration', '13-01-PLAN.md'),
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+        '13-01-PLAN.md',
+      ),
       '---\nphase: 13\nplan: 01\n---\n\n# Plan\n',
-      'utf-8'
+      'utf-8',
     );
 
     const result = runGsdTools('init execute-phase 13 --json', tmpDir);
@@ -322,7 +405,10 @@ describe('Phase 13 git config keys (GIT-01)', () => {
     assert.ok('target_branch' in output, 'output should include target_branch');
     assert.ok('auto_push' in output, 'output should include auto_push');
     assert.ok('remote' in output, 'output should include remote');
-    assert.ok('review_branch_template' in output, 'output should include review_branch_template');
+    assert.ok(
+      'review_branch_template' in output,
+      'output should include review_branch_template',
+    );
     assert.ok('pr_draft' in output, 'output should include pr_draft');
     assert.ok('platform' in output, 'output should include platform');
   });
@@ -332,20 +418,42 @@ describe('Phase 13 git config keys (GIT-01)', () => {
     const path = require('path');
 
     const roadmapContent = `# Milestone v2.0\n\n## Phase 13: Git Branching And Collaboration\n\n**Goal:** Add git branching support\n**Requirements:** GIT-01\n`;
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent, 'utf-8');
-
-    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration'), { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration', '13-01-PLAN.md'),
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+      'utf-8',
+    );
+
+    fs.mkdirSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+      ),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+        '13-01-PLAN.md',
+      ),
       '---\nphase: 13\nplan: 01\n---\n\n# Plan\n',
-      'utf-8'
+      'utf-8',
     );
 
     const result = runGsdTools('init execute-phase 13 --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.strictEqual(output.target_branch, 'main', 'default target_branch should be "main"');
+    assert.strictEqual(
+      output.target_branch,
+      'main',
+      'default target_branch should be "main"',
+    );
   });
 
   test('GIT-01 Test 10: loadConfig returns auto_push: false by default (verified via init output)', () => {
@@ -353,20 +461,42 @@ describe('Phase 13 git config keys (GIT-01)', () => {
     const path = require('path');
 
     const roadmapContent = `# Milestone v2.0\n\n## Phase 13: Git Branching And Collaboration\n\n**Goal:** Add git branching support\n**Requirements:** GIT-01\n`;
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent, 'utf-8');
-
-    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration'), { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration', '13-01-PLAN.md'),
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+      'utf-8',
+    );
+
+    fs.mkdirSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+      ),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+        '13-01-PLAN.md',
+      ),
       '---\nphase: 13\nplan: 01\n---\n\n# Plan\n',
-      'utf-8'
+      'utf-8',
     );
 
     const result = runGsdTools('init execute-phase 13 --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.strictEqual(output.auto_push, false, 'default auto_push should be false');
+    assert.strictEqual(
+      output.auto_push,
+      false,
+      'default auto_push should be false',
+    );
   });
 
   test('GIT-01 Test 11: After config-set git.target_branch develop, init execute-phase returns target_branch: "develop"', () => {
@@ -374,17 +504,38 @@ describe('Phase 13 git config keys (GIT-01)', () => {
     const path = require('path');
 
     const roadmapContent = `# Milestone v2.0\n\n## Phase 13: Git Branching And Collaboration\n\n**Goal:** Add git branching support\n**Requirements:** GIT-01\n`;
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent, 'utf-8');
-
-    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration'), { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'phases', '13-git-branching-and-collaboration', '13-01-PLAN.md'),
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+      'utf-8',
+    );
+
+    fs.mkdirSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+      ),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(
+        tmpDir,
+        '.planning',
+        'phases',
+        '13-git-branching-and-collaboration',
+        '13-01-PLAN.md',
+      ),
       '---\nphase: 13\nplan: 01\n---\n\n# Plan\n',
-      'utf-8'
+      'utf-8',
     );
 
     // First set the target branch
-    const setResult = runGsdTools('config-set git.target_branch develop', tmpDir);
+    const setResult = runGsdTools(
+      'config-set git.target_branch develop',
+      tmpDir,
+    );
     assert.ok(setResult.success, `config-set failed: ${setResult.error}`);
 
     // Then verify init execute-phase returns the updated value
@@ -392,7 +543,11 @@ describe('Phase 13 git config keys (GIT-01)', () => {
     assert.ok(initResult.success, `init failed: ${initResult.error}`);
 
     const output = JSON.parse(initResult.output);
-    assert.strictEqual(output.target_branch, 'develop', 'target_branch should be "develop" after config-set');
+    assert.strictEqual(
+      output.target_branch,
+      'develop',
+      'target_branch should be "develop" after config-set',
+    );
   });
 });
 
@@ -431,8 +586,8 @@ describe('config-get command', () => {
     const result = runGsdTools('config-get nonexistent_key', tmpDir);
     assert.strictEqual(result.success, false);
     assert.ok(
-      result.error.includes('Key not found'),
-      `Expected "Key not found" in error: ${result.error}`
+      result.error.includes('Unknown config key'),
+      `Expected "Unknown config key" in error: ${result.error}`,
     );
   });
 
@@ -440,8 +595,8 @@ describe('config-get command', () => {
     const result = runGsdTools('config-get workflow.nonexistent', tmpDir);
     assert.strictEqual(result.success, false);
     assert.ok(
-      result.error.includes('Key not found'),
-      `Expected "Key not found" in error: ${result.error}`
+      result.error.includes('Unknown config key'),
+      `Expected "Unknown config key" in error: ${result.error}`,
     );
   });
 
@@ -452,7 +607,7 @@ describe('config-get command', () => {
       assert.strictEqual(result.success, false);
       assert.ok(
         result.error.includes('No config.json'),
-        `Expected "No config.json" in error: ${result.error}`
+        `Expected "No config.json" in error: ${result.error}`,
       );
     } finally {
       cleanup(emptyTmpDir);
@@ -480,21 +635,30 @@ describe('git commit and versioning config keys', () => {
   });
 
   test('config-set git.commit_format conventional succeeds', () => {
-    const result = runGsdTools('config-set git.commit_format conventional', tmpDir);
+    const result = runGsdTools(
+      'config-set git.commit_format conventional',
+      tmpDir,
+    );
     assert.ok(result.success, `Failed: ${result.error}`);
     const config = readConfig(tmpDir);
     assert.strictEqual(config.git.commit_format, 'conventional');
   });
 
   test('config-set git.commit_template with custom string', () => {
-    const result = runGsdTools(['config-set', 'git.commit_template', '{type}: {description}'], tmpDir);
+    const result = runGsdTools(
+      ['config-set', 'git.commit_template', '{type}: {description}'],
+      tmpDir,
+    );
     assert.ok(result.success, `Failed: ${result.error}`);
     const config = readConfig(tmpDir);
     assert.strictEqual(config.git.commit_template, '{type}: {description}');
   });
 
   test('config-set git.versioning_scheme semver succeeds', () => {
-    const result = runGsdTools('config-set git.versioning_scheme semver', tmpDir);
+    const result = runGsdTools(
+      'config-set git.versioning_scheme semver',
+      tmpDir,
+    );
     assert.ok(result.success, `Failed: ${result.error}`);
     const config = readConfig(tmpDir);
     assert.strictEqual(config.git.versioning_scheme, 'semver');
@@ -524,7 +688,10 @@ describe('issue_tracker.verify_label config key (VERIFY-01)', () => {
 
   // Test 9: config-set issue_tracker.verify_label 'reviewed' succeeds
   test('VERIFY-01 config-set issue_tracker.verify_label reviewed succeeds', () => {
-    const result = runGsdTools('config-set issue_tracker.verify_label reviewed', tmpDir);
+    const result = runGsdTools(
+      'config-set issue_tracker.verify_label reviewed',
+      tmpDir,
+    );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const config = readConfig(tmpDir);
@@ -532,7 +699,10 @@ describe('issue_tracker.verify_label config key (VERIFY-01)', () => {
   });
 
   test('VERIFY-01 config-set issue_tracker.verify_label needs-verification succeeds', () => {
-    const result = runGsdTools(['config-set', 'issue_tracker.verify_label', 'needs-verification'], tmpDir);
+    const result = runGsdTools(
+      ['config-set', 'issue_tracker.verify_label', 'needs-verification'],
+      tmpDir,
+    );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const config = readConfig(tmpDir);
@@ -548,22 +718,37 @@ describe('Per-submodule config keys (SUBMOD-01)', () => {
     tmpDir = createTempProject();
     runGsdTools('config-ensure-section', tmpDir);
   });
-  afterEach(() => { cleanup(tmpDir); });
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
 
   test('SUBMOD-01a: config-set git.submodules.mylib.target_branch is valid', () => {
-    const result = runGsdTools('config-set git.submodules.mylib.target_branch develop', tmpDir);
+    const result = runGsdTools(
+      'config-set git.submodules.mylib.target_branch develop',
+      tmpDir,
+    );
     assert.ok(result.success, `Command failed: ${result.error}`);
     const config = readConfig(tmpDir);
     assert.strictEqual(config.git?.submodules?.mylib?.target_branch, 'develop');
   });
 
   test('SUBMOD-01b: config-set git.submodules.mylib.unknown_key is rejected', () => {
-    const result = runGsdTools('config-set git.submodules.mylib.unknown_key value', tmpDir);
-    assert.strictEqual(result.success, false, 'Should reject unknown per-submodule key');
+    const result = runGsdTools(
+      'config-set git.submodules.mylib.unknown_key value',
+      tmpDir,
+    );
+    assert.strictEqual(
+      result.success,
+      false,
+      'Should reject unknown per-submodule key',
+    );
   });
 
   test('SUBMOD-01c: config-set git.submodule.workspace_branch is rejected with deprecation message', () => {
-    const result = runGsdTools('config-set git.submodule.workspace_branch develop', tmpDir);
+    const result = runGsdTools(
+      'config-set git.submodule.workspace_branch develop',
+      tmpDir,
+    );
     assert.strictEqual(result.success, false, 'Should reject deprecated key');
     assert.match(result.error || result.stderr || '', /deprecated/i);
   });
@@ -576,9 +761,15 @@ describe('Per-submodule config keys (SUBMOD-01)', () => {
     existing.git.submodule = { workspace_branch: 'develop' };
     fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
 
-    const result = runGsdTools('config-get git.submodule.workspace_branch', tmpDir);
+    const result = runGsdTools(
+      'config-get git.submodule.workspace_branch',
+      tmpDir,
+    );
     // Should succeed (returns value for migration) but stderr has warning
-    assert.match(result.stderr || result.output || result.error || '', /deprecated/i);
+    assert.match(
+      result.stderr || result.output || result.error || '',
+      /deprecated/i,
+    );
   });
 });
 
@@ -600,13 +791,16 @@ describe('EFFORT_PROFILES', () => {
     'gsd-integration-checker',
     'gsd-nyquist-auditor',
     'gsd-ui-researcher',
-    'gsd-ui-checker',
     'gsd-ui-auditor',
   ];
 
-  test('Test 1: EFFORT_PROFILES has all 16 agent entries', () => {
+  test('Test 1: EFFORT_PROFILES has all 15 agent entries', () => {
     const agents = Object.keys(EFFORT_PROFILES);
-    assert.strictEqual(agents.length, 16, `Expected 16 agents, got ${agents.length}: ${agents.join(', ')}`);
+    assert.strictEqual(
+      agents.length,
+      15,
+      `Expected 15 agents, got ${agents.length}: ${agents.join(', ')}`,
+    );
     for (const agent of EXPECTED_AGENTS) {
       assert.ok(agent in EFFORT_PROFILES, `Missing agent: ${agent}`);
     }
@@ -625,7 +819,7 @@ describe('EFFORT_PROFILES', () => {
       assert.strictEqual(
         profiles.balanced,
         'inherit',
-        `Expected balanced to be 'inherit' for ${agent}, got '${profiles.balanced}'`
+        `Expected balanced to be 'inherit' for ${agent}, got '${profiles.balanced}'`,
       );
     }
   });
@@ -638,10 +832,10 @@ describe('EFFORT_PROFILES', () => {
     assert.strictEqual(EFFORT_PROFILES['gsd-codebase-mapper'].budget, 'medium');
   });
 
-  test('Test 5: getAgentToEffortMapForProfile quality returns object with all 16 agents mapped', () => {
+  test('Test 5: getAgentToEffortMapForProfile quality returns object with all 15 agents mapped', () => {
     const map = getAgentToEffortMapForProfile('quality');
     assert.strictEqual(typeof map, 'object');
-    assert.strictEqual(Object.keys(map).length, 16);
+    assert.strictEqual(Object.keys(map).length, 15);
     for (const agent of EXPECTED_AGENTS) {
       assert.ok(agent in map, `Missing agent in quality map: ${agent}`);
       assert.strictEqual(typeof map[agent], 'string');
@@ -651,7 +845,11 @@ describe('EFFORT_PROFILES', () => {
   test('Test 6: getAgentToEffortMapForProfile balanced returns all values as inherit', () => {
     const map = getAgentToEffortMapForProfile('balanced');
     for (const [agent, effort] of Object.entries(map)) {
-      assert.strictEqual(effort, 'inherit', `Expected 'inherit' for ${agent}, got '${effort}'`);
+      assert.strictEqual(
+        effort,
+        'inherit',
+        `Expected 'inherit' for ${agent}, got '${effort}'`,
+      );
     }
   });
 
@@ -668,7 +866,11 @@ describe('EFFORT_PROFILES', () => {
     assert.ok('quality' in firstAgent, 'quality profile should exist');
     assert.ok('balanced' in firstAgent, 'balanced profile should exist');
     assert.ok('budget' in firstAgent, 'budget profile should exist');
-    assert.strictEqual(Object.keys(firstAgent).length, 3, 'Should have exactly 3 profiles');
+    assert.strictEqual(
+      Object.keys(firstAgent).length,
+      3,
+      'Should have exactly 3 profiles',
+    );
   });
 
   test('Test 9: EFFORT_PROFILES and MODEL_PROFILES share the same agent set (no key drift)', () => {
@@ -679,12 +881,12 @@ describe('EFFORT_PROFILES', () => {
     assert.deepStrictEqual(
       effortOnly,
       [],
-      `Agents in EFFORT_PROFILES but missing from MODEL_PROFILES (would fall through to default 'sonnet'): ${effortOnly.join(', ')}`
+      `Agents in EFFORT_PROFILES but missing from MODEL_PROFILES (would fall through to default 'sonnet'): ${effortOnly.join(', ')}`,
     );
     assert.deepStrictEqual(
       modelOnly,
       [],
-      `Agents in MODEL_PROFILES but missing from EFFORT_PROFILES: ${modelOnly.join(', ')}`
+      `Agents in MODEL_PROFILES but missing from EFFORT_PROFILES: ${modelOnly.join(', ')}`,
     );
   });
 });
@@ -704,13 +906,25 @@ describe('set-profile effort display and effort_overrides config-set (EFF-04, EF
   });
 
   test('Test 6: cmdConfigSetModelProfile result includes agentToEffortMap field', () => {
-    const result = runGsdTools('config-set-model-profile quality --json', tmpDir);
+    const result = runGsdTools(
+      'config-set-model-profile quality --json',
+      tmpDir,
+    );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.ok('agentToEffortMap' in output, 'result should include agentToEffortMap');
-    assert.ok(typeof output.agentToEffortMap === 'object', 'agentToEffortMap should be an object');
-    assert.ok('gsd-executor' in output.agentToEffortMap, 'agentToEffortMap should have gsd-executor key');
+    assert.ok(
+      'agentToEffortMap' in output,
+      'result should include agentToEffortMap',
+    );
+    assert.ok(
+      typeof output.agentToEffortMap === 'object',
+      'agentToEffortMap should be an object',
+    );
+    assert.ok(
+      'gsd-executor' in output.agentToEffortMap,
+      'agentToEffortMap should have gsd-executor key',
+    );
   });
 
   test('Test 7: set-profile raw message includes "Effort" table header', () => {
@@ -719,93 +933,120 @@ describe('set-profile effort display and effort_overrides config-set (EFF-04, EF
 
     assert.ok(
       result.output.includes('Effort'),
-      `Raw output should contain "Effort" table header. Got: ${result.output.substring(0, 300)}`
+      `Raw output should contain "Effort" table header. Got: ${result.output.substring(0, 300)}`,
     );
   });
 
   test('Test 9: config-set accepts effort_overrides.gsd-executor as valid key', () => {
-    const result = runGsdTools('config-set effort_overrides.gsd-executor max', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides.gsd-executor max',
+      tmpDir,
+    );
     assert.ok(
       result.success,
-      `config-set effort_overrides.gsd-executor should succeed, got error: ${result.error}`
+      `config-set effort_overrides.gsd-executor should succeed, got error: ${result.error}`,
     );
 
     const config = JSON.parse(
-      require('fs').readFileSync(require('path').join(tmpDir, '.planning', 'config.json'), 'utf-8')
+      require('fs').readFileSync(
+        require('path').join(tmpDir, '.planning', 'config.json'),
+        'utf-8',
+      ),
     );
     assert.strictEqual(config.effort_overrides['gsd-executor'], 'max');
   });
 
   test('Test 10: config-set accepts effort_overrides.gsd-planner as valid key', () => {
-    const result = runGsdTools('config-set effort_overrides.gsd-planner high', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides.gsd-planner high',
+      tmpDir,
+    );
     assert.ok(
       result.success,
-      `config-set effort_overrides.gsd-planner should succeed, got error: ${result.error}`
+      `config-set effort_overrides.gsd-planner should succeed, got error: ${result.error}`,
     );
 
     const config = JSON.parse(
-      require('fs').readFileSync(require('path').join(tmpDir, '.planning', 'config.json'), 'utf-8')
+      require('fs').readFileSync(
+        require('path').join(tmpDir, '.planning', 'config.json'),
+        'utf-8',
+      ),
     );
     assert.strictEqual(config.effort_overrides['gsd-planner'], 'high');
   });
 
   test('Test 11: config-set rejects effort_overrides_typo.gsd-executor as invalid key', () => {
-    const result = runGsdTools('config-set effort_overrides_typo.gsd-executor max', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides_typo.gsd-executor max',
+      tmpDir,
+    );
     assert.strictEqual(
       result.success,
       false,
-      'effort_overrides_typo.gsd-executor should be rejected as unknown config key'
+      'effort_overrides_typo.gsd-executor should be rejected as unknown config key',
     );
     assert.ok(
       result.error.includes('Unknown config key'),
-      `Expected "Unknown config key" in error, got: ${result.error}`
+      `Expected "Unknown config key" in error, got: ${result.error}`,
     );
   });
 
   test('Test 12: config-set accepts effort_overrides.gsd-executor xhigh', () => {
-    const result = runGsdTools('config-set effort_overrides.gsd-executor xhigh', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides.gsd-executor xhigh',
+      tmpDir,
+    );
     assert.ok(
       result.success,
-      `config-set effort_overrides.gsd-executor xhigh should succeed, got error: ${result.error}`
+      `config-set effort_overrides.gsd-executor xhigh should succeed, got error: ${result.error}`,
     );
 
     const config = JSON.parse(
-      require('fs').readFileSync(require('path').join(tmpDir, '.planning', 'config.json'), 'utf-8')
+      require('fs').readFileSync(
+        require('path').join(tmpDir, '.planning', 'config.json'),
+        'utf-8',
+      ),
     );
     assert.strictEqual(config.effort_overrides['gsd-executor'], 'xhigh');
   });
 
   test('Test 13: config-set rejects invalid effort value (typo xhign)', () => {
-    const result = runGsdTools('config-set effort_overrides.gsd-executor xhign', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides.gsd-executor xhign',
+      tmpDir,
+    );
     assert.strictEqual(
       result.success,
       false,
-      'effort_overrides.gsd-executor xhign should be rejected as invalid effort value'
+      'effort_overrides.gsd-executor xhign should be rejected as invalid effort value',
     );
     assert.ok(
       result.error.includes('xhign'),
-      `Expected "xhign" in error, got: ${result.error}`
+      `Expected "xhign" in error, got: ${result.error}`,
     );
     assert.ok(
       result.error.includes('low, medium, high, xhigh, max, inherit'),
-      `Expected valid values list in error, got: ${result.error}`
+      `Expected valid values list in error, got: ${result.error}`,
     );
   });
 
   test('Test 14: config-set rejects invalid effort value (banana)', () => {
-    const result = runGsdTools('config-set effort_overrides.gsd-executor banana', tmpDir);
+    const result = runGsdTools(
+      'config-set effort_overrides.gsd-executor banana',
+      tmpDir,
+    );
     assert.strictEqual(
       result.success,
       false,
-      'effort_overrides.gsd-executor banana should be rejected as invalid effort value'
+      'effort_overrides.gsd-executor banana should be rejected as invalid effort value',
     );
     assert.ok(
       result.error.includes('banana'),
-      `Expected "banana" in error, got: ${result.error}`
+      `Expected "banana" in error, got: ${result.error}`,
     );
     assert.ok(
       result.error.includes('low, medium, high, xhigh, max, inherit'),
-      `Expected valid values list in error, got: ${result.error}`
+      `Expected valid values list in error, got: ${result.error}`,
     );
   });
 });
@@ -819,13 +1060,17 @@ describe('Phase 55 — effort sync wiring', () => {
   afterEach(() => {
     if (tmpDir) cleanup(tmpDir);
     if (copilotMarkerDir) {
-      try { cleanup(copilotMarkerDir); } catch {}
+      try {
+        cleanup(copilotMarkerDir);
+      } catch {}
       copilotMarkerDir = undefined;
     }
   });
 
   function makeCopilotMarkerDir() {
-    const dir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-copilot-marker-'));
+    const dir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-copilot-marker-'),
+    );
     fs.writeFileSync(path.join(dir, '.runtime'), 'copilot\n', 'utf-8');
     return dir;
   }
@@ -838,9 +1083,12 @@ describe('Phase 55 — effort sync wiring', () => {
     assert.ok(result.success, `command failed: ${result.error}`);
     assert.ok(
       result.stderr.includes('Restart Claude Code to apply effort changes.'),
-      `restart notice missing from stderr: ${result.stderr}`
+      `restart notice missing from stderr: ${result.stderr}`,
     );
-    const planner = fs.readFileSync(path.join(tmpDir, '.claude/agents/gsd-planner.md'), 'utf-8');
+    const planner = fs.readFileSync(
+      path.join(tmpDir, '.claude/agents/gsd-planner.md'),
+      'utf-8',
+    );
     assert.match(planner, /^effort: max$/m);
   });
 
@@ -850,13 +1098,19 @@ describe('Phase 55 — effort sync wiring', () => {
     });
     // First sync to baseline
     runGsdTools(['config-set-model-profile', 'quality'], tmpDir);
-    const result = runGsdTools(['config-set', 'effort_overrides.gsd-executor', 'low'], tmpDir);
+    const result = runGsdTools(
+      ['config-set', 'effort_overrides.gsd-executor', 'low'],
+      tmpDir,
+    );
     assert.ok(result.success, `command failed: ${result.error}`);
     assert.ok(
       result.stderr.includes('Restart Claude Code to apply effort changes.'),
-      `restart notice missing: ${result.stderr}`
+      `restart notice missing: ${result.stderr}`,
     );
-    const executor = fs.readFileSync(path.join(tmpDir, '.claude/agents/gsd-executor.md'), 'utf-8');
+    const executor = fs.readFileSync(
+      path.join(tmpDir, '.claude/agents/gsd-executor.md'),
+      'utf-8',
+    );
     assert.match(executor, /^effort: low$/m);
   });
 
@@ -869,7 +1123,7 @@ describe('Phase 55 — effort sync wiring', () => {
     assert.ok(result.success);
     assert.ok(
       !result.stderr.includes('Restart Claude Code'),
-      `restart notice should NOT appear when no changes: stderr was: ${result.stderr}`
+      `restart notice should NOT appear when no changes: stderr was: ${result.stderr}`,
     );
   });
 
@@ -877,23 +1131,36 @@ describe('Phase 55 — effort sync wiring', () => {
     copilotMarkerDir = makeCopilotMarkerDir();
     tmpDir = createTempProjectWithAgents(['gsd-planner'], {
       // hand-edited copilot config that includes profile keys (the strip must hide them)
-      config: { model_profile: 'quality', effort_overrides: { 'gsd-executor': 'high' } },
+      config: {
+        model_profile: 'quality',
+        effort_overrides: { 'gsd-executor': 'high' },
+      },
     });
     const env = { GSD_TEST_RUNTIME_MARKER_DIR: copilotMarkerDir };
     // With --default flag, Copilot consumer gets the default (key treated as not-present)
-    const withDefault = runGsdTools(['config-get', 'model_profile', '--default', 'balanced'], tmpDir, env);
-    assert.ok(withDefault.success, `expected success with --default, got: ${withDefault.error}`);
+    const withDefault = runGsdTools(
+      ['config-get', 'model_profile', '--default', 'balanced'],
+      tmpDir,
+      env,
+    );
+    assert.ok(
+      withDefault.success,
+      `expected success with --default, got: ${withDefault.error}`,
+    );
     assert.match(
       withDefault.output.trim(),
       /^balanced$/,
-      `expected default 'balanced', got: ${withDefault.output}`
+      `expected default 'balanced', got: ${withDefault.output}`,
     );
     // Without --default, Copilot consumer gets a Key not found error
     const noDefault = runGsdTools(['config-get', 'model_profile'], tmpDir, env);
-    assert.ok(!noDefault.success, `expected failure without --default, but command succeeded`);
+    assert.ok(
+      !noDefault.success,
+      `expected failure without --default, but command succeeded`,
+    );
     assert.ok(
       (noDefault.stderr || noDefault.error || '').includes('Key not found'),
-      `expected 'Key not found' error, got stderr=${noDefault.stderr} error=${noDefault.error}`
+      `expected 'Key not found' error, got stderr=${noDefault.stderr} error=${noDefault.error}`,
     );
   });
 
@@ -903,7 +1170,11 @@ describe('Phase 55 — effort sync wiring', () => {
     });
     const result = runGsdTools(['config-get', 'model_profile'], tmpDir);
     assert.ok(result.success, `expected success, got: ${result.error}`);
-    assert.match(result.output.trim(), /^quality$/, `expected 'quality', got: ${result.output}`);
+    assert.match(
+      result.output.trim(),
+      /^quality$/,
+      `expected 'quality', got: ${result.output}`,
+    );
   });
 
   test('EFFSYNC-CONFIG-06: config-get effort_overrides.gsd-executor is gated on Copilot runtime', () => {
@@ -911,11 +1182,18 @@ describe('Phase 55 — effort sync wiring', () => {
     tmpDir = createTempProjectWithAgents(['gsd-planner'], {
       config: { effort_overrides: { 'gsd-executor': 'high' } },
     });
-    const result = runGsdTools(['config-get', 'effort_overrides.gsd-executor'], tmpDir, { GSD_TEST_RUNTIME_MARKER_DIR: copilotMarkerDir });
-    assert.ok(!result.success, `expected failure on copilot, but command succeeded with output: ${result.output}`);
+    const result = runGsdTools(
+      ['config-get', 'effort_overrides.gsd-executor'],
+      tmpDir,
+      { GSD_TEST_RUNTIME_MARKER_DIR: copilotMarkerDir },
+    );
+    assert.ok(
+      !result.success,
+      `expected failure on copilot, but command succeeded with output: ${result.output}`,
+    );
     assert.ok(
       (result.stderr || result.error || '').includes('Key not found'),
-      `expected 'Key not found' error, got stderr=${result.stderr} error=${result.error}`
+      `expected 'Key not found' error, got stderr=${result.stderr} error=${result.error}`,
     );
   });
 
@@ -923,16 +1201,28 @@ describe('Phase 55 — effort sync wiring', () => {
     tmpDir = createTempProjectWithAgents(['gsd-planner'], {
       config: { runtime: 'claude', model_profile: 'balanced' },
     });
-    const result = runGsdTools(['config-set', 'model_profile', 'quality'], tmpDir);
-    assert.ok(!result.success, `expected failure, but config-set model_profile succeeded: ${result.output}`);
-    const msg = (result.stderr || result.error || '');
+    const result = runGsdTools(
+      ['config-set', 'model_profile', 'quality'],
+      tmpDir,
+    );
+    assert.ok(
+      !result.success,
+      `expected failure, but config-set model_profile succeeded: ${result.output}`,
+    );
+    const msg = result.stderr || result.error || '';
     assert.ok(
       msg.includes('config-set-model-profile'),
-      `error should name the correct command, got: ${msg}`
+      `error should name the correct command, got: ${msg}`,
     );
     // The key must NOT have been written (value still matches the pre-seeded profile).
-    const cfg = JSON.parse(fs.readFileSync(path.join(tmpDir, '.planning/config.json'), 'utf-8'));
-    assert.strictEqual(cfg.model_profile, 'balanced', 'config must be untouched by rejected set');
+    const cfg = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, '.planning/config.json'), 'utf-8'),
+    );
+    assert.strictEqual(
+      cfg.model_profile,
+      'balanced',
+      'config must be untouched by rejected set',
+    );
   });
 });
 
@@ -971,7 +1261,10 @@ describe('ensureConfigFile error paths', () => {
     const tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-test-'));
     // Place a file at the path .planning/ would occupy. fs.existsSync returns
     // true (so mkdirSync is skipped at L102), then writeFileSync fails at L162.
-    fs.writeFileSync(path.join(tmpDir, '.planning'), 'i am a file, not a directory');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning'),
+      'i am a file, not a directory',
+    );
     try {
       const result = runGsdTools(['config-ensure-section'], tmpDir);
       assert.strictEqual(result.success, false);
@@ -1000,14 +1293,19 @@ describe('global defaults.json depth-to-granularity migration', () => {
     );
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       // defaults.json should be rewritten with granularity, depth removed.
       const after = JSON.parse(
         fs.readFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), 'utf-8'),
       );
-      assert.ok(!('depth' in after), 'depth should be removed from defaults.json');
+      assert.ok(
+        !('depth' in after),
+        'depth should be removed from defaults.json',
+      );
       assert.strictEqual(after.granularity, 'standard');
 
       // Newly created config.json should pick up the migrated granularity value.
@@ -1031,13 +1329,19 @@ describe('global defaults.json depth-to-granularity migration', () => {
     );
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       const after = JSON.parse(
         fs.readFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), 'utf-8'),
       );
-      assert.strictEqual(after.granularity, 'coarse', 'quick should map to coarse');
+      assert.strictEqual(
+        after.granularity,
+        'coarse',
+        'quick should map to coarse',
+      );
     } finally {
       cleanup(tmpDir);
       cleanup(tmpHome);
@@ -1058,13 +1362,19 @@ describe('global defaults.json depth-to-granularity migration', () => {
     );
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       const after = JSON.parse(
         fs.readFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), 'utf-8'),
       );
-      assert.strictEqual(after.granularity, 'verbose', 'unknown depth should pass through unchanged');
+      assert.strictEqual(
+        after.granularity,
+        'verbose',
+        'unknown depth should pass through unchanged',
+      );
     } finally {
       cleanup(tmpDir);
       cleanup(tmpHome);
@@ -1088,7 +1398,9 @@ describe('global defaults.json depth-to-granularity migration', () => {
     fs.chmodSync(defaultsPath, 0o444);
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       // Migration's catch is empty — the write failure is silently swallowed and
       // ensureConfigFile still creates config.json with the migrated value in memory.
       assert.ok(
@@ -1117,7 +1429,9 @@ describe('global defaults.json depth-to-granularity migration', () => {
     );
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       // defaults.json untouched — both keys still present.
@@ -1137,17 +1451,29 @@ describe('global defaults.json depth-to-granularity migration', () => {
 
     const tmpHome = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-home-'));
     fs.mkdirSync(path.join(tmpHome, '.gsd'), { recursive: true });
-    fs.writeFileSync(path.join(tmpHome, '.gsd', 'defaults.json'), 'NOT_VALID_JSON{{{');
+    fs.writeFileSync(
+      path.join(tmpHome, '.gsd', 'defaults.json'),
+      'NOT_VALID_JSON{{{',
+    );
 
     try {
-      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, { HOME: tmpHome });
+      const result = runGsdTools(['config-ensure-section', '--json'], tmpDir, {
+        HOME: tmpHome,
+      });
       assert.ok(
         result.success,
         `Command should succeed despite malformed defaults: ${result.error}`,
       );
       const config = readConfig(tmpDir);
-      assert.strictEqual(typeof config.model_profile, 'string', 'should fall through to hardcoded defaults');
-      assert.ok('workflow' in config, 'workflow defaults should still be applied');
+      assert.strictEqual(
+        typeof config.model_profile,
+        'string',
+        'should fall through to hardcoded defaults',
+      );
+      assert.ok(
+        'workflow' in config,
+        'workflow defaults should still be applied',
+      );
     } finally {
       cleanup(tmpDir);
       cleanup(tmpHome);
@@ -1158,7 +1484,10 @@ describe('global defaults.json depth-to-granularity migration', () => {
 describe('setConfigValue error paths', () => {
   test('errors when config.json is unreadable JSON', () => {
     const tmpDir = createTempProject();
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), 'NOT_VALID_JSON{{{');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      'NOT_VALID_JSON{{{',
+    );
     try {
       const result = runGsdTools(['config-set', 'mode', 'interactive'], tmpDir);
       assert.strictEqual(result.success, false);
@@ -1196,7 +1525,10 @@ describe('setConfigValue error paths', () => {
     // Empty config (no nested objects yet)
     writeConfig(tmpDir, {});
     try {
-      const result = runGsdTools(['config-set', 'workflow.research', 'false'], tmpDir);
+      const result = runGsdTools(
+        ['config-set', 'workflow.research', 'false'],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       const config = readConfig(tmpDir);
       assert.strictEqual(typeof config.workflow, 'object');
@@ -1211,7 +1543,10 @@ describe('setConfigValue error paths', () => {
     // workflow is a primitive — setConfigValue should overwrite with {}.
     writeConfig(tmpDir, { workflow: 'oops' });
     try {
-      const result = runGsdTools(['config-set', 'workflow.research', 'true'], tmpDir);
+      const result = runGsdTools(
+        ['config-set', 'workflow.research', 'true'],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       const config = readConfig(tmpDir);
       assert.strictEqual(typeof config.workflow, 'object');
@@ -1227,7 +1562,10 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
     const tmpDir = createTempProject();
     // No config.json at all
     try {
-      const result = runGsdTools(['config-get', 'mode', '--default', 'interactive'], tmpDir);
+      const result = runGsdTools(
+        ['config-get', 'mode', '--default', 'interactive'],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       assert.strictEqual(result.output.trim(), 'interactive');
     } finally {
@@ -1237,7 +1575,10 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
 
   test('errors when corrupt config.json triggers JSON.parse catch (not the No-config re-throw)', () => {
     const tmpDir = createTempProject();
-    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), 'NOT_VALID_JSON{{{');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      'NOT_VALID_JSON{{{',
+    );
     try {
       const result = runGsdTools(['config-get', 'mode'], tmpDir);
       assert.strictEqual(result.success, false);
@@ -1270,12 +1611,15 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
     const tmpDir = createTempProject();
     writeConfig(tmpDir, { workflow: 'not-an-object' });
     try {
-      const result = runGsdTools(['config-get', 'workflow.research.deep'], tmpDir);
+      const result = runGsdTools(
+        ['config-get', 'workflow.research.deep'],
+        tmpDir,
+      );
       assert.strictEqual(result.success, false);
       assert.match(
         result.stderr,
-        /Key not found: workflow\.research\.deep/,
-        `Expected Key not found error, got: ${result.stderr}`,
+        /Unknown config key: "workflow\.research\.deep"/,
+        `Expected Unknown config key error, got: ${result.stderr}`,
       );
     } finally {
       cleanup(tmpDir);
@@ -1299,9 +1643,14 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
 
   test('emits deprecation warning on stderr for git.submodule.workspace_branch (with value present)', () => {
     const tmpDir = createTempProject();
-    writeConfig(tmpDir, { git: { submodule: { workspace_branch: 'develop' } } });
+    writeConfig(tmpDir, {
+      git: { submodule: { workspace_branch: 'develop' } },
+    });
     try {
-      const result = runGsdTools(['config-get', 'git.submodule.workspace_branch'], tmpDir);
+      const result = runGsdTools(
+        ['config-get', 'git.submodule.workspace_branch'],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       assert.match(
         result.stderr,
@@ -1319,7 +1668,14 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
     // so the !keyPath guard inside cmdConfigGet is unreachable through the CLI.
     // Spawn a child that requires the lib directly and lets process.exit fire safely.
     const { spawnSync } = require('child_process');
-    const libPath = path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'config.cjs');
+    const libPath = path.join(
+      __dirname,
+      '..',
+      'gsd-ng',
+      'bin',
+      'lib',
+      'config.cjs',
+    );
     const r = spawnSync(
       process.execPath,
       [
@@ -1328,7 +1684,11 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
       ],
       { encoding: 'utf-8' },
     );
-    assert.strictEqual(r.status, 1, `Expected exit 1, got ${r.status}. stderr: ${r.stderr}`);
+    assert.strictEqual(
+      r.status,
+      1,
+      `Expected exit 1, got ${r.status}. stderr: ${r.stderr}`,
+    );
     assert.match(
       r.stderr,
       /Usage: config-get <key\.path>/,
@@ -1340,7 +1700,9 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
 describe('cmdConfigGet copilot runtime profile/effort gating', () => {
   test('strips effort_overrides.* keys with --default on copilot runtime', () => {
     const tmpDir = createTempProject();
-    const markerDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-copilot-marker-'));
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-copilot-marker-'),
+    );
     fs.writeFileSync(path.join(markerDir, '.runtime'), 'copilot\n', 'utf-8');
     writeConfig(tmpDir, {
       effort_overrides: { 'gsd-executor': 'high' },
@@ -1361,7 +1723,9 @@ describe('cmdConfigGet copilot runtime profile/effort gating', () => {
 
   test('strips model_overrides.* keys (errors without default) on copilot runtime', () => {
     const tmpDir = createTempProject();
-    const markerDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-copilot-marker-'));
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-copilot-marker-'),
+    );
     fs.writeFileSync(path.join(markerDir, '.runtime'), 'copilot\n', 'utf-8');
     writeConfig(tmpDir, {
       model_overrides: { 'gsd-executor': 'opus' },
@@ -1390,7 +1754,14 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
     // validateArgs blocks the missing-arg case at the CLI dispatcher, so the
     // !profile guard is unreachable through gsd-tools. Spawn a child to hit it.
     const { spawnSync } = require('child_process');
-    const libPath = path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'config.cjs');
+    const libPath = path.join(
+      __dirname,
+      '..',
+      'gsd-ng',
+      'bin',
+      'lib',
+      'config.cjs',
+    );
     const r = spawnSync(
       process.execPath,
       [
@@ -1399,7 +1770,11 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
       ],
       { encoding: 'utf-8' },
     );
-    assert.strictEqual(r.status, 1, `Expected exit 1, got ${r.status}. stderr: ${r.stderr}`);
+    assert.strictEqual(
+      r.status,
+      1,
+      `Expected exit 1, got ${r.status}. stderr: ${r.stderr}`,
+    );
     assert.match(
       r.stderr,
       /Usage: config-set-model-profile/,
@@ -1411,7 +1786,10 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
     const tmpDir = createTempProject();
     runGsdTools(['config-ensure-section'], tmpDir);
     try {
-      const result = runGsdTools(['config-set-model-profile', 'invalid-profile-xyz'], tmpDir);
+      const result = runGsdTools(
+        ['config-set-model-profile', 'invalid-profile-xyz'],
+        tmpDir,
+      );
       assert.strictEqual(result.success, false);
       assert.match(
         result.stderr,
@@ -1432,7 +1810,10 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
     const tmpDir = createTempProject();
     try {
       // Mixed-case + leading space exercises both lowerCase and trim.
-      const result = runGsdTools(['config-set-model-profile', '  QUALITY  '], tmpDir);
+      const result = runGsdTools(
+        ['config-set-model-profile', '  QUALITY  '],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       const config = readConfig(tmpDir);
       assert.strictEqual(config.model_profile, 'quality');
@@ -1448,7 +1829,10 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
     // fallback. ensureConfigFile sees the existing file and returns early.
     writeConfig(tmpDir, { commit_docs: false });
     try {
-      const result = runGsdTools(['config-set-model-profile', 'quality', '--json'], tmpDir);
+      const result = runGsdTools(
+        ['config-set-model-profile', 'quality', '--json'],
+        tmpDir,
+      );
       assert.ok(result.success, `Command failed: ${result.error}`);
       const out = JSON.parse(result.output);
       assert.strictEqual(out.previousProfile, 'balanced');
@@ -1458,5 +1842,146 @@ describe('cmdConfigSetModelProfile validation and normalization', () => {
     } finally {
       cleanup(tmpDir);
     }
+  });
+});
+
+// ─── Config CRUD: workflow.ui_safety_gate legacy compatibility ──
+
+describe('Config CRUD (workflow.ui_safety_gate legacy compatibility)', () => {
+  test('config.json containing legacy workflow.ui_safety_gate is silently readable for OTHER keys', () => {
+    // Setup: write a config.json with the removed key alongside a known-good key
+    const tmpDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-cfg-legacy-'),
+    );
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'config.json'),
+      JSON.stringify(
+        {
+          mode: 'interactive',
+          workflow: {
+            ui_safety_gate: true, // the removed key — must be silently ignored on read
+            verifier: false, // a valid key we will read
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    // Read an UNRELATED key — must succeed without error
+    const result = spawnSync(
+      'node',
+      [
+        path.join(REPO_ROOT, 'gsd-ng/bin/gsd-tools.cjs'),
+        'config-get',
+        'workflow.verifier',
+      ],
+      { cwd: tmpDir, encoding: 'utf8' },
+    );
+
+    assert.strictEqual(
+      result.status,
+      0,
+      `config-get failed: stdout=${result.stdout} stderr=${result.stderr}`,
+    );
+    assert.strictEqual(
+      result.stdout.trim(),
+      'false',
+      `Expected 'false', got '${result.stdout.trim()}'`,
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /ui_safety_gate/,
+      'Reader emitted warning about ui_safety_gate — should be silent',
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /[Ww]arning|[Ee]rror|[Dd]eprecat/,
+      `Reader emitted noise: ${result.stderr}`,
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('cmdConfigSet workflow.ui_safety_gate true errors with Unknown config key', () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-cfg-legacy-w-'),
+    );
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'config.json'),
+      JSON.stringify({ mode: 'interactive' }, null, 2),
+    );
+
+    const result = spawnSync(
+      'node',
+      [
+        path.join(REPO_ROOT, 'gsd-ng/bin/gsd-tools.cjs'),
+        'config-set',
+        'workflow.ui_safety_gate',
+        'true',
+      ],
+      { cwd: tmpDir, encoding: 'utf8' },
+    );
+
+    assert.notStrictEqual(
+      result.status,
+      0,
+      'config-set should fail for unknown key',
+    );
+    const combined = (result.stdout || '') + (result.stderr || '');
+    assert.match(
+      combined,
+      /[Uu]nknown config key/,
+      `Expected "Unknown config key" error, got: ${combined}`,
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('cmdConfigGet workflow.ui_safety_gate errors with Unknown config key (direct lookup)', () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-cfg-legacy-r-'),
+    );
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'config.json'),
+      JSON.stringify(
+        {
+          mode: 'interactive',
+          workflow: { ui_safety_gate: true, verifier: false },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const result = spawnSync(
+      'node',
+      [
+        path.join(REPO_ROOT, 'gsd-ng/bin/gsd-tools.cjs'),
+        'config-get',
+        'workflow.ui_safety_gate',
+      ],
+      { cwd: tmpDir, encoding: 'utf8' },
+    );
+
+    assert.notStrictEqual(
+      result.status,
+      0,
+      'config-get should fail for unknown key (direct lookup)',
+    );
+    const combined = (result.stdout || '') + (result.stderr || '');
+    assert.match(
+      combined,
+      /[Uu]nknown config key/,
+      `Expected "Unknown config key" error, got: ${combined}`,
+    );
+
+    cleanup(tmpDir);
   });
 });

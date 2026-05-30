@@ -99,8 +99,7 @@ Boolean toggles that gate optional steps in GSD workflows. Set to `false` to dis
 | `workflow.plan_check` | `true` | Spawn plan checker during `plan-phase` |
 | `workflow.verifier` | `true` | Spawn verifier subagent during `execute-phase` |
 | `workflow.nyquist_validation` | `true` | Validation-architecture research during `plan-phase` |
-| `workflow.ui_phase` | `true` | Generate UI-SPEC.md design contracts for frontend phases |
-| `workflow.ui_safety_gate` | `true` | Prompt to run `{{COMMAND_PREFIX}}ui-phase` before planning frontend phases |
+| `workflow.ui_phase` | `true` | Enable UI design + audit features (master toggle for `{{COMMAND_PREFIX}}ui-phase` and `{{COMMAND_PREFIX}}ui-review`) |
 | `workflow.node_repair` | `true` | Auto-attempt RETRY/DECOMPOSE/PRUNE on verification failure during `execute-plan` |
 | `workflow.node_repair_budget` | `2` | Max repair attempts per failing task before ESCALATE |
 | `workflow.incremental_remap` | `true` | Auto-update codebase docs after phase completion via `gsd-incremental-mapper` agents. Set `false` to skip — useful when codebase docs are intentionally manual or when phase work doesn't touch documented modules. |

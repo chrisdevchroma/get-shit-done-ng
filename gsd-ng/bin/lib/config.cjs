@@ -37,9 +37,9 @@ const VALID_CONFIG_KEYS = new Set([
   'workflow.verifier',
   'workflow.nyquist_validation',
   'workflow.ui_phase',
-  'workflow.ui_safety_gate',
   'workflow._auto_chain_active',
   'workflow.guardrail_enabled',
+  'workflow.auto_advance',
   'git.branching_strategy',
   'git.phase_branch_template',
   'git.milestone_branch_template',
@@ -327,6 +327,23 @@ function cmdConfigGet(cwd, keyPath, defaultValue) {
     }
     error(`Key not found: ${keyPath}`);
     return;
+  }
+
+  // Deprecated keys (warned about above) bypass the allowlist so callers
+  // can still read their value during migration.
+  if (
+    keyPath !== 'git.submodule.workspace_branch' &&
+    !VALID_CONFIG_KEYS.has(keyPath) &&
+    !SUBMODULE_KEY_PATTERN.test(keyPath) &&
+    !EFFORT_OVERRIDE_KEY_PATTERN.test(keyPath)
+  ) {
+    if (defaultValue !== undefined) {
+      output(defaultValue, String(defaultValue));
+      return;
+    }
+    error(
+      `Unknown config key: "${keyPath}". Valid keys: ${[...VALID_CONFIG_KEYS].sort().join(', ')}`,
+    );
   }
 
   let config = {};

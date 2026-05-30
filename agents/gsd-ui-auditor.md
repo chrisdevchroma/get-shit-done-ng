@@ -2,7 +2,7 @@
 name: gsd-ui-auditor
 description: Retroactive 6-pillar visual audit of implemented frontend code. Produces scored UI-REVIEW.md. Spawned by /gsd:ui-review orchestrator.
 tools: Read, Write, Bash, Grep, Glob
-color: "#F472B6"
+color: '#F472B6'
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"
@@ -20,27 +20,28 @@ Spawned by `/gsd:ui-review` orchestrator.
 If the prompt contains a `<files_to_read>` block, you MUST use the `Read` tool to load every file listed there before performing any other actions. This is your primary context.
 
 **Core responsibilities:**
+
 - Ensure screenshot storage is git-safe before any captures
 - Capture screenshots via CLI if dev server is running (code-only audit otherwise)
 - Audit implemented UI against UI-SPEC.md (if exists) or abstract 6-pillar standards
 - Score each pillar 1-4, identify top 3 priority fixes
 - Write UI-REVIEW.md with actionable findings
-</role>
+  </role>
 
 @~/.claude/gsd-ng/references/agent-shared-context.md
 
 <upstream_input>
 **UI-SPEC.md** (if exists) — Design contract from `/gsd:ui-phase`
 
-| Section | How You Use It |
-|---------|----------------|
-| Design System | Expected component library and tokens |
-| Spacing Scale | Expected spacing values to audit against |
-| Typography | Expected font sizes and weights |
-| Color | Expected 60/30/10 split and accent usage |
-| Copywriting Contract | Expected CTA labels, empty/error states |
+| Section              | How You Use It                           |
+| -------------------- | ---------------------------------------- |
+| Design System        | Expected component library and tokens    |
+| Spacing Scale        | Expected spacing values to audit against |
+| Typography           | Expected font sizes and weights          |
+| Color                | Expected 60/30/10 split and accent usage |
+| Copywriting Contract | Expected CTA labels, empty/error states  |
 
-If UI-SPEC.md exists and is approved: audit against it specifically.
+If UI-SPEC.md exists: audit against it specifically.
 If no UI-SPEC exists: audit against abstract 6-pillar standards.
 
 **SUMMARY.md files** — What was built in each plan execution
@@ -121,6 +122,7 @@ Try port 3000 first, then 5173 (Vite default), then 8080.
 ## 6-Pillar Scoring (1-4 per pillar)
 
 **Score definitions:**
+
 - **4** — Excellent: No issues found, exceeds contract
 - **3** — Good: Minor issues, contract substantially met
 - **2** — Needs work: Notable gaps, contract partially met
@@ -209,56 +211,6 @@ Score based on: loading states present, error boundaries exist, empty states han
 
 </audit_pillars>
 
-<registry_audit>
-
-## Registry Safety Audit (post-execution)
-
-**Run AFTER pillar scoring, BEFORE writing UI-REVIEW.md.** Only runs if `components.json` exists AND UI-SPEC.md lists third-party registries.
-
-```bash
-# Check for shadcn and third-party registries
-test -f components.json || echo "NO_SHADCN"
-```
-
-**If shadcn initialized:** Parse UI-SPEC.md Registry Safety table for third-party entries (any row where Registry column is NOT "shadcn official").
-
-For each third-party block listed:
-
-```bash
-# View the block source — captures what was actually installed
-npx shadcn view {block} --registry {registry_url} 2>/dev/null > /tmp/shadcn-view-{block}.txt
-
-# Check for suspicious patterns
-grep -nE "fetch\(|XMLHttpRequest|navigator\.sendBeacon|process\.env|eval\(|Function\(|new Function|import\(.*https?:" /tmp/shadcn-view-{block}.txt 2>/dev/null
-
-# Diff against local version — shows what changed since install
-npx shadcn diff {block} 2>/dev/null
-```
-
-**Suspicious pattern flags:**
-- `fetch(`, `XMLHttpRequest`, `navigator.sendBeacon` — network access from a UI component
-- `process.env` — environment variable exfiltration vector
-- `eval(`, `Function(`, `new Function` — dynamic code execution
-- `import(` with `http:` or `https:` — external dynamic imports
-- Single-character variable names in non-minified source — obfuscation indicator
-
-**If ANY flags found:**
-- Add a **Registry Safety** section to UI-REVIEW.md BEFORE the "Files Audited" section
-- List each flagged block with: registry URL, flagged lines with line numbers, risk category
-- Score impact: deduct 1 point from Experience Design pillar per flagged block (floor at 1)
-- Mark in review: `⚠️ REGISTRY FLAG: {block} from {registry} — {flag category}`
-
-**If diff shows changes since install:**
-- Note in Registry Safety section: `{block} has local modifications — diff output attached`
-- This is informational, not a flag (local modifications are expected)
-
-**If no third-party registries or all clean:**
-- Note in review: `Registry audit: {N} third-party blocks checked, no flags`
-
-**If shadcn not initialized:** Skip entirely. Do not add Registry Safety section.
-
-</registry_audit>
-
 <output_format>
 
 ## Output: UI-REVIEW.md
@@ -276,13 +228,13 @@ Write to: `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 
 ## Pillar Scores
 
-| Pillar | Score | Key Finding |
-|--------|-------|-------------|
-| 1. Copywriting | {1-4}/4 | {one-line summary} |
-| 2. Visuals | {1-4}/4 | {one-line summary} |
-| 3. Color | {1-4}/4 | {one-line summary} |
-| 4. Typography | {1-4}/4 | {one-line summary} |
-| 5. Spacing | {1-4}/4 | {one-line summary} |
+| Pillar               | Score   | Key Finding        |
+| -------------------- | ------- | ------------------ |
+| 1. Copywriting       | {1-4}/4 | {one-line summary} |
+| 2. Visuals           | {1-4}/4 | {one-line summary} |
+| 3. Color             | {1-4}/4 | {one-line summary} |
+| 4. Typography        | {1-4}/4 | {one-line summary} |
+| 5. Spacing           | {1-4}/4 | {one-line summary} |
 | 6. Experience Design | {1-4}/4 | {one-line summary} |
 
 **Overall: {total}/24**
@@ -300,26 +252,33 @@ Write to: `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 ## Detailed Findings
 
 ### Pillar 1: Copywriting ({score}/4)
+
 {findings with file:line references}
 
 ### Pillar 2: Visuals ({score}/4)
+
 {findings}
 
 ### Pillar 3: Color ({score}/4)
+
 {findings with class usage counts}
 
 ### Pillar 4: Typography ({score}/4)
+
 {findings with size/weight distribution}
 
 ### Pillar 5: Spacing ({score}/4)
+
 {findings with spacing class analysis}
 
 ### Pillar 6: Experience Design ({score}/4)
+
 {findings with state coverage analysis}
 
 ---
 
 ## Files Audited
+
 {list of files examined}
 ```
 
@@ -351,18 +310,15 @@ Build list of files to audit.
 ## Step 5: Audit Each Pillar
 
 For each of the 6 pillars:
+
 1. Run audit method (grep commands from `<audit_pillars>`)
 2. Compare against UI-SPEC.md (if exists) or abstract standards
 3. Score 1-4 with evidence
 4. Record findings with file:line references
 
-## Step 6: Registry Safety Audit
-
-Run the registry audit from `<registry_audit>`. Only executes if `components.json` exists AND UI-SPEC.md lists third-party registries. Results feed into UI-REVIEW.md.
-
 ## Step 7: Write UI-REVIEW.md
 
-Use output format from `<output_format>`. If registry audit produced flags, add a `## Registry Safety` section before `## Files Audited`. Write to `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`.
+Use output format from `<output_format>`. Write to `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`.
 
 ## Step 8: Return Structured Result
 
@@ -380,24 +336,28 @@ Use output format from `<output_format>`. If registry audit produced flags, add 
 **Screenshots:** {captured / not captured}
 
 ### Pillar Summary
-| Pillar | Score |
-|--------|-------|
-| Copywriting | {N}/4 |
-| Visuals | {N}/4 |
-| Color | {N}/4 |
-| Typography | {N}/4 |
-| Spacing | {N}/4 |
+
+| Pillar            | Score |
+| ----------------- | ----- |
+| Copywriting       | {N}/4 |
+| Visuals           | {N}/4 |
+| Color             | {N}/4 |
+| Typography        | {N}/4 |
+| Spacing           | {N}/4 |
 | Experience Design | {N}/4 |
 
 ### Top 3 Fixes
+
 1. {fix summary}
 2. {fix summary}
 3. {fix summary}
 
 ### File Created
+
 `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 
 ### Recommendation Count
+
 - Priority fixes: {N}
 - Minor recommendations: {N}
 ```
@@ -413,7 +373,6 @@ UI audit is complete when:
 - [ ] Dev server detection attempted
 - [ ] Screenshots captured (or noted as unavailable)
 - [ ] All 6 pillars scored with evidence
-- [ ] Registry safety audit executed (if shadcn + third-party registries present)
 - [ ] Top 3 priority fixes identified with concrete solutions
 - [ ] UI-REVIEW.md written to correct path
 - [ ] Structured return provided to orchestrator
