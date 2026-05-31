@@ -744,33 +744,6 @@ describe('Per-submodule config keys (SUBMOD-01)', () => {
     );
   });
 
-  test('SUBMOD-01c: config-set git.submodule.workspace_branch is rejected with deprecation message', () => {
-    const result = runGsdTools(
-      'config-set git.submodule.workspace_branch develop',
-      tmpDir,
-    );
-    assert.strictEqual(result.success, false, 'Should reject deprecated key');
-    assert.match(result.error || result.stderr || '', /deprecated/i);
-  });
-
-  test('SUBMOD-01d: config-get git.submodule.workspace_branch emits deprecation warning on stderr', () => {
-    // Write the value directly so config-get has something to read
-    const configPath = path.join(tmpDir, '.planning', 'config.json');
-    const existing = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    existing.git = existing.git || {};
-    existing.git.submodule = { workspace_branch: 'develop' };
-    fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
-
-    const result = runGsdTools(
-      'config-get git.submodule.workspace_branch',
-      tmpDir,
-    );
-    // Should succeed (returns value for migration) but stderr has warning
-    assert.match(
-      result.stderr || result.output || result.error || '',
-      /deprecated/i,
-    );
-  });
 });
 
 // ─── EFFORT_PROFILES ──────────────────────────────────────────────────────────
@@ -1641,23 +1614,31 @@ describe('cmdConfigGet defaultValue and traversal branches', () => {
     }
   });
 
-  test('emits deprecation warning on stderr for git.submodule.workspace_branch (with value present)', () => {
+  test('returns defaultValue when a valid key path traverses through a missing parent', () => {
     const tmpDir = createTempProject();
-    writeConfig(tmpDir, {
-      git: { submodule: { workspace_branch: 'develop' } },
-    });
+    writeConfig(tmpDir, {}); // no `workflow` object → path goes undefined mid-traversal
     try {
       const result = runGsdTools(
-        ['config-get', 'git.submodule.workspace_branch'],
+        ['config-get', 'workflow.research', '--default', 'fallback'],
         tmpDir,
       );
       assert.ok(result.success, `Command failed: ${result.error}`);
-      assert.match(
-        result.stderr,
-        /git\.submodule\.workspace_branch is deprecated/,
-        `Expected deprecation warning on stderr, got: ${result.stderr}`,
+      assert.strictEqual(result.output.trim(), 'fallback');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('returns defaultValue when a valid key is unset under an existing parent', () => {
+    const tmpDir = createTempProject();
+    writeConfig(tmpDir, { workflow: {} }); // parent exists, leaf key undefined
+    try {
+      const result = runGsdTools(
+        ['config-get', 'workflow.research', '--default', 'fallback'],
+        tmpDir,
       );
-      assert.strictEqual(result.output.trim(), 'develop');
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      assert.strictEqual(result.output.trim(), 'fallback');
     } finally {
       cleanup(tmpDir);
     }

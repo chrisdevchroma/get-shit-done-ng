@@ -345,9 +345,7 @@ When the workspace contains git submodules (`.gitmodules` exists), GSD automatic
 
 #### Schema: `git.submodules.<name>`
 
-Per-submodule settings live under `git.submodules.<name>` where `<name>` is the **directory basename** of the submodule (e.g. for path `libs/anvil`, use `anvil`). Per-submodule keys are merged **over** the global `git.*` block — global values are the fallback, per-submodule values take precedence.
-
-> **Note (deprecated):** `git.submodule.*` (singular, no name key) was an earlier incorrect form that never worked. The only singular key the code recognizes is the deprecated `git.submodule.workspace_branch` (emit a warning). Always use the plural `git.submodules.<name>.*` form.
+Per-submodule settings live under `git.submodules.<name>` (plural) where `<name>` is the **directory basename** of the submodule (e.g. for path `libs/anvil`, use `anvil`). Per-submodule keys are merged **over** the global `git.*` block — global values are the fallback, per-submodule values take precedence.
 
 #### Supported per-submodule keys
 
