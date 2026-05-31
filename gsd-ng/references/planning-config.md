@@ -359,7 +359,7 @@ All keys from the `git.*` global scope are also valid per-submodule. The validat
 | `branching_strategy` | `"none"` | Branch strategy: `none`, `phase`, `milestone` |
 | `phase_branch_template` | `"gsd/phase-{phase}-{slug}"` | Template for phase branches |
 | `milestone_branch_template` | `"gsd/{milestone}-{slug}"` | Template for milestone branches |
-| `review_branch_template` | `null` (uses default) | Template for review/PR branches (e.g. `"{type}/{slug}"`) |
+| `review_branch_template` | `null` | Template for review/PR branches (e.g. `"{type}/{slug}"`) — see note below |
 | `remote` | `"origin"` | Git remote name for push/PR operations |
 | `auto_push` | `false` | Automatically push branch before PR creation |
 | `platform` | (auto-detected) | Force platform: `github`, `gitlab`, `forgejo`, `gitea` |
@@ -370,6 +370,8 @@ All keys from the `git.*` global scope are also valid per-submodule. The validat
 | `versioning_scheme` | `"semver"` | Versioning scheme |
 | `type_aliases` | `null` | Conventional commit type aliases map |
 | `ssh_check` | `true` | Verify SSH key before push |
+
+> **Note:** `review_branch_template` and `type_aliases` are the two exceptions in the submodule path — when unset they resolve to `null` rather than the global `git.*` default (unlike `phase_branch_template`/`milestone_branch_template`, which do fall back to their built-in defaults). Set them explicitly per submodule if you need non-default review-branch naming or type aliases.
 
 #### Example configuration
 
