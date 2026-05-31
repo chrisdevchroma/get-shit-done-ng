@@ -470,7 +470,10 @@ function resolveGitContext(cwd) {
     (remoteUrl.startsWith('git@') || remoteUrl.startsWith('ssh://')),
   );
 
-  const platformInfo = cmdDetectPlatform(subCwd, remote, true) || {};
+  // Pass per-submodule platform override so loadConfig(subCwd) is bypassed (no .planning/ there).
+  const platformInfo =
+    cmdDetectPlatform(subCwd, remote, true, configSubmodule.platform || null) ||
+    {};
 
   return {
     is_submodule: true,
