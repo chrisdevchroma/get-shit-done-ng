@@ -341,19 +341,81 @@ Snapshot builds append `+{short_hash}` (e.g., `1.2.3+abc1234`) per SemVer 2.0.0 
 
 ### Submodule-Aware Git Operations
 
-When the workspace contains git submodules (`.gitmodules` exists), GSD automatically routes git push, PR creation, and branch operations to the correct repository:
+When the workspace contains git submodules (`.gitmodules` exists), GSD automatically routes git push, PR creation, and branch operations to the correct repository.
+
+#### Schema: `git.submodules.<name>`
+
+Per-submodule settings live under `git.submodules.<name>` where `<name>` is the **directory basename** of the submodule (e.g. for path `libs/anvil`, use `anvil`). Per-submodule keys are merged **over** the global `git.*` block — global values are the fallback, per-submodule values take precedence.
+
+> **Note (deprecated):** `git.submodule.*` (singular, no name key) was an earlier incorrect form that never worked. The only singular key the code recognizes is the deprecated `git.submodule.workspace_branch` (emit a warning). Always use the plural `git.submodules.<name>.*` form.
+
+#### Supported per-submodule keys
+
+All keys from the `git.*` global scope are also valid per-submodule. The validated allowlist is:
+
+| Key | Default (from global `git.*`) | Description |
+|-----|-------------------------------|-------------|
+| `target_branch` | `"main"` | Override the integration branch for submodule PRs |
+| `branching_strategy` | `"none"` | Branch strategy: `none`, `phase`, `milestone` |
+| `phase_branch_template` | `"gsd/phase-{phase}-{slug}"` | Template for phase branches |
+| `milestone_branch_template` | `"gsd/milestone-{milestone}-{slug}"` | Template for milestone branches |
+| `review_branch_template` | `null` (uses default) | Template for review/PR branches (e.g. `"{type}/{slug}"`) |
+| `remote` | `"origin"` | Git remote name for push/PR operations |
+| `auto_push` | `false` | Automatically push branch before PR creation |
+| `platform` | (auto-detected) | Force platform: `github`, `gitlab`, `forgejo`, `gitea` |
+| `pr_template` | `null` | Path to PR body template file |
+| `pr_draft` | `true` | Create PR as draft |
+| `commit_format` | `"conventional"` | Commit message format |
+| `commit_template` | `null` | Path to commit message template |
+| `versioning_scheme` | `"semver"` | Versioning scheme |
+| `type_aliases` | `null` | Conventional commit type aliases map |
+| `ssh_check` | `true` | Verify SSH key before push |
+
+#### Example configuration
+
+```json
+{
+  "git": {
+    "target_branch": "main",
+    "auto_push": false,
+    "submodules": {
+      "anvil": {
+        "target_branch": "develop",
+        "platform": "forgejo",
+        "review_branch_template": "{type}/{slug}",
+        "pr_draft": true
+      },
+      "gsd-ng": {
+        "platform": "github",
+        "target_branch": "develop",
+        "branching_strategy": "phase",
+        "review_branch_template": "{type}/{slug}"
+      }
+    }
+  }
+}
+```
+
+#### Resolution order
 
 1. **Auto-detection:** `git-context` inspects `git diff` to identify which submodule has changes
-2. **Remote resolution:** Uses the submodule's own `origin` remote, not the workspace remote
-3. **Target branch:** Reads from `git.submodule.target_branch` config, falls back to git tracking info, then `main`
-4. **Platform detection:** `git-context` includes `platform`, `cli`, `cli_installed` fields derived from the submodule's remote URL
+2. **Remote resolution:** Uses the submodule's own configured `remote` (default `origin`), not the workspace remote
+3. **Target branch:** Reads from `git.submodules.<name>.target_branch` (merged over global `git.target_branch`), falls back to git tracking info, then `main`
+4. **Platform detection:** Per-submodule `platform` key (when set) is passed directly to `detect-platform`, bypassing the inner `loadConfig` that would otherwise look inside the submodule directory (which has no `.planning/`). If `platform` is not set, URL-based auto-detection from the submodule's remote URL is used.
 
-| Config Key | Default | Description |
-|------------|---------|-------------|
-| `git.submodule.target_branch` | (auto-detect) | Override the target branch for submodule PRs |
-| `git.submodule.remote` | `"origin"` | Override the remote name used for submodule git operations |
+#### Platform and self-hosted hosts
 
-**When to configure:** Set `git.submodule.target_branch` when the submodule's integration branch differs from what git tracking reports. Common case: submodule tracks `develop` but git reports `main`.
+> **Self-hosted caveat:** `detect-platform` auto-detects platform only for known public hosts: `github.com`, `gitlab.com`, `codeberg.org`, `gitea.com`. Any self-hosted instance (e.g. `git.example.com`, `git.company.internal`) **will NOT be auto-detected** — its URL does not match the host map. You **must** set `platform` explicitly in the submodule config.
+
+Example for a self-hosted Forgejo instance:
+
+```json
+"submodules": {
+  "myproject": {
+    "platform": "forgejo"
+  }
+}
+```
 
 **Multi-submodule workspaces:** If multiple submodules have uncommitted changes, GSD surfaces the ambiguity and asks the user to resolve before continuing with push or PR creation.
 

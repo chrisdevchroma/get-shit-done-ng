@@ -538,10 +538,38 @@ Edit? (enter to accept, or type new title)
 Create the PR/MR using the platform-specific CLI. The body file (`$PR_BODY_FILE`) has been sanitized of `<untrusted-content>` wrapper tags by the `sanitize_outbound` step — external systems should never receive these internal GSD tags.
 
 ```bash
-# Determine draft flag
+# Determine draft flag / title prefix per platform:
+#
+#   github / gitlab: support --draft flag natively.
+#
+#   forgejo (fj pr create): has NO --draft flag. A PR is a draft when the title
+#   is prefixed with "WIP: " — fj recognizes this prefix and marks the PR as draft.
+#   Ref: https://codeberg.org/forgejo/cli (fj pr create docs).
+#
+#   gitea (tea pr create): tea v0.9+ supports `--type draft` to create a draft PR.
+#   If you are on an older tea that does not support --type, fall back to the WIP
+#   title prefix (same mechanism as forgejo) — the Gitea API accepts WIP-prefixed
+#   titles as draft indicators on older versions. The current implementation uses
+#   `--type draft` which requires tea >= 0.9.
+
 DRAFT_FLAG=""
 if [ "$PR_DRAFT" = "true" ]; then
   DRAFT_FLAG="--draft"
+fi
+
+# For forgejo and gitea, adjust the title to signal draft mode.
+EFFECTIVE_TITLE="$PR_TITLE"
+if [ "$PR_DRAFT" = "true" ]; then
+  case "$PLATFORM" in
+    forgejo)
+      # Forgejo draft = WIP: title prefix (no --draft flag in fj CLI)
+      EFFECTIVE_TITLE="WIP: $PR_TITLE"
+      ;;
+    gitea)
+      # Gitea draft via tea --type draft (tea >= 0.9). WIP prefix is the fallback
+      # for older tea versions; not prepended here since --type draft is passed below.
+      ;;
+  esac
 fi
 
 case "$PLATFORM" in
@@ -549,7 +577,7 @@ case "$PLATFORM" in
     PR_URL=$(gh pr create \
       --base "$PUSH_TARGET" \
       --head "$HEAD_BRANCH" \
-      --title "$PR_TITLE" \
+      --title "$EFFECTIVE_TITLE" \
       --body-file "$PR_BODY_FILE" \
       $DRAFT_FLAG 2>&1)
     PR_EXIT=$?
@@ -559,27 +587,38 @@ case "$PLATFORM" in
     PR_URL=$(glab mr create \
       --target-branch "$PUSH_TARGET" \
       --source-branch "$HEAD_BRANCH" \
-      --title "$PR_TITLE" \
+      --title "$EFFECTIVE_TITLE" \
       --description "$(cat "$PR_BODY_FILE")" \
       $DRAFT_FLAG 2>&1)
     PR_EXIT=$?
     ;;
 
   forgejo)
+    # Draft mode: title is prefixed with "WIP: " above (no --draft flag in fj).
     PR_URL=$(fj pr create \
       --base "$PUSH_TARGET" \
       --head "$HEAD_BRANCH" \
-      --title "$PR_TITLE" \
+      --title "$EFFECTIVE_TITLE" \
       --body "$(cat "$PR_BODY_FILE")" 2>&1)
     PR_EXIT=$?
     ;;
 
   gitea)
-    PR_URL=$(tea pr create \
-      --base "$PUSH_TARGET" \
-      --head "$HEAD_BRANCH" \
-      --title "$PR_TITLE" \
-      --description "$(cat "$PR_BODY_FILE")" 2>&1)
+    # Draft mode: tea >= 0.9 supports --type draft. Older tea: use WIP: prefix instead.
+    if [ "$PR_DRAFT" = "true" ]; then
+      PR_URL=$(tea pr create \
+        --base "$PUSH_TARGET" \
+        --head "$HEAD_BRANCH" \
+        --title "$EFFECTIVE_TITLE" \
+        --description "$(cat "$PR_BODY_FILE")" \
+        --type draft 2>&1)
+    else
+      PR_URL=$(tea pr create \
+        --base "$PUSH_TARGET" \
+        --head "$HEAD_BRANCH" \
+        --title "$EFFECTIVE_TITLE" \
+        --description "$(cat "$PR_BODY_FILE")" 2>&1)
+    fi
     PR_EXIT=$?
     ;;
 
@@ -642,6 +681,7 @@ fi
 - [ ] Review branch created and squashed from work branch (for phase/milestone strategies)
 - [ ] PR description built from template precedence chain (user config > repo template > GSD default)
 - [ ] PR created via platform CLI (gh pr create / glab mr create / fj pr create / tea pr create)
+- [ ] Draft mode applied correctly: github/gitlab use --draft flag; forgejo prepends "WIP: " to title (no --draft flag in fj); gitea uses tea --type draft (tea >= 0.9)
 - [ ] PR URL displayed to user
 - [ ] Work branch restored as current branch after PR creation
 - [ ] force-with-lease used for review branch re-push (squash rewrites history)

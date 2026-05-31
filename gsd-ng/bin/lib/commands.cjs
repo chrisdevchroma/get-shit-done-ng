@@ -1571,13 +1571,12 @@ function buildImportComment(style, context) {
   return 'Tracked for resolution.';
 }
 
-function cmdDetectPlatform(cwd, remote, silent) {
+function cmdDetectPlatform(cwd, remote, silent, platformOverride) {
   const { spawnSync } = require('child_process');
 
-  // 1. Check config override
+  // Explicit override wins, else config, else URL detection.
   const cfg = loadConfig(cwd);
-  // loadConfig returns a flat object; cfg.platform is the platform field (not cfg.git.platform)
-  const platformOverride = cfg.platform || null;
+  const cfgPlatformOverride = platformOverride || cfg.platform || null;
 
   let platform = null;
   let source = 'unknown';
@@ -1585,8 +1584,8 @@ function cmdDetectPlatform(cwd, remote, silent) {
   let cli = null;
   let cliInstalled = false;
 
-  if (platformOverride) {
-    platform = platformOverride;
+  if (cfgPlatformOverride) {
+    platform = cfgPlatformOverride;
     source = 'config';
   } else {
     // 2. Auto-detect from remote URL
@@ -1620,9 +1619,16 @@ function cmdDetectPlatform(cwd, remote, silent) {
   if (platform && PLATFORM_CLI[platform]) {
     cli = PLATFORM_CLI[platform];
 
-    // 4. Check CLI availability
-    const cliCheck = spawnSync(cli, ['--version'], { stdio: 'pipe' });
-    cliInstalled = cliCheck.status === 0;
+    // fj rejects --version; use its `version` subcommand. Missing binary => not installed.
+    const CLI_PROBE_ARGS = {
+      fj: ['version'], // fj uses subcommand, not --version
+      gh: ['--version'],
+      glab: ['--version'],
+      tea: ['--version'],
+    };
+    const probeArgs = CLI_PROBE_ARGS[cli] || ['--version'];
+    const cliCheck = spawnSync(cli, probeArgs, { stdio: 'pipe' });
+    cliInstalled = !cliCheck.error && cliCheck.status === 0;
   }
 
   const result = {
