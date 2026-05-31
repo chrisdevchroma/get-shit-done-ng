@@ -243,12 +243,6 @@ function cmdConfigSet(cwd, keyPath, value) {
 
   validateKnownConfigKeyPath(keyPath);
 
-  if (keyPath === 'git.submodule.workspace_branch') {
-    error(
-      'git.submodule.workspace_branch is deprecated — the workspace stays on git.target_branch when branching_strategy is none.',
-    );
-  }
-
   // model_profile is a domain-level setting, not a flat key/value.
   // Route users to the dedicated command so they get profile validation,
   // agent effort sync, and the restart notice.
@@ -310,12 +304,6 @@ function cmdConfigGet(cwd, keyPath, defaultValue) {
     error('Usage: config-get <key.path>');
   }
 
-  if (keyPath === 'git.submodule.workspace_branch') {
-    process.stderr.write(
-      'Warning: git.submodule.workspace_branch is deprecated — the workspace stays on git.target_branch when branching_strategy is none.\n',
-    );
-  }
-
   // Claude-only surface lock: profile/effort keys read as not-present on non-Claude runtimes.
   if (
     PROFILE_EFFORT_KEY_PATTERN.test(keyPath) &&
@@ -329,10 +317,7 @@ function cmdConfigGet(cwd, keyPath, defaultValue) {
     return;
   }
 
-  // Deprecated keys (warned about above) bypass the allowlist so callers
-  // can still read their value during migration.
   if (
-    keyPath !== 'git.submodule.workspace_branch' &&
     !VALID_CONFIG_KEYS.has(keyPath) &&
     !SUBMODULE_KEY_PATTERN.test(keyPath) &&
     !EFFORT_OVERRIDE_KEY_PATTERN.test(keyPath)

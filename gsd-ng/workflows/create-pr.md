@@ -188,7 +188,7 @@ if ! git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" "$PUSH_TARGET" | grep -q
   echo "Available branches:"
   git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" | head -10
   if [ "$IS_SUBMODULE" = "true" ]; then
-    echo "Set target branch: node gsd-tools.cjs config-set git.submodule.target_branch {branch}"
+    echo "Set target branch: node gsd-tools.cjs config-set git.submodules.<name>.target_branch {branch}"
   else
     echo "Set target branch: node gsd-tools.cjs config-set git.target_branch {branch}"
   fi
