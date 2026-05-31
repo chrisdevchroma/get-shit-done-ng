@@ -358,14 +358,14 @@ All keys from the `git.*` global scope are also valid per-submodule. The validat
 | `target_branch` | `"main"` | Override the integration branch for submodule PRs |
 | `branching_strategy` | `"none"` | Branch strategy: `none`, `phase`, `milestone` |
 | `phase_branch_template` | `"gsd/phase-{phase}-{slug}"` | Template for phase branches |
-| `milestone_branch_template` | `"gsd/milestone-{milestone}-{slug}"` | Template for milestone branches |
+| `milestone_branch_template` | `"gsd/{milestone}-{slug}"` | Template for milestone branches |
 | `review_branch_template` | `null` (uses default) | Template for review/PR branches (e.g. `"{type}/{slug}"`) |
 | `remote` | `"origin"` | Git remote name for push/PR operations |
 | `auto_push` | `false` | Automatically push branch before PR creation |
 | `platform` | (auto-detected) | Force platform: `github`, `gitlab`, `forgejo`, `gitea` |
 | `pr_template` | `null` | Path to PR body template file |
 | `pr_draft` | `true` | Create PR as draft |
-| `commit_format` | `"conventional"` | Commit message format |
+| `commit_format` | `"gsd"` | Commit message format |
 | `commit_template` | `null` | Path to commit message template |
 | `versioning_scheme` | `"semver"` | Versioning scheme |
 | `type_aliases` | `null` | Conventional commit type aliases map |

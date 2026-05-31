@@ -11801,8 +11801,8 @@ describe('cmdDetectPlatform: platformOverride parameter (Bugs 1+2)', () => {
     assert.strictEqual(parsed.source, 'detected', 'source should be detected for URL-based');
   });
 
-  // Test C: resolveGitContext integration — submodule with platform override in workspace config
-  test('Test C: submodule platform override flows through resolveGitContext to init', () => {
+  // Test C: submodule platform override resolves through resolveGitContext unconditionally
+  test('Test C: submodule platform override flows through resolveGitContext', () => {
     const { execSync: execSyncC } = require('node:child_process');
     const { createSubmoduleWorkspace } = require('./helpers.cjs');
 
@@ -11839,25 +11839,37 @@ describe('cmdDetectPlatform: platformOverride parameter (Bugs 1+2)', () => {
       { cwd: workspaceDir, stdio: 'pipe' },
     );
 
-    const r = runGsdTools(['init', 'execute-phase', '1', '--json'], workspaceDir);
-    // init may succeed or fail due to test infra; we care about platform in git context
-    // If it fails for non-platform reasons, parse output if available
-    const outputStr = r.output || r.stderr || '';
-    if (outputStr.includes('"platform"')) {
-      try {
-        const parsed = JSON.parse(outputStr);
-        const gitPlatform = parsed.git && parsed.git.platform;
-        if (gitPlatform !== null) {
-          assert.strictEqual(gitPlatform, 'forgejo', 'git.platform must be forgejo from submodule override');
-        }
-      } catch {
-        // If JSON parse fails the field is embedded — verify presence
-        assert.ok(outputStr.includes('"forgejo"') || outputStr.includes('forgejo'), 'forgejo platform must appear in init output');
-      }
-    }
-    // Cleanup
+    // Resolve git context directly and assert the override flows through — unconditionally.
+    const workspace = require(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'workspace.cjs'),
+    );
+    const ctx = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(ctx.is_submodule, true, 'workspace must resolve as a submodule context');
+    assert.strictEqual(ctx.platform, 'forgejo', 'platform must be forgejo from submodule override');
+    assert.strictEqual(ctx.cli, 'fj', 'cli must be fj for forgejo');
+
     const { cleanup: cleanupHelper } = require('./helpers.cjs');
     cleanupHelper(workspaceDir);
+  });
+
+  // Test G: 4th-arg override outranks both config platform and a conflicting remote URL
+  test('Test G: platformOverride wins over config platform and remote URL', () => {
+    const { execSync } = require('node:child_process');
+    // config says gitea, remote URL says github, override says forgejo → forgejo must win
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { platform: 'gitea' } }, null, 2),
+    );
+    execSync('git remote add origin https://github.com/example/test.git', {
+      cwd: tmpDir,
+      stdio: 'pipe',
+    });
+    const commands = require(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'commands.cjs'),
+    );
+    const result = commands.cmdDetectPlatform(tmpDir, null, true, 'forgejo');
+    assert.strictEqual(result.platform, 'forgejo', 'override must beat config and URL');
+    assert.strictEqual(result.source, 'config', 'source should be config for an override');
   });
 });
 
@@ -11872,72 +11884,80 @@ describe('CLI probe robustness: fj/forgejo and missing binary (Bug 3)', () => {
     cleanup(tmpDir);
   });
 
-  // Test D: fj probe uses `version` subcommand, not --version (which fj rejects)
-  test('Test D: forgejo platform probe for fj does not depend on --version flag', () => {
-    const config = { git: { platform: 'forgejo' } };
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify(config, null, 2),
+  // Test D: fj is probed with the `version` subcommand, not --version (which fj rejects)
+  test('Test D: fj probe uses `version` subcommand, not --version', () => {
+    const commands = require(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'commands.cjs'),
     );
-    const r = runGsdTools(['detect-platform', '--json'], tmpDir);
-    assert.ok(r.success, `detect-platform should not crash: ${r.error}`);
-    const parsed = JSON.parse(r.output);
-    assert.strictEqual(parsed.platform, 'forgejo', 'platform must be forgejo');
-    // cli_installed must be a boolean (true or false) — not an error/crash
-    assert.ok(
-      parsed.cli_installed === true || parsed.cli_installed === false,
-      `cli_installed must be boolean, got: ${JSON.stringify(parsed.cli_installed)}`,
-    );
-    // cli must be 'fj'
-    assert.strictEqual(parsed.cli, 'fj', 'cli must be fj for forgejo');
+    const cp = require('node:child_process');
+    const origSpawn = cp.spawnSync;
+    const calls = [];
+    cp.spawnSync = (cmd, cmdArgs) => {
+      calls.push({ cmd, args: cmdArgs });
+      return { status: 0, error: undefined };
+    };
+    try {
+      const result = commands.cmdDetectPlatform(tmpDir, null, true, 'forgejo');
+      assert.strictEqual(result.cli, 'fj', 'cli must be fj for forgejo');
+      const fjCall = calls.find((c) => c.cmd === 'fj');
+      assert.ok(fjCall, 'fj binary must be probed');
+      assert.deepStrictEqual(
+        fjCall.args,
+        ['version'],
+        'fj must be probed with `version`, not `--version`',
+      );
+      assert.strictEqual(result.cli_installed, true, 'exit status 0 => cli_installed');
+    } finally {
+      cp.spawnSync = origSpawn;
+    }
   });
 
-  // Test E: absent binary → cli_installed=false, no crash (uses forgejo/fj which is absent in CI)
-  test('Test E: missing CLI binary reports cli_installed=false without crashing', () => {
-    const config = { git: { platform: 'forgejo' } };
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify(config, null, 2),
+  // Test E: a missing binary (spawn ENOENT) reports cli_installed=false without crashing
+  test('Test E: missing CLI binary reports cli_installed=false (ENOENT)', () => {
+    const commands = require(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'commands.cjs'),
     );
-    const r = runGsdTools(['detect-platform', '--json'], tmpDir);
-    assert.ok(r.success, `Command must not crash when CLI absent: ${r.error}`);
-    const parsed = JSON.parse(r.output);
-    // cli_installed must be a boolean regardless of whether fj is installed
-    assert.ok(
-      parsed.cli_installed === true || parsed.cli_installed === false,
-      `cli_installed must be boolean, got: ${JSON.stringify(parsed.cli_installed)}`,
-    );
+    const cp = require('node:child_process');
+    const origSpawn = cp.spawnSync;
+    cp.spawnSync = () => ({
+      error: Object.assign(new Error('spawn fj ENOENT'), { code: 'ENOENT' }),
+      status: null,
+    });
+    try {
+      const result = commands.cmdDetectPlatform(tmpDir, null, true, 'forgejo');
+      assert.strictEqual(result.cli, 'fj', 'cli must be fj for forgejo');
+      assert.strictEqual(result.cli_installed, false, 'ENOENT must report not installed');
+    } finally {
+      cp.spawnSync = origSpawn;
+    }
   });
 
-  // Test F: regression — gh/glab/tea still report installed correctly via their probes
-  test('Test F: gh/glab/tea CLI probe works (regression: --version still used for these)', () => {
-    for (const [platform, cli] of [['github', 'gh'], ['gitlab', 'glab'], ['gitea', 'tea']]) {
-      const subDir = fs.mkdtempSync(path.join(require('./helpers.cjs').resolveTmpDir(), 'gsd-cli-test-'));
-      try {
-        fs.mkdirSync(path.join(subDir, '.planning', 'phases'), { recursive: true });
-        const config = { git: { platform } };
-        fs.writeFileSync(
-          path.join(subDir, '.planning', 'config.json'),
-          JSON.stringify(config, null, 2),
+  // Test F: gh/glab/tea remain on --version (regression guard for the unchanged probe path)
+  test('Test F: gh/glab/tea probe with --version (unchanged)', () => {
+    const commands = require(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'commands.cjs'),
+    );
+    const cp = require('node:child_process');
+    const origSpawn = cp.spawnSync;
+    try {
+      for (const [platform, cli] of [['github', 'gh'], ['gitlab', 'glab'], ['gitea', 'tea']]) {
+        const calls = [];
+        cp.spawnSync = (cmd, cmdArgs) => {
+          calls.push({ cmd, args: cmdArgs });
+          return { status: 0, error: undefined };
+        };
+        const result = commands.cmdDetectPlatform(tmpDir, null, true, platform);
+        assert.strictEqual(result.cli, cli, `cli must be ${cli} for ${platform}`);
+        const call = calls.find((c) => c.cmd === cli);
+        assert.ok(call, `${cli} binary must be probed`);
+        assert.deepStrictEqual(
+          call.args,
+          ['--version'],
+          `${cli} must probe with --version`,
         );
-        // Init git so detect-platform can run
-        const { execSync: exec2 } = require('node:child_process');
-        exec2('git init', { cwd: subDir, stdio: 'pipe' });
-        exec2('git config user.email "t@t.com"', { cwd: subDir, stdio: 'pipe' });
-        exec2('git config user.name "T"', { cwd: subDir, stdio: 'pipe' });
-
-        const r = runGsdTools(['detect-platform', '--json'], subDir);
-        assert.ok(r.success, `detect-platform crashed for ${platform}: ${r.error}`);
-        const parsed = JSON.parse(r.output);
-        assert.strictEqual(parsed.platform, platform, `platform should be ${platform}`);
-        assert.strictEqual(parsed.cli, cli, `cli should be ${cli} for ${platform}`);
-        assert.ok(
-          parsed.cli_installed === true || parsed.cli_installed === false,
-          `cli_installed should be boolean for ${platform}, got: ${JSON.stringify(parsed.cli_installed)}`,
-        );
-      } finally {
-        cleanup(subDir);
       }
+    } finally {
+      cp.spawnSync = origSpawn;
     }
   });
 });
