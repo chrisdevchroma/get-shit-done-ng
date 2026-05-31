@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.15] - 2026-05-31
+
 ### Fixed
 - Submodule-aware PR creation now detects the platform and CLI correctly. `detect-platform` accepts a per-submodule `platform` override (previously a dead config key, because config was resolved relative to the submodule directory, which has no `.planning/`); the Forgejo `fj` CLI is now probed with its `version` subcommand instead of `--version` (which `fj` rejects, producing a false "not installed"); and `/gsd:create-pr` creates draft PRs on Forgejo (`WIP:` title prefix) and Gitea (`tea pr create --type draft`). The `git.submodules.<name>.*` per-submodule config schema is documented in `references/planning-config.md`.
 
