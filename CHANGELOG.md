@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The update-check cache is now local-first: a project with a local GSD install (`.claude/gsd-ng/VERSION` present) reads and writes its own cache under `<project>/.claude/cache/gsd-update-check.json` instead of the global `~/.claude/cache/`. When both a local and a global install exist, the local cache always wins so two projects on different versions can never poison each other's banner. A global-only install continues to use the global cache path. `CLAUDE_CONFIG_DIR` with `gsd-ng/VERSION` takes top precedence as before. Both the writer (`gsd-check-update.js`) and the reader (`gsd-statusline.js`) derive the cache path from a single shared helper (`bin/lib/cache-path.cjs`) so they can never drift.
+- The statusline now suppresses the `⬆ /gsd:update` banner when `cache.installed` does not match the live local `VERSION` file. This guards the within-session gap after running `/gsd:update` before the next TTL refresh writes a new cache — the stale "update available" entry no longer shows the banner for an already-updated install.
+- **Migration:** A stale global cache (`~/.claude/cache/gsd-update-check.json`) left by older versions is automatically ignored for local installs because the reader now resolves the local cache path and never reads the global one.
+
 ## [1.0.0-dev.15] - 2026-05-31
 
 ### Fixed
