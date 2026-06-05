@@ -61,8 +61,7 @@ function detectConfigDir(baseDir) {
 const globalConfigDir = detectConfigDir(homeDir);
 const projectConfigDir = detectConfigDir(cwd);
 
-// Derive cache path from the shared helper (local-before-global precedence).
-// resolveUpdateCacheFile/Dir are null only in GSD_TEST_MODE with no helper — guarded above.
+// null only in GSD_TEST_MODE with no helper — guarded above.
 const cacheDir = resolveUpdateCacheDir
   ? resolveUpdateCacheDir({ cwd, homeDir, env: process.env })
   : null;

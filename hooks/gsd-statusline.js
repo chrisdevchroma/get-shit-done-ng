@@ -7,9 +7,7 @@ const path = require('path');
 const os = require('os');
 
 // ── Locate shared cache-path module ──────────────────────────────────────────
-// Dual-candidate pattern: supports deployed layout (.claude/gsd-ng/hooks/ →
-// .claude/gsd-ng/bin/lib/) and source layout (gsd-ng/hooks/ → gsd-ng/gsd-ng/bin/lib/).
-// Wrapped in try/catch — statusline must never throw on any import failure.
+// Dual-candidate pattern (deployed vs source layout), same as gsd-check-update.js.
 let _cachePathLib = null;
 try {
   const candidates = [
@@ -138,27 +136,15 @@ function renderCrossModelWarning(data, config) {
 // ─── GSD update banner ───────────────────────────────────────────────────────
 
 /**
- * Render the GSD update-available banner segment.
+ * Render the GSD update-available banner segment, or '' to suppress it.
  *
- * Uses the shared cache-path.cjs helper to derive the cache file path with
- * local-before-global precedence, so both writer (gsd-check-update.js) and
- * reader always use the same cache location and can never drift.
+ * Resolves the cache path through the shared cache-path.cjs helper (local-before-global),
+ * so it reads the same cache the writer wrote and a stale global cache is never read for a
+ * local install. Suppresses the banner when cache.installed differs from the live local
+ * VERSION — guards the within-session gap after /gsd:update before the next TTL refresh.
  *
- * Staleness guard: re-reads the live local VERSION (cheap file read, no network).
- * If cache.installed !== liveVersion the banner is suppressed — this guards the
- * within-session post-update gap where the cache still shows the pre-update state.
- *
- * Migration note: because the reader now resolves the LOCAL cache path, the old
- * global cache (~/.claude/cache/gsd-update-check.json) is simply never read for
- * a local install. Any stale "update_available: true" in the global cache is
- * therefore automatically ignored once a local install is in use.
- *
- * @param {object} opts
- * @param {string}         opts.cwd     - Project directory (used for local install detection)
- * @param {string}         [opts.homeDir]  - Home directory (defaults to os.homedir())
- * @param {object}         [opts.env]   - Environment object (defaults to process.env)
- * @param {object}         [opts.fs]    - fs module (injectable for tests, defaults to require('fs'))
- * @returns {string} Banner string ('\x1b[33m⬆ /gsd:update\x1b[0m │ ') or ''
+ * @param {object} opts - cwd (project dir), homeDir, env, and fs are all injectable for tests.
+ * @returns {string}
  */
 function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
   try {
@@ -166,15 +152,10 @@ function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
     const hd = homeDir || os.homedir();
     const e = env || process.env;
 
-    // No helper → fall back to silent '' (statusline must never crash)
     if (!_cachePathLib) return '';
-
     const { resolveUpdateCacheFile, detectConfigDir } = _cachePathLib;
 
-    // 1. Derive the cache file path (local-before-global)
     const cacheFile = resolveUpdateCacheFile({ cwd, homeDir: hd, env: e });
-
-    // 2. Read and parse cache — missing or corrupt → no banner
     if (!fsLib.existsSync(cacheFile)) return '';
     let cache;
     try {
@@ -184,24 +165,21 @@ function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
     }
     if (!cache.update_available) return '';
 
-    // 3. Staleness guard: compare cache.installed against the live local VERSION.
-    //    If they differ the install was updated mid-session — suppress until next TTL.
     const localConfigDir = detectConfigDir(cwd, e);
     if (localConfigDir) {
       try {
         const liveVersion = fsLib
           .readFileSync(path.join(localConfigDir, 'gsd-ng', 'VERSION'), 'utf8')
           .trim();
-        if (cache.installed !== liveVersion) return '';
+        if (cache.installed !== liveVersion) return ''; // updated mid-session — suppress until next TTL
       } catch (_) {
-        // VERSION not readable — suppress to be safe
-        return '';
+        return ''; // VERSION unreadable — suppress to be safe
       }
     }
 
     return '\x1b[33m⬆ /gsd:update\x1b[0m │ ';
   } catch (_) {
-    return ''; // final safety net — statusline must never throw
+    return '';
   }
 }
 
