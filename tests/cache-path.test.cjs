@@ -153,6 +153,46 @@ test('F: project with .github/gsd-ng/VERSION → cache under <project>/.github/c
   }
 });
 
+// ── Test G: detectConfigDir env-override branch ──────────────────────────────
+// The statusline staleness guard calls detectConfigDir directly, so its
+// CLAUDE_CONFIG_DIR branch must resolve independently of resolveUpdateCacheDir.
+test('G: detectConfigDir returns CLAUDE_CONFIG_DIR when it holds gsd-ng/VERSION', () => {
+  const project = createTempProject();
+  const envConfigDir = createTempProject();
+  try {
+    seedInstall(project, '.claude');  // local install also present
+    const envGsdDir = path.join(envConfigDir, 'gsd-ng');
+    fs.mkdirSync(envGsdDir, { recursive: true });
+    fs.writeFileSync(path.join(envGsdDir, 'VERSION'), '2.0.0', 'utf8');
+
+    const result = detectConfigDir(project, { CLAUDE_CONFIG_DIR: envConfigDir });
+    assert.strictEqual(result, envConfigDir, `Expected env dir, got: ${result}`);
+  } finally {
+    cleanup(project);
+    cleanup(envConfigDir);
+  }
+});
+
+// ── Test H: env argument defaults to process.env ─────────────────────────────
+// Both functions fall back to process.env when called without an env argument.
+test('H: detectConfigDir / resolveUpdateCacheDir default env to process.env', () => {
+  const project = createTempProject();
+  const home = createTempProject();
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_CONFIG_DIR;  // neutralize ambient override
+  try {
+    seedInstall(project, '.claude');
+    assert.strictEqual(detectConfigDir(project), path.join(project, '.claude'));
+    const dir = resolveUpdateCacheDir({ cwd: project, homeDir: home });
+    assert.strictEqual(dir, path.join(project, '.claude', 'cache'));
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+    cleanup(project);
+    cleanup(home);
+  }
+});
+
 // ── Exports shape ────────────────────────────────────────────────────────────
 describe('module exports', () => {
   test('resolveUpdateCacheFile is a function', () => {
