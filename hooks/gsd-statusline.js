@@ -5,6 +5,26 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// ── Locate shared cache-path module ──────────────────────────────────────────
+// Dual-candidate pattern: supports deployed layout (.claude/gsd-ng/hooks/ →
+// .claude/gsd-ng/bin/lib/) and source layout (gsd-ng/hooks/ → gsd-ng/gsd-ng/bin/lib/).
+// Wrapped in try/catch — statusline must never throw on any import failure.
+let _cachePathLib = null;
+try {
+  const candidates = [
+    path.join(__dirname, '..', 'bin', 'lib', 'cache-path.cjs'),
+    path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'cache-path.cjs'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      _cachePathLib = require(p);
+      break;
+    }
+  }
+} catch (e) {
+  // Silent fail — statusline must never crash; banner simply won't show
+}
 const { execSync } = require('child_process');
 
 // ─── Utility: TTL-based file cache ──────────────────────────────────────────
@@ -20,12 +40,20 @@ function withCache(cacheFile, ttlSeconds, computeFn) {
       const ageMs = Date.now() - fs.statSync(cacheFile).mtimeMs;
       if (ageMs / 1000 < ttlSeconds) return fs.readFileSync(cacheFile, 'utf8');
     }
-  } catch (e) { /* cache read failed — fall through to compute */ }
+  } catch (e) {
+    /* cache read failed — fall through to compute */
+  }
   try {
     const value = computeFn();
-    try { fs.writeFileSync(cacheFile, value); } catch (e) { /* cache write failed — return value uncached */ }
+    try {
+      fs.writeFileSync(cacheFile, value);
+    } catch (e) {
+      /* cache write failed — return value uncached */
+    }
     return value;
-  } catch (e) { return ''; }
+  } catch (e) {
+    return '';
+  }
 }
 
 // ─── Token formatting ────────────────────────────────────────────────────────
@@ -61,10 +89,12 @@ function renderGitBranch(data, config) {
   const cacheFile = path.join(os.tmpdir(), 'gsd-statusline-git.cache');
   return withCache(cacheFile, 5, () => {
     const cwd = data.workspace?.current_dir || process.cwd();
-    const branch = execSync(
-      'git branch --show-current',
-      { encoding: 'utf8', timeout: 1500, cwd, stdio: ['pipe', 'pipe', 'ignore'] }
-    ).trim();
+    const branch = execSync('git branch --show-current', {
+      encoding: 'utf8',
+      timeout: 1500,
+      cwd,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
     if (!branch) return '';
     return formatBranchDisplay(branch);
   });
@@ -105,6 +135,76 @@ function renderCrossModelWarning(data, config) {
   return `\x1b[33m[>200k]\x1b[0m`;
 }
 
+// ─── GSD update banner ───────────────────────────────────────────────────────
+
+/**
+ * Render the GSD update-available banner segment.
+ *
+ * Uses the shared cache-path.cjs helper to derive the cache file path with
+ * local-before-global precedence, so both writer (gsd-check-update.js) and
+ * reader always use the same cache location and can never drift.
+ *
+ * Staleness guard: re-reads the live local VERSION (cheap file read, no network).
+ * If cache.installed !== liveVersion the banner is suppressed — this guards the
+ * within-session post-update gap where the cache still shows the pre-update state.
+ *
+ * Migration note: because the reader now resolves the LOCAL cache path, the old
+ * global cache (~/.claude/cache/gsd-update-check.json) is simply never read for
+ * a local install. Any stale "update_available: true" in the global cache is
+ * therefore automatically ignored once a local install is in use.
+ *
+ * @param {object} opts
+ * @param {string}         opts.cwd     - Project directory (used for local install detection)
+ * @param {string}         [opts.homeDir]  - Home directory (defaults to os.homedir())
+ * @param {object}         [opts.env]   - Environment object (defaults to process.env)
+ * @param {object}         [opts.fs]    - fs module (injectable for tests, defaults to require('fs'))
+ * @returns {string} Banner string ('\x1b[33m⬆ /gsd:update\x1b[0m │ ') or ''
+ */
+function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
+  try {
+    const fsLib = fsArg || fs;
+    const hd = homeDir || os.homedir();
+    const e = env || process.env;
+
+    // No helper → fall back to silent '' (statusline must never crash)
+    if (!_cachePathLib) return '';
+
+    const { resolveUpdateCacheFile, detectConfigDir } = _cachePathLib;
+
+    // 1. Derive the cache file path (local-before-global)
+    const cacheFile = resolveUpdateCacheFile({ cwd, homeDir: hd, env: e });
+
+    // 2. Read and parse cache — missing or corrupt → no banner
+    if (!fsLib.existsSync(cacheFile)) return '';
+    let cache;
+    try {
+      cache = JSON.parse(fsLib.readFileSync(cacheFile, 'utf8'));
+    } catch (_) {
+      return '';
+    }
+    if (!cache.update_available) return '';
+
+    // 3. Staleness guard: compare cache.installed against the live local VERSION.
+    //    If they differ the install was updated mid-session — suppress until next TTL.
+    const localConfigDir = detectConfigDir(cwd, e);
+    if (localConfigDir) {
+      try {
+        const liveVersion = fsLib
+          .readFileSync(path.join(localConfigDir, 'gsd-ng', 'VERSION'), 'utf8')
+          .trim();
+        if (cache.installed !== liveVersion) return '';
+      } catch (_) {
+        // VERSION not readable — suppress to be safe
+        return '';
+      }
+    }
+
+    return '\x1b[33m⬆ /gsd:update\x1b[0m │ ';
+  } catch (_) {
+    return ''; // final safety net — statusline must never throw
+  }
+}
+
 // ─── Main statusline ──────────────────────────────────────────────────────────
 
 // Read JSON from stdin
@@ -113,7 +213,7 @@ let input = '';
 // Windows/Git Bash), exit silently instead of hanging. See #775.
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('data', (chunk) => (input += chunk));
 process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
@@ -130,8 +230,16 @@ process.stdin.on('end', () => {
     let ctx = '';
     if (remaining != null) {
       // Normalize: subtract buffer from remaining, scale to usable range
-      const usableRemaining = Math.max(0, ((remaining - AUTO_COMPACT_BUFFER_PCT) / (100 - AUTO_COMPACT_BUFFER_PCT)) * 100);
-      const used = Math.max(0, Math.min(100, Math.round(100 - usableRemaining)));
+      const usableRemaining = Math.max(
+        0,
+        ((remaining - AUTO_COMPACT_BUFFER_PCT) /
+          (100 - AUTO_COMPACT_BUFFER_PCT)) *
+          100,
+      );
+      const used = Math.max(
+        0,
+        Math.min(100, Math.round(100 - usableRemaining)),
+      );
 
       // Write context metrics to bridge file for the context-monitor PostToolUse hook.
       // The monitor reads this file to inject agent-facing warnings when context is low.
@@ -140,12 +248,15 @@ process.stdin.on('end', () => {
         // in sandbox, but guard added per locked degradation pattern for all hook writes)
         if (!process.env.GSD_SIMULATE_SANDBOX) {
           try {
-            const bridgePath = path.join(os.tmpdir(), `claude-ctx-${session}.json`);
+            const bridgePath = path.join(
+              os.tmpdir(),
+              `claude-ctx-${session}.json`,
+            );
             const bridgeData = JSON.stringify({
               session_id: session,
               remaining_percentage: remaining,
               used_pct: used,
-              timestamp: Math.floor(Date.now() / 1000)
+              timestamp: Math.floor(Date.now() / 1000),
             });
             fs.writeFileSync(bridgePath, bridgeData);
           } catch (e) {
@@ -170,26 +281,21 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Respect CLAUDE_CONFIG_DIR for custom config directory setups (#870)
-    const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-
-    // GSD update available?
-    let gsdUpdate = '';
-    const cacheFile = path.join(claudeDir, 'cache', 'gsd-update-check.json');
-    if (fs.existsSync(cacheFile)) {
-      try {
-        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-        if (cache.update_available) {
-          gsdUpdate = '\x1b[33m⬆ /gsd:update\x1b[0m │ ';
-        }
-      } catch (e) {}
-    }
+    // GSD update available? (local-before-global cache precedence + staleness guard)
+    const gsdUpdate = renderUpdateBanner({
+      cwd: dir,
+      homeDir: os.homedir(),
+      env: process.env,
+    });
 
     // Load config for statusline component toggles
     // Direct JSON.parse — avoid spawning gsd-tools (process spawn overhead per anti-pattern docs)
     let config = {};
     try {
-      const projectDir = data.workspace?.project_dir || data.workspace?.current_dir || process.cwd();
+      const projectDir =
+        data.workspace?.project_dir ||
+        data.workspace?.current_dir ||
+        process.cwd();
       const configPath = path.join(projectDir, '.planning', 'config.json');
       if (fs.existsSync(configPath)) {
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -223,7 +329,7 @@ process.stdin.on('end', () => {
       dirBranchSeg,
       ctxCombined,
       tokenBreakdown,
-    ].filter(s => s !== '');
+    ].filter((s) => s !== '');
 
     process.stdout.write(segments.join(' \u2502 '));
   } catch (e) {
@@ -233,5 +339,13 @@ process.stdin.on('end', () => {
 
 // Exports for testing (not used by Claude Code — hook reads stdin, writes stdout)
 if (typeof module !== 'undefined') {
-  module.exports = { formatTokenCount, formatBranchDisplay, renderTokenBreakdown, renderCrossModelWarning, renderGitBranch, withCache };
+  module.exports = {
+    formatTokenCount,
+    formatBranchDisplay,
+    renderTokenBreakdown,
+    renderCrossModelWarning,
+    renderGitBranch,
+    withCache,
+    renderUpdateBanner,
+  };
 }
