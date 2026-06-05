@@ -94,9 +94,8 @@ function seedInstall(base, variant = '.claude') {
   fs.writeFileSync(path.join(dir, 'VERSION'), '1.0.0', 'utf8');
 }
 
-// Destructure detectConfigDir alongside existing exports — will be undefined
-// until Task 2 adds it to the GSD_TEST_MODE export block.
-const { detectConfigDir } = require('../hooks/gsd-check-update.js');
+// Destructure detectConfigDir and the test-only seam alongside existing exports.
+const { detectConfigDir, _setSharedDetectConfigDir } = require('../hooks/gsd-check-update.js');
 
 test('detectConfigDir export shape: must be a function', () => {
   assert.strictEqual(typeof detectConfigDir, 'function',
@@ -210,6 +209,46 @@ test('detectConfigDir (no-match fallback, env unset): returns join(baseDir, .cla
     assert.strictEqual(detectConfigDir(base), path.join(base, '.claude'),
       'when no env and no variant matches, must return join(baseDir, .claude) as default');
   } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+    cleanup(base);
+  }
+});
+
+// ── Hook detectConfigDir — degraded no-module path test ───────────────────────
+// This test pins the degraded contract when the shared module is unavailable.
+// Uses the GSD_TEST_MODE-only _setSharedDetectConfigDir seam to simulate the
+// no-module condition. The variant array lives ONLY in cache-path.cjs; the
+// degraded path must NOT probe .github/.copilot.
+
+test('detectConfigDir (no-module degraded fallback): returns .claude even when only .github is seeded', () => {
+  const base = createTempProject();
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_CONFIG_DIR;
+  // Capture the real shared fn to restore after the test
+  const realSharedFn = _setSharedDetectConfigDir ? null : null; // unused — see restore below
+  try {
+    // Seed ONLY .github — the OLD inline logic would have returned .github here.
+    // The degraded path must NOT probe variants, so it must return .claude instead.
+    seedInstall(base, '.github');
+    // Simulate shared module unavailable
+    _setSharedDetectConfigDir(null);
+    assert.strictEqual(detectConfigDir(base), path.join(base, '.claude'),
+      'degraded path must return baseDir/.claude (non-probing) even when .github is seeded — ' +
+      'variant array must NOT appear outside cache-path.cjs');
+    // Also assert env override is honoured on the degraded path
+    const envDir = createTempProject();
+    try {
+      process.env.CLAUDE_CONFIG_DIR = envDir;
+      assert.strictEqual(detectConfigDir(base), envDir,
+        'degraded path must return CLAUDE_CONFIG_DIR when set, even without VERSION');
+    } finally {
+      cleanup(envDir);
+    }
+  } finally {
+    // Restore the real shared detectConfigDir so subsequent tests in the process are unaffected
+    const realFn = require('../gsd-ng/bin/lib/cache-path.cjs').detectConfigDir;
+    _setSharedDetectConfigDir(realFn);
     if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = saved;
     cleanup(base);

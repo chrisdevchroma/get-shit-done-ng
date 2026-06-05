@@ -31,31 +31,31 @@ if (!cachePathModulePath && !process.env.GSD_TEST_MODE) {
   process.exit(0);
 }
 
-const { resolveUpdateCacheDir, resolveUpdateCacheFile } = cachePathModulePath
+const { resolveUpdateCacheDir, resolveUpdateCacheFile, detectConfigDir: _sharedDetectConfigDir } = cachePathModulePath
   ? require(cachePathModulePath)
-  : { resolveUpdateCacheDir: null, resolveUpdateCacheFile: null };
+  : { resolveUpdateCacheDir: null, resolveUpdateCacheFile: null, detectConfigDir: null };
+// Mutable reference so GSD_TEST_MODE tests can simulate the no-module path.
+let sharedDetectConfigDir = _sharedDetectConfigDir;
 
 // Detect GSD config directory — used for VERSION file location (project-first).
 // Respects CLAUDE_CONFIG_DIR for custom config directory setups.
+// Delegates the .claude → .github → .copilot variant order to the shared
+// cache-path.cjs detectConfigDir (single source of truth — zero duplication here).
 function detectConfigDir(baseDir) {
-  // Check env override first (supports multi-account setups)
-  const envDir = process.env.CLAUDE_CONFIG_DIR;
-  if (envDir && fs.existsSync(path.join(envDir, 'gsd-ng', 'VERSION'))) {
-    return envDir;
+  if (sharedDetectConfigDir) {
+    // Primary path: shared module handles env override + variant probing + null on no-match.
+    // Wrap its null-on-no-match with the hook's own fallback contract.
+    return (
+      sharedDetectConfigDir(baseDir, process.env) ||
+      process.env.CLAUDE_CONFIG_DIR ||
+      path.join(baseDir, '.claude')
+    );
   }
-  // Check Claude Code local (.claude/gsd-ng/VERSION)
-  if (fs.existsSync(path.join(baseDir, '.claude', 'gsd-ng', 'VERSION'))) {
-    return path.join(baseDir, '.claude');
-  }
-  // Check Copilot local (.github/gsd-ng/VERSION)
-  if (fs.existsSync(path.join(baseDir, '.github', 'gsd-ng', 'VERSION'))) {
-    return path.join(baseDir, '.github');
-  }
-  // Check Copilot global (~/.copilot/gsd-ng/VERSION)
-  if (fs.existsSync(path.join(baseDir, '.copilot', 'gsd-ng', 'VERSION'))) {
-    return path.join(baseDir, '.copilot');
-  }
-  return envDir || path.join(baseDir, '.claude');
+  // Shared module unavailable — only reachable in GSD_TEST_MODE; production exits at the
+  // require guard above before detectConfigDir is ever called. Degrade WITHOUT probing
+  // variants so the .claude → .github → .copilot order is single-sourced in
+  // cache-path.cjs with ZERO duplication here.
+  return process.env.CLAUDE_CONFIG_DIR || path.join(baseDir, '.claude');
 }
 
 const globalConfigDir = detectConfigDir(homeDir);
@@ -396,6 +396,9 @@ if (process.env.GSD_TEST_MODE) {
     parseChannel,
     buildChildSource,
     shouldRunUpdateCheck,
+    detectConfigDir,
+    // Test-only seam: allows tests to simulate the shared-module-unavailable path.
+    _setSharedDetectConfigDir(fn) { sharedDetectConfigDir = fn; },
   };
   return;
 }
