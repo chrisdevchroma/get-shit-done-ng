@@ -10,8 +10,33 @@ const { spawn } = require('child_process');
 const homeDir = os.homedir();
 const cwd = process.cwd();
 
-// Detect GSD config directory — supports Claude Code (.claude), Copilot local (.github), Copilot global (.copilot)
-// Respects CLAUDE_CONFIG_DIR for custom config directory setups
+// ── Locate shared cache-path module ───────────────────────────────────────────
+// Same dual-candidate pattern as semver-utils: supports deployed and source layouts.
+const cachePathModulePath = (function () {
+  const candidates = [
+    // Deployed layout: hooks/ lives beside bin/lib/
+    path.join(__dirname, '..', 'bin', 'lib', 'cache-path.cjs'),
+    // Source layout: hooks/ lives at gsd-ng/hooks/, lib at gsd-ng/gsd-ng/bin/lib/
+    path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'cache-path.cjs'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+})();
+
+// Defensive guard: if cache-path is unreachable skip the update check silently
+// (mirrors the semver-utils guard below — both are required for a correct check).
+if (!cachePathModulePath && !process.env.GSD_TEST_MODE) {
+  process.exit(0);
+}
+
+const { resolveUpdateCacheDir, resolveUpdateCacheFile } = cachePathModulePath
+  ? require(cachePathModulePath)
+  : { resolveUpdateCacheDir: null, resolveUpdateCacheFile: null };
+
+// Detect GSD config directory — used for VERSION file location (project-first).
+// Respects CLAUDE_CONFIG_DIR for custom config directory setups.
 function detectConfigDir(baseDir) {
   // Check env override first (supports multi-account setups)
   const envDir = process.env.CLAUDE_CONFIG_DIR;
@@ -35,8 +60,15 @@ function detectConfigDir(baseDir) {
 
 const globalConfigDir = detectConfigDir(homeDir);
 const projectConfigDir = detectConfigDir(cwd);
-const cacheDir = path.join(globalConfigDir, 'cache');
-const cacheFile = path.join(cacheDir, 'gsd-update-check.json');
+
+// Derive cache path from the shared helper (local-before-global precedence).
+// resolveUpdateCacheFile/Dir are null only in GSD_TEST_MODE with no helper — guarded above.
+const cacheDir = resolveUpdateCacheDir
+  ? resolveUpdateCacheDir({ cwd, homeDir, env: process.env })
+  : null;
+const cacheFile = resolveUpdateCacheFile
+  ? resolveUpdateCacheFile({ cwd, homeDir, env: process.env })
+  : null;
 
 // VERSION file locations (check project first, then global)
 const projectVersionFile = path.join(projectConfigDir, 'gsd-ng', 'VERSION');
@@ -88,13 +120,20 @@ const { compareSemVer, normalizeTag, isSnapshot, parseChannel } =
  * @param {object} [opts.env] - Environment object (defaults to {} if omitted)
  * @returns {boolean}
  */
-function shouldRunUpdateCheck({ source, lastCheckedEpoch, nowEpoch, ttlSeconds, env }) {
+function shouldRunUpdateCheck({
+  source,
+  lastCheckedEpoch,
+  nowEpoch,
+  ttlSeconds,
+  env,
+}) {
   const e = env || {};
-  if (e.GSD_OFFLINE) return false;                   // offline always wins
-  if (source !== 'startup') return false;             // only genuine top-level sessions
-  if (lastCheckedEpoch == null) return true;          // never checked → stale
-  if (typeof lastCheckedEpoch !== 'number' || Number.isNaN(lastCheckedEpoch)) return true;
-  return (nowEpoch - lastCheckedEpoch) >= ttlSeconds; // wall-clock cooldown throttle
+  if (e.GSD_OFFLINE) return false; // offline always wins
+  if (source !== 'startup') return false; // only genuine top-level sessions
+  if (lastCheckedEpoch == null) return true; // never checked → stale
+  if (typeof lastCheckedEpoch !== 'number' || Number.isNaN(lastCheckedEpoch))
+    return true;
+  return nowEpoch - lastCheckedEpoch >= ttlSeconds; // wall-clock cooldown throttle
 }
 
 // Wall-clock cooldown constant for the primary npm/check path
@@ -385,7 +424,7 @@ if (!process.env.GSD_SIMULATE_SANDBOX) {
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('data', (chunk) => (input += chunk));
 process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
@@ -394,12 +433,23 @@ process.stdin.on('end', () => {
 
     // Read cache's last-checked epoch defensively (null if cache absent/corrupt)
     let lastCheckedEpoch = null;
-    try { lastCheckedEpoch = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).checked ?? null; } catch (e) {}
+    try {
+      lastCheckedEpoch =
+        JSON.parse(fs.readFileSync(cacheFile, 'utf8')).checked ?? null;
+    } catch (e) {}
 
     const nowEpoch = Math.floor(Date.now() / 1000);
 
     // Gate: only run the update check for genuine primary sessions with a stale cache
-    if (!shouldRunUpdateCheck({ source, lastCheckedEpoch, nowEpoch, ttlSeconds: PRIMARY_CHECK_TTL, env: process.env })) {
+    if (
+      !shouldRunUpdateCheck({
+        source,
+        lastCheckedEpoch,
+        nowEpoch,
+        ttlSeconds: PRIMARY_CHECK_TTL,
+        env: process.env,
+      })
+    ) {
       process.exit(0);
     }
 
