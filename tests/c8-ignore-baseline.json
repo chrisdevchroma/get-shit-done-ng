@@ -1,5 +1,6 @@
 {
   "gsd-ng/bin/lib/allowlist.cjs": 0,
+  "gsd-ng/bin/lib/cache-path.cjs": 0,
   "gsd-ng/bin/lib/commands.cjs": 6,
   "gsd-ng/bin/lib/config.cjs": 0,
   "gsd-ng/bin/lib/confusables.cjs": 0,
