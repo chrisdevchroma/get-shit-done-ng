@@ -1830,6 +1830,94 @@ describe('init.cjs residuals (60-11)', () => {
     assert.ok(r.success, r.error);
   });
 
+  // {type} placeholder resolution tests
+
+  test('phase template {type} resolves to feature by default', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ branching_strategy: 'phase', phase_branch_template: '{type}/{slug}' }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 5: feature x\n',
+    );
+    const r = runGsdTools(['init', 'execute-phase', '5', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.match(parsed.branch_name, /^feature\//);
+  });
+
+  test('phase template {type} respects git.type_aliases.feat override', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        branching_strategy: 'phase',
+        phase_branch_template: '{type}/{slug}',
+        git: { type_aliases: { feat: 'feat-branch' } },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 5: feature x\n',
+    );
+    const r = runGsdTools(['init', 'execute-phase', '5', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.match(parsed.branch_name, /^feat-branch\//);
+  });
+
+  test('milestone template {type} resolves to feature by default', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        branching_strategy: 'milestone',
+        milestone_branch_template: '{type}/{slug}',
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n# v1.0 — milestone-name\n\n## Phase 5: x\n',
+    );
+    const r = runGsdTools(['init', 'execute-phase', '5', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.match(parsed.branch_name, /^feature\//);
+  });
+
+  test('REGRESSION: default phase template unchanged (no {type})', () => {
+    // Uses DEFAULTS.phase_branch_template = 'gsd/phase-{phase}-{slug}'
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ branching_strategy: 'phase' }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 5: feature x\n',
+    );
+    const r = runGsdTools(['init', 'execute-phase', '5', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.ok(parsed.branch_name.startsWith('gsd/phase-5-'), `Expected 'gsd/phase-5-' prefix, got: ${parsed.branch_name}`);
+    assert.ok(!parsed.branch_name.includes('{type}'), `Literal '{type}' must not appear in branch_name: ${parsed.branch_name}`);
+  });
+
+  test('REGRESSION: default milestone template unchanged (no {type})', () => {
+    // Uses DEFAULTS.milestone_branch_template = 'gsd/{milestone}-{slug}'
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ branching_strategy: 'milestone' }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n# v1.0 — milestone-name\n\n## Phase 5: x\n',
+    );
+    const r = runGsdTools(['init', 'execute-phase', '5', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.ok(parsed.branch_name.startsWith('gsd/'), `Expected 'gsd/' prefix, got: ${parsed.branch_name}`);
+    assert.ok(!parsed.branch_name.includes('{type}'), `Literal '{type}' must not appear in branch_name: ${parsed.branch_name}`);
+  });
+
   // cmdInitPlanPhase: same fallback to ROADMAP
   test('init plan-phase: phase only in ROADMAP', () => {
     fs.writeFileSync(

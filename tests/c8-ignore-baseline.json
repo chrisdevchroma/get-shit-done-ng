@@ -20,6 +20,7 @@
   "gsd-ng/bin/lib/template-processor.cjs": 0,
   "gsd-ng/bin/lib/template.cjs": 0,
   "gsd-ng/bin/lib/test-baseline.cjs": 0,
+  "gsd-ng/bin/lib/type-alias.cjs": 0,
   "gsd-ng/bin/lib/verify.cjs": 0,
   "gsd-ng/bin/lib/workspace.cjs": 2
 }

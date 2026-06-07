@@ -131,7 +131,10 @@ function cmdInitExecutePhase(cwd, phase) {
       if (config.branching_strategy === 'milestone') {
         return config.milestone_branch_template
           .replace('{milestone}', milestone.version)
-          .replace('{slug}', generateSlugInternal(milestone.name) || 'milestone')
+          .replace(
+            '{slug}',
+            generateSlugInternal(milestone.name) || 'milestone',
+          )
           .replace('{type}', workspaceTypeAlias);
       }
       return null;
@@ -202,7 +205,10 @@ function cmdInitExecutePhase(cwd, phase) {
     } else if (bs === 'milestone') {
       result.branch_name = result.milestone_branch_template
         .replace('{milestone}', result.milestone_version)
-        .replace('{slug}', generateSlugInternal(result.milestone_name) || 'milestone')
+        .replace(
+          '{slug}',
+          generateSlugInternal(result.milestone_name) || 'milestone',
+        )
         .replace('{type}', submoduleTypeAlias);
     } else {
       result.branch_name = null;

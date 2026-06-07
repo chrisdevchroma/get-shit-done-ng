@@ -7,21 +7,10 @@
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
+const { resolveTmpDir, cleanup } = require('./helpers.cjs');
 const { DEFAULT_TYPE_ALIASES, resolveTypeAlias, readTypeAliases } = require('../gsd-ng/bin/lib/type-alias.cjs');
-
-// Resolve a writable temp base dir
-function resolveTmpDir() {
-  const candidates = [process.env.TMPDIR, os.tmpdir(), `/tmp/claude-${process.getuid()}`, '/tmp'].filter(Boolean);
-  for (const dir of candidates) {
-    try {
-      if (fs.existsSync(dir)) return dir;
-    } catch {}
-  }
-  return os.tmpdir();
-}
 
 describe('DEFAULT_TYPE_ALIASES', () => {
   test('is frozen', () => {
@@ -68,7 +57,7 @@ describe('readTypeAliases', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    cleanup(tmpDir);
   });
 
   test('readTypeAliases(<dir with no config>) === null (no throw)', () => {
