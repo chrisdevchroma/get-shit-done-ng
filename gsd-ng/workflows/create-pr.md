@@ -183,7 +183,7 @@ Warn the user: "{CLI} CLI not found. Install from {CLI_INSTALL_URL} to enable PR
 Verify the target branch exists on the remote before attempting PR creation:
 
 ```bash
-if ! git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" "$PUSH_TARGET" | grep -q "$PUSH_TARGET"; then
+if [ -z "$(git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" "$PUSH_TARGET")" ]; then
   echo "Error: Target branch '$PUSH_TARGET' not found on remote '$PUSH_REMOTE'."
   echo "Available branches:"
   git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" | head -10
@@ -325,7 +325,8 @@ if [ "$DIRECT_PR" != "true" ]; then
   else
     # Phase path: build squash message from plan SUMMARYs glob
     SQUASH_MSG=""
-    for summary in $(ls .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md 2>/dev/null | sort); do
+    for summary in .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md; do
+      [ -e "$summary" ] || continue
       ONE_LINER_PLAN=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" summary-extract "$summary" --fields one_liner --default "" --pick one_liner)
       if [ -n "$ONE_LINER_PLAN" ]; then
         PLAN_ID=$(basename "$summary" | sed 's/-SUMMARY.md//')
@@ -446,7 +447,8 @@ else
 
     # Extract plan summaries
     PLAN_SUMMARIES=""
-    for summary in $(ls .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md 2>/dev/null | sort); do
+    for summary in .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md; do
+      [ -e "$summary" ] || continue
       ONE_LINER_PLAN=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" summary-extract "$summary" --fields one_liner --default "" --pick one_liner)
       if [ -n "$ONE_LINER_PLAN" ]; then
         PLAN_ID=$(basename "$summary" | sed 's/-SUMMARY.md//')
