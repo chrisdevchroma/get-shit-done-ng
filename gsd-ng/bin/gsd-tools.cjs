@@ -186,6 +186,7 @@ const workspace = require('./lib/workspace.cjs');
 const guard = require('./lib/guard.cjs');
 const testBaseline = require('./lib/test-baseline.cjs');
 const effortSync = require('./lib/effort-sync.cjs');
+const { resolveTypeAlias, readTypeAliases } = require('./lib/type-alias.cjs');
 
 // ─── Command Registry (for typo detection) ────────────────────────────────────
 
@@ -2039,23 +2040,7 @@ async function main() {
       // Resolve a short commit type to its branch prefix alias using git.type_aliases config.
       // Usage: gsd-tools resolve-type-alias feat
       const typeArg = args[1] || 'feat';
-      // git.type_aliases is nested in config.json under the git section.
-      // loadConfig() returns a flat object so we read the raw config file directly.
-      const rtaConfigPath = path.join(cwd, '.planning', 'config.json');
-      let rtaAliases = {
-        feat: 'feature',
-        fix: 'bugfix',
-        chore: 'chore',
-        refactor: 'refactor',
-      };
-      try {
-        const rtaCfg = JSON.parse(fs.readFileSync(rtaConfigPath, 'utf-8'));
-        if (rtaCfg.git && rtaCfg.git.type_aliases) {
-          rtaAliases = rtaCfg.git.type_aliases;
-        }
-      } catch {}
-      const resolvedAlias =
-        rtaAliases[typeArg] !== undefined ? rtaAliases[typeArg] : typeArg;
+      const resolvedAlias = resolveTypeAlias(typeArg, readTypeAliases(cwd));
       coreOutput({ type: typeArg, alias: resolvedAlias }, resolvedAlias);
       break;
     }

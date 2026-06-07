@@ -26,6 +26,7 @@ const { DEFAULTS } = require('./defaults.cjs');
 const { validatePhaseNumber } = require('./security.cjs');
 const { adjustQuickTable } = require('./state.cjs');
 const { resolveGitContext } = require('./workspace.cjs');
+const { resolveTypeAlias, readTypeAliases } = require('./type-alias.cjs');
 
 function cmdInitExecutePhase(cwd, phase) {
   if (!phase) {
@@ -119,19 +120,22 @@ function cmdInitExecutePhase(cwd, phase) {
     incomplete_count: phaseInfo?.incomplete_plans?.length || 0,
 
     // Branch name (pre-computed)
-    branch_name:
-      config.branching_strategy === 'phase' && phaseInfo
-        ? config.phase_branch_template
-            .replace('{phase}', phaseInfo.phase_number)
-            .replace('{slug}', phaseInfo.phase_slug || 'phase')
-        : config.branching_strategy === 'milestone'
-          ? config.milestone_branch_template
-              .replace('{milestone}', milestone.version)
-              .replace(
-                '{slug}',
-                generateSlugInternal(milestone.name) || 'milestone',
-              )
-          : null,
+    branch_name: (() => {
+      const workspaceTypeAlias = resolveTypeAlias('feat', readTypeAliases(cwd));
+      if (config.branching_strategy === 'phase' && phaseInfo) {
+        return config.phase_branch_template
+          .replace('{phase}', phaseInfo.phase_number)
+          .replace('{slug}', phaseInfo.phase_slug || 'phase')
+          .replace('{type}', workspaceTypeAlias);
+      }
+      if (config.branching_strategy === 'milestone') {
+        return config.milestone_branch_template
+          .replace('{milestone}', milestone.version)
+          .replace('{slug}', generateSlugInternal(milestone.name) || 'milestone')
+          .replace('{type}', workspaceTypeAlias);
+      }
+      return null;
+    })(),
 
     // Milestone info
     milestone_version: milestone.version,
@@ -189,19 +193,20 @@ function cmdInitExecutePhase(cwd, phase) {
 
     // Recompute branch_name using overridden values
     const bs = result.branching_strategy;
-    result.branch_name =
-      bs === 'phase' && phaseInfo
-        ? result.phase_branch_template
-            .replace('{phase}', phaseInfo.phase_number)
-            .replace('{slug}', phaseInfo.phase_slug || 'phase')
-        : bs === 'milestone'
-          ? result.milestone_branch_template
-              .replace('{milestone}', result.milestone_version)
-              .replace(
-                '{slug}',
-                generateSlugInternal(result.milestone_name) || 'milestone',
-              )
-          : null;
+    const submoduleTypeAlias = resolveTypeAlias('feat', result.type_aliases);
+    if (bs === 'phase' && phaseInfo) {
+      result.branch_name = result.phase_branch_template
+        .replace('{phase}', phaseInfo.phase_number)
+        .replace('{slug}', phaseInfo.phase_slug || 'phase')
+        .replace('{type}', submoduleTypeAlias);
+    } else if (bs === 'milestone') {
+      result.branch_name = result.milestone_branch_template
+        .replace('{milestone}', result.milestone_version)
+        .replace('{slug}', generateSlugInternal(result.milestone_name) || 'milestone')
+        .replace('{type}', submoduleTypeAlias);
+    } else {
+      result.branch_name = null;
+    }
   }
 
   output(result);
