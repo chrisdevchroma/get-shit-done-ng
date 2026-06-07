@@ -183,7 +183,7 @@ Warn the user: "{CLI} CLI not found. Install from {CLI_INSTALL_URL} to enable PR
 Verify the target branch exists on the remote before attempting PR creation:
 
 ```bash
-if ! git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" "$PUSH_TARGET" | grep -q "$PUSH_TARGET"; then
+if [ -z "$(git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" "$PUSH_TARGET")" ]; then
   echo "Error: Target branch '$PUSH_TARGET' not found on remote '$PUSH_REMOTE'."
   echo "Available branches:"
   git -C "$GIT_CWD" ls-remote --heads "$PUSH_REMOTE" | head -10
@@ -287,69 +287,63 @@ Save the current work branch for later:
 CURRENT_BRANCH=$(git -C "$GIT_CWD" branch --show-current)
 ```
 
-**Collision guard:** If the review branch name matches the current work branch, handle per mode to prevent data loss from `reset --hard`:
+**Equal-name detection:** If the review branch name equals the current work branch, treat it as deliberate intent — the work branch IS the review branch. PR directly from the work branch (no separate review branch, no squash) — mirrors the `none` strategy direct-PR path. This REPLACES the old collision guard (interactive `exit 1` / `--auto` `-2/-3` suffix). When `DIRECT_PR` is true, this step is a no-op beyond setting `HEAD_BRANCH` and printing the message; the create-or-reset, squash, and `HEAD_BRANCH="$REVIEW_BRANCH"` assignment below are all skipped.
 ```bash
+# Equal-name = deliberate intent: the work branch IS the review branch.
+# PR directly from the work branch (no separate review branch, no squash)
+# — mirrors the `none` strategy direct-PR path. This REPLACES the old
+# collision guard (interactive exit 1 / --auto -2/-3 suffix).
+DIRECT_PR=false
 if [ "$REVIEW_BRANCH" = "$CURRENT_BRANCH" ]; then
-  if [ "$AUTO_MODE" = "true" ]; then
-    # Auto-suffix: append -2, -3, etc. until unique
-    SUFFIX=2
-    while [ "$REVIEW_BRANCH-$SUFFIX" = "$CURRENT_BRANCH" ] || git show-ref --verify --quiet "refs/heads/$REVIEW_BRANCH-$SUFFIX" 2>/dev/null; do
-      SUFFIX=$((SUFFIX + 1))
-    done
-    REVIEW_BRANCH="$REVIEW_BRANCH-$SUFFIX"
-    echo "Auto-suffixed review branch to '$REVIEW_BRANCH' to avoid collision with work branch."
+  DIRECT_PR=true
+  HEAD_BRANCH="$CURRENT_BRANCH"
+  echo "Review branch resolves to the current work branch — creating PR directly from '$CURRENT_BRANCH' (no separate review branch)."
+  # Skip create-or-reset, squash, and the HEAD_BRANCH="$REVIEW_BRANCH" assignment below.
+fi
+```
+
+Create or reset review branch from target_branch, squash work onto it, and set HEAD_BRANCH (skipped when `DIRECT_PR=true` — work branch is already the review branch):
+```bash
+if [ "$DIRECT_PR" != "true" ]; then
+  # Create or reset review branch from target_branch:
+  if git -C "$GIT_CWD" show-ref --verify --quiet "refs/heads/$REVIEW_BRANCH" 2>/dev/null; then
+    # Review branch exists — this is an update (re-squash)
+    git -C "$GIT_CWD" checkout "$REVIEW_BRANCH"
+    git -C "$GIT_CWD" reset --hard "$PUSH_TARGET"
   else
-    echo "Error: review branch '$REVIEW_BRANCH' is the same as work branch '$CURRENT_BRANCH'."
-    echo "This would destroy uncommitted work via 'git reset --hard'."
-    echo "Fix: set a distinct review_branch_template in config.json."
-    echo "  Example: node \"\$HOME/.claude/gsd-ng/bin/gsd-tools.cjs\" config-set git.review_branch_template 'review/{phase}-{slug}'"
-    exit 1
+    git -C "$GIT_CWD" checkout -b "$REVIEW_BRANCH" "$PUSH_TARGET"
   fi
-fi
-```
 
-Create or reset review branch from target_branch:
-```bash
-if git -C "$GIT_CWD" show-ref --verify --quiet "refs/heads/$REVIEW_BRANCH" 2>/dev/null; then
-  # Review branch exists — this is an update (re-squash)
-  git -C "$GIT_CWD" checkout "$REVIEW_BRANCH"
-  git -C "$GIT_CWD" reset --hard "$PUSH_TARGET"
-else
-  git -C "$GIT_CWD" checkout -b "$REVIEW_BRANCH" "$PUSH_TARGET"
-fi
-```
+  # Squash work branch onto review branch:
+  # Single squash of all work from the GSD work branch
+  git -C "$GIT_CWD" merge --squash "$CURRENT_BRANCH" 2>&1
 
-Squash work branch onto review branch:
-```bash
-# Single squash of all work from the GSD work branch
-git -C "$GIT_CWD" merge --squash "$CURRENT_BRANCH" 2>&1
+  if [ "$IS_QUICK_TASK" = "true" ]; then
+    # Quick-task squash message: subject = "<type>: <one_liner>", body = SUMMARY.md content
+    SQUASH_BODY=$(cat "$QUICK_SUMMARY")
+    git -C "$GIT_CWD" commit -m "$(printf "%s: %s\n\n%s" "$TYPE" "$ONE_LINER" "$SQUASH_BODY")"
+  else
+    # Phase path: build squash message from plan SUMMARYs glob
+    SQUASH_MSG=""
+    for summary in .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md; do
+      [ -e "$summary" ] || continue
+      ONE_LINER_PLAN=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" summary-extract "$summary" --fields one_liner --default "" --pick one_liner)
+      if [ -n "$ONE_LINER_PLAN" ]; then
+        PLAN_ID=$(basename "$summary" | sed 's/-SUMMARY.md//')
+        SQUASH_MSG="${SQUASH_MSG}- ${PLAN_ID}: ${ONE_LINER_PLAN}\n"
+      fi
+    done
 
-if [ "$IS_QUICK_TASK" = "true" ]; then
-  # Quick-task squash message: subject = "<type>: <one_liner>", body = SUMMARY.md content
-  SQUASH_BODY=$(cat "$QUICK_SUMMARY")
-  git -C "$GIT_CWD" commit -m "$(printf "%s: %s\n\n%s" "$TYPE" "$ONE_LINER" "$SQUASH_BODY")"
-else
-  # Phase path: build squash message from plan SUMMARYs glob
-  SQUASH_MSG=""
-  for summary in $(ls .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md 2>/dev/null | sort); do
-    ONE_LINER_PLAN=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" summary-extract "$summary" --fields one_liner --default "" --pick one_liner)
-    if [ -n "$ONE_LINER_PLAN" ]; then
-      PLAN_ID=$(basename "$summary" | sed 's/-SUMMARY.md//')
-      SQUASH_MSG="${SQUASH_MSG}- ${PLAN_ID}: ${ONE_LINER_PLAN}\n"
+    if [ -z "$SQUASH_MSG" ]; then
+      SQUASH_MSG="Phase ${PHASE_NUMBER}: ${PHASE_NAME}"
     fi
-  done
 
-  if [ -z "$SQUASH_MSG" ]; then
-    SQUASH_MSG="Phase ${PHASE_NUMBER}: ${PHASE_NAME}"
+    git -C "$GIT_CWD" commit -m "$(printf "feat: Phase ${PHASE_NUMBER} - ${PHASE_NAME}\n\n${SQUASH_MSG}")"
   fi
 
-  git -C "$GIT_CWD" commit -m "$(printf "feat: Phase ${PHASE_NUMBER} - ${PHASE_NAME}\n\n${SQUASH_MSG}")"
+  # Set HEAD_BRANCH for PR creation:
+  HEAD_BRANCH="$REVIEW_BRANCH"
 fi
-```
-
-Set HEAD_BRANCH for PR creation:
-```bash
-HEAD_BRANCH="$REVIEW_BRANCH"
 ```
 </step>
 
@@ -357,11 +351,13 @@ HEAD_BRANCH="$REVIEW_BRANCH"
 Push the review branch (or current branch for none strategy) to remote:
 
 ```bash
-# For review branches, use --force-with-lease (squash rewrites history)
-if [ "$BRANCHING_STRATEGY" != "none" ]; then
+# For review branches, use --force-with-lease (squash rewrites history).
+# Direct-PR case (DIRECT_PR=true): work branch history must NOT be force-pushed —
+# route it to the regular-push else branch alongside the none strategy.
+if [ "$BRANCHING_STRATEGY" != "none" ] && [ "$DIRECT_PR" != "true" ]; then
   PUSH_OUT=$(git -C "$GIT_CWD" push --force-with-lease -u "$PUSH_REMOTE" "$HEAD_BRANCH" 2>&1)
 else
-  # For none strategy, regular push with upstream tracking (safe to use -u unconditionally)
+  # For none strategy and direct-PR, regular push with upstream tracking (safe to use -u unconditionally)
   UPSTREAM=$(git -C "$GIT_CWD" rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || echo "")
   if [ -n "$UPSTREAM" ]; then
     PUSH_OUT=$(git -C "$GIT_CWD" push "$PUSH_REMOTE" "$HEAD_BRANCH" 2>&1)
@@ -388,9 +384,9 @@ fi
 
 STOP on push failure — cannot create PR without pushed branch.
 
-Return to work branch after push (for phase/milestone strategies):
+Return to work branch after push (for phase/milestone strategies, but NOT for direct-PR — the direct-PR case never left the work branch):
 ```bash
-if [ "$BRANCHING_STRATEGY" != "none" ]; then
+if [ "$BRANCHING_STRATEGY" != "none" ] && [ "$DIRECT_PR" != "true" ]; then
   git -C "$GIT_CWD" checkout "$CURRENT_BRANCH" 2>/dev/null || true
 fi
 ```
@@ -451,7 +447,8 @@ else
 
     # Extract plan summaries
     PLAN_SUMMARIES=""
-    for summary in $(ls .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md 2>/dev/null | sort); do
+    for summary in .planning/phases/${PHASE_DIR_NAME}/*-SUMMARY.md; do
+      [ -e "$summary" ] || continue
       ONE_LINER_PLAN=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" summary-extract "$summary" --fields one_liner --default "" --pick one_liner)
       if [ -n "$ONE_LINER_PLAN" ]; then
         PLAN_ID=$(basename "$summary" | sed 's/-SUMMARY.md//')
