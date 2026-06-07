@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The `{type}` placeholder is now resolved in `phase_branch_template` and `milestone_branch_template`, not just `review_branch_template`. A user can set `phase_branch_template: "{type}/{slug}"` to match the review template and get `feature/<slug>` instead of a literal `{type}/<slug>` work branch. A new shared module `bin/lib/type-alias.cjs` holds the single commit-type → branch-prefix map (`feat→feature`, `fix→bugfix`, `chore→chore`, `refactor→refactor`), consumed by both `init.cjs` and `gsd-tools.cjs resolve-type-alias` so the two can no longer drift. Because the commit type is unknown when the work branch is created, `{type}` resolves to the alias of `feat` (`feature` by default) and honors a configured `git.type_aliases.feat` override. The default templates (`gsd/phase-{phase}-{slug}`, `gsd/{milestone}-{slug}`) contain no `{type}` and are unaffected.
+
+### Changed
+
+- `/gsd:create-pr` now opens the PR directly from the work branch when the resolved review branch name equals the current work branch (e.g. `phase_branch_template` and `review_branch_template` both resolve to `feature/<slug>`), supporting the "develop on the feature branch, PR from it" workflow. This replaces the previous collision guard, which errored in interactive mode or auto-suffixed `-2`/`-3` under `--auto`. The direct-PR path mirrors the `none`-strategy flow — no separate review branch, no `git reset --hard`, no squash, and no branch switch-back — so it is non-destructive. When the review branch differs from the work branch, the create/reset/squash/force-push flow is unchanged.
+
+### Fixed
+
+- Hardened shell robustness in the `/gsd:create-pr` workflow. The target-branch existence check no longer uses the branch name as an unanchored `grep` regex (which substring-matched sibling refs — e.g. `main` matching `maintenance` — and could misbehave on names containing regex metacharacters); it now tests whether `git ls-remote --heads` returns anything. The two SUMMARY-collection loops iterate a glob with an `[ -e ]` guard instead of parsing `ls` output, avoiding word-splitting and the literal-pattern-on-no-match hazard.
+
 ## [1.0.0-dev.16] - 2026-06-05
 
 ### Fixed
