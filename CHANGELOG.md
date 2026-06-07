@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.17] - 2026-06-07
+
 ### Added
 
 - The `{type}` placeholder is now resolved in `phase_branch_template` and `milestone_branch_template`, not just `review_branch_template`. A user can set `phase_branch_template: "{type}/{slug}"` to match the review template and get `feature/<slug>` instead of a literal `{type}/<slug>` work branch. A new shared module `bin/lib/type-alias.cjs` holds the single commit-type → branch-prefix map (`feat→feature`, `fix→bugfix`, `chore→chore`, `refactor→refactor`), consumed by both `init.cjs` and `gsd-tools.cjs resolve-type-alias` so the two can no longer drift. Because the commit type is unknown when the work branch is created, `{type}` resolves to the alias of `feat` (`feature` by default) and honors a configured `git.type_aliases.feat` override. The default templates (`gsd/phase-{phase}-{slug}`, `gsd/{milestone}-{slug}`) contain no `{type}` and are unaffected.
