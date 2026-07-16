@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A `todo add` verb (`gsd-tools todo add --title "…" --area "…"`), so filing a todo no longer means hand-authoring markdown. Every caller previously re-implemented the same slug + ISO timestamp + YAML frontmatter recipe, and the shape drifted as a result. The verb owns the mechanics — it derives the canonical date-prefixed `.planning/todos/pending/<date>-<slug>.md` filename, emits `created`/`title`/`area` plus optional `phase`/`files`/`related`/`recurring`/`interval`, and never authors `last_completed` (that stays `todo complete`'s job on first completion). It prints the created path by default and structured fields under the existing global `--json`. `--interval` is validated against the same `parseDuration` helper `recurring-due` already uses and is rejected without `--recurring`, since an interval alone is inert; `--area` stays free-text. Notably, a filename collision is now an **error naming the existing file rather than a silent overwrite** — a real gap, because the hand-rolled `Write` path it replaces clobbered the existing todo without warning.
+
+### Changed
+
+- `/gsd:add-todo` and `/gsd:note` now delegate the todo file write to `todo add` instead of hand-rolling filenames and frontmatter. The reasoning half stays in the workflows — dedup scanning, area inference, and the reverse `related:` backlink on the *existing* todo are unchanged, and the CLI does no cross-file mutation. This normalizes `/gsd:note promote`, which had drifted furthest: it invented sequential `{NNN}-{slug}` filenames and a `status`/`priority`/`source`/`theme` schema that nothing read. Promoted notes now land on the canonical date-prefixed `<date>-<slug>` filename with `created`/`title`/`area`, with the `theme` folded into `--area` and the "promoted from note" provenance carried in the body prose it already wrote. Existing `{NNN}-*.md` todos on disk are untouched and continue to list normally.
+- The unknown-`todo`-subcommand error no longer redirects to `/gsd:add-todo` as the only way to add a todo. That hint fires on a CLI typo, where the correct repair is now `todo add` — which the `Available:` list advertises on its own.
+
 ### Fixed
 
 - `resolve-effort` no longer strips the `xhigh` and `max` effort tiers from agents resolved to `fable` or `sonnet`. The model-tier compatibility gate accepted only `opus`, so an agent pointed at either model silently fell back to the session default effort — with a warning only when the effort came from an explicit `effort_overrides` entry. Both now support the same high reasoning tiers as Opus: `fable` always did, and `sonnet` gained `xhigh` when the alias moved to Sonnet 5 (the first Sonnet-tier model with it, and the recommended setting there for the hardest coding and agentic work). The gate matches on the bare aliases the harness resolves, so a version-pinned string such as `sonnet-4-6` is still correctly rejected. The warning text now names all three accepted models.
