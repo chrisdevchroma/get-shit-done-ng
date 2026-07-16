@@ -865,6 +865,348 @@ describe('todo complete command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// todo add command
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('todo add command', () => {
+  let tmpDir;
+
+  const today = () => new Date().toISOString().split('T')[0];
+  const pendingPath = (dir, file) =>
+    path.join(dir, '.planning', 'todos', 'pending', file);
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('creates a todo with canonical filename and frontmatter', () => {
+    const result = runGsdTools(
+      'todo add --title "Add dark mode" --area ui',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const target = pendingPath(tmpDir, `${today()}-add-dark-mode.md`);
+    assert.ok(fs.existsSync(target), 'todo file should exist');
+
+    const content = fs.readFileSync(target, 'utf-8');
+    assert.match(content, /^---\n/, 'starts with frontmatter fence');
+    assert.match(content, /^created: .*T.*$/m, 'created is an ISO timestamp');
+    assert.match(content, /^title: Add dark mode$/m, 'title written');
+    assert.match(content, /^area: ui$/m, 'area written');
+  });
+
+  test('creates the pending directory when absent', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    assert.ok(!fs.existsSync(pendingDir), 'precondition: pending/ absent');
+
+    const result = runGsdTools('todo add --title "Fresh start"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.ok(fs.existsSync(pendingDir), 'pending/ should be created');
+  });
+
+  test('defaults area to general when --area omitted', () => {
+    const result = runGsdTools('todo add --title "No area given"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-no-area-given.md`),
+      'utf-8',
+    );
+    assert.match(content, /^area: general$/m, 'area defaults to general');
+  });
+
+  test('prints the relative posix path by default (not JSON)', () => {
+    const result = runGsdTools(
+      'todo add --title "Add dark mode" --area ui',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(
+      result.output,
+      `.planning/todos/pending/${today()}-add-dark-mode.md`,
+    );
+  });
+
+  test('--json emits structured fields', () => {
+    const result = runGsdTools(
+      'todo add --title "Add dark mode" --area ui --json',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.file, `${today()}-add-dark-mode.md`);
+    assert.strictEqual(
+      parsed.path,
+      `.planning/todos/pending/${today()}-add-dark-mode.md`,
+    );
+    assert.strictEqual(parsed.title, 'Add dark mode');
+    assert.strictEqual(parsed.area, 'ui');
+  });
+
+  test('fails when --title is missing', () => {
+    const result = runGsdTools('todo add --area ui', tmpDir);
+    assert.ok(!result.success, 'should fail');
+    assert.ok(result.error.includes('--title'), 'error mentions --title');
+  });
+
+  test('fails on a whitespace-only --title', () => {
+    const result = runGsdTools('todo add --title "   " --area ui', tmpDir);
+    assert.ok(!result.success, 'should fail');
+
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    const written = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : [];
+    assert.deepStrictEqual(written, [], 'no file should be written');
+  });
+
+  test('fails when the title slugs to nothing', () => {
+    const result = runGsdTools('todo add --title "???" --area ui', tmpDir);
+    assert.ok(!result.success, 'should fail');
+
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    const written = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : [];
+    assert.deepStrictEqual(written, [], 'no file should be written');
+  });
+
+  test('errors on collision without overwriting the existing todo', () => {
+    const first = runGsdTools(
+      'todo add --title "Add dark mode" --area ui --body "original body"',
+      tmpDir,
+    );
+    assert.ok(first.success, `First add failed: ${first.error}`);
+
+    const target = pendingPath(tmpDir, `${today()}-add-dark-mode.md`);
+    const before = fs.readFileSync(target, 'utf-8');
+
+    const second = runGsdTools(
+      'todo add --title "Add dark mode" --area ui --body "clobbering body"',
+      tmpDir,
+    );
+    assert.ok(!second.success, 'second add should fail');
+    assert.ok(
+      second.error.includes(`${today()}-add-dark-mode.md`),
+      'error names the existing file',
+    );
+
+    const after = fs.readFileSync(target, 'utf-8');
+    assert.strictEqual(after, before, 'existing todo must be untouched');
+    assert.ok(after.includes('original body'), 'original body preserved');
+  });
+
+  test('--body is written verbatim after the frontmatter', () => {
+    const result = runGsdTools(
+      'todo add --title "Custom body" --body "This is the custom text."',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-custom-body.md`),
+      'utf-8',
+    );
+    assert.ok(
+      content.includes('This is the custom text.'),
+      'body appears verbatim',
+    );
+  });
+
+  test('--body-file contents are used as the body', () => {
+    const bodyPath = path.join(tmpDir, 'body.md');
+    fs.writeFileSync(bodyPath, '## From file\n\nBody loaded from disk.\n');
+
+    const result = runGsdTools(
+      'todo add --title "File body" --body-file body.md',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-file-body.md`),
+      'utf-8',
+    );
+    assert.ok(content.includes('Body loaded from disk.'), 'file body used');
+  });
+
+  test('fails cleanly when --body-file does not exist', () => {
+    const result = runGsdTools(
+      'todo add --title "Missing body" --body-file nope.md',
+      tmpDir,
+    );
+    assert.ok(!result.success, 'should fail');
+    assert.ok(result.error.includes('nope.md'), 'error mentions the path');
+    assert.ok(
+      !result.error.includes('at Object.'),
+      'should not be an unhandled stack trace',
+    );
+  });
+
+  test('falls back to the default skeleton body', () => {
+    const result = runGsdTools('todo add --title "Skeleton please"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-skeleton-please.md`),
+      'utf-8',
+    );
+    assert.ok(content.includes('## Problem'), 'has Problem heading');
+    assert.ok(content.includes('## Solution'), 'has Solution heading');
+  });
+
+  test('--recurring --interval writes both fields and no last_completed', () => {
+    const result = runGsdTools(
+      'todo add --title "Check upstream" --recurring --interval 30d',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-check-upstream.md`),
+      'utf-8',
+    );
+    assert.match(content, /^recurring: true$/m, 'recurring written');
+    assert.match(content, /^interval: 30d$/m, 'interval written');
+    assert.ok(
+      !content.includes('last_completed'),
+      'last_completed must never be authored',
+    );
+  });
+
+  test('--recurring alone is allowed and writes no interval', () => {
+    const result = runGsdTools(
+      'todo add --title "Recurring bare" --recurring',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-recurring-bare.md`),
+      'utf-8',
+    );
+    assert.match(content, /^recurring: true$/m, 'recurring written');
+    assert.ok(!content.includes('interval:'), 'no interval field');
+  });
+
+  test('fails on --interval without --recurring', () => {
+    const result = runGsdTools(
+      'todo add --title "Inert interval" --interval 30d',
+      tmpDir,
+    );
+    assert.ok(!result.success, 'should fail');
+    assert.ok(result.error.includes('--recurring'), 'error mentions --recurring');
+  });
+
+  test('fails on a malformed --interval', () => {
+    const result = runGsdTools(
+      'todo add --title "Bad interval" --recurring --interval bogus',
+      tmpDir,
+    );
+    assert.ok(!result.success, 'should fail');
+    assert.ok(result.error.includes('30d'), 'error names a valid format');
+  });
+
+  test('--phase writes the phase field', () => {
+    const result = runGsdTools(
+      'todo add --title "Phase linked" --phase 42',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-phase-linked.md`),
+      'utf-8',
+    );
+    assert.match(content, /^phase: 42$/m, 'phase written');
+  });
+
+  test('--files writes a YAML list', () => {
+    const result = runGsdTools(
+      'todo add --title "Touches files" --files a.js,b.js',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-touches-files.md`),
+      'utf-8',
+    );
+    assert.match(content, /^files:\n {2}- a\.js\n {2}- b\.js$/m, 'YAML list');
+  });
+
+  test('--related writes only the new file own related list', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const siblingPath = path.join(pendingDir, 'other.md');
+    fs.writeFileSync(siblingPath, '---\ntitle: Other\narea: ui\n---\n\nBody\n');
+    const siblingBefore = fs.readFileSync(siblingPath, 'utf-8');
+
+    const result = runGsdTools(
+      'todo add --title "Links out" --related other.md',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-links-out.md`),
+      'utf-8',
+    );
+    assert.match(content, /^related:\n {2}- other\.md$/m, 'related list');
+
+    assert.strictEqual(
+      fs.readFileSync(siblingPath, 'utf-8'),
+      siblingBefore,
+      'the CLI must not mutate the related todo',
+    );
+  });
+
+  test('rejects an unknown flag', () => {
+    const result = runGsdTools(
+      'todo add --title "Valid" --bogus something',
+      tmpDir,
+    );
+    assert.ok(!result.success, 'should fail');
+    assert.ok(result.error.includes('--bogus'), 'error names the unknown flag');
+  });
+
+  test('round-trips through todo complete', () => {
+    const added = runGsdTools(
+      'todo add --title "Round trip" --area tooling --json',
+      tmpDir,
+    );
+    assert.ok(added.success, `Add failed: ${added.error}`);
+    const { file } = JSON.parse(added.output);
+
+    const completed = runGsdTools(`todo complete ${file} --json`, tmpDir);
+    assert.ok(completed.success, `Complete failed: ${completed.error}`);
+    assert.strictEqual(JSON.parse(completed.output).completed, true);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'todos', 'completed', file)),
+      'todo should land in completed/',
+    );
+  });
+
+  test('created todo is visible to list-todos', () => {
+    const added = runGsdTools(
+      'todo add --title "Listed todo" --area tooling',
+      tmpDir,
+    );
+    assert.ok(added.success, `Add failed: ${added.error}`);
+
+    const listed = runGsdTools('list-todos --json', tmpDir);
+    assert.ok(listed.success, `List failed: ${listed.error}`);
+
+    const parsed = JSON.parse(listed.output);
+    const found = parsed.todos.find((t) => t.title === 'Listed todo');
+    assert.ok(found, 'created todo should be listed');
+    assert.strictEqual(found.area, 'tooling');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // scaffold command
 // ─────────────────────────────────────────────────────────────────────────────
 
