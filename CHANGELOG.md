@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.18] - 2026-07-16
+
 ### Added
 
 - A `todo add` verb (`gsd-tools todo add --title "…" --area "…"`), so filing a todo no longer means hand-authoring markdown. Every caller previously re-implemented the same slug + ISO timestamp + YAML frontmatter recipe, and the shape drifted as a result. The verb owns the mechanics — it derives the canonical date-prefixed `.planning/todos/pending/<date>-<slug>.md` filename, emits `created`/`title`/`area` plus optional `phase`/`files`/`related`/`recurring`/`interval`, and never authors `last_completed` (that stays `todo complete`'s job on first completion). It prints the created path by default and structured fields under the existing global `--json`. `--interval` is validated against the same `parseDuration` helper `recurring-due` already uses and is rejected without `--recurring`, since an interval alone is inert; `--area` stays free-text. Notably, a filename collision is now an **error naming the existing file rather than a silent overwrite** — a real gap, because the hand-rolled `Write` path it replaces clobbered the existing todo without warning.
