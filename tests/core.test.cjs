@@ -1450,10 +1450,12 @@ describe('resolveEffortInternal', () => {
     );
   });
 
-  test('Test 14: explicit override max + sonnet model — skip + warn (max requires opus)', () => {
+  test('Test 14: explicit override max + non-tier model — skip + warn (max needs a high-tier model)', () => {
+    // 'sonnet-4-6' is a version-pinned model string, legal because model_overrides
+    // is free-text. Sonnet 4.6 predates xhigh in the Sonnet tier, so max is dropped.
     writeConfig({
       model_profile: 'balanced',
-      model_overrides: { 'gsd-executor': 'sonnet' },
+      model_overrides: { 'gsd-executor': 'sonnet-4-6' },
       effort_overrides: { 'gsd-executor': 'max' },
     });
     startStderrCapture();
@@ -1462,7 +1464,7 @@ describe('resolveEffortInternal', () => {
     assert.strictEqual(
       result,
       null,
-      'max effort dropped because sonnet is not opus',
+      'max effort dropped because sonnet-4-6 is not a high-tier model',
     );
     assert.ok(
       captured.includes('max'),
@@ -1470,7 +1472,7 @@ describe('resolveEffortInternal', () => {
     );
     assert.ok(
       captured.includes('opus'),
-      `Warning should mention opus requirement, got: ${captured}`,
+      `Warning should name the required models, got: ${captured}`,
     );
     assert.ok(
       captured.includes('gsd-executor'),
@@ -1478,10 +1480,10 @@ describe('resolveEffortInternal', () => {
     );
   });
 
-  test('Test 15: explicit override xhigh + sonnet model — skip + warn (xhigh requires opus)', () => {
+  test('Test 15: explicit override xhigh + non-tier model — skip + warn (xhigh needs a high-tier model)', () => {
     writeConfig({
       model_profile: 'balanced',
-      model_overrides: { 'gsd-executor': 'sonnet' },
+      model_overrides: { 'gsd-executor': 'sonnet-4-6' },
       effort_overrides: { 'gsd-executor': 'xhigh' },
     });
     startStderrCapture();
@@ -1490,7 +1492,7 @@ describe('resolveEffortInternal', () => {
     assert.strictEqual(
       result,
       null,
-      'xhigh effort dropped because sonnet is not opus',
+      'xhigh effort dropped because sonnet-4-6 is not a high-tier model',
     );
     assert.ok(
       captured.includes('xhigh'),
@@ -1498,16 +1500,17 @@ describe('resolveEffortInternal', () => {
     );
     assert.ok(
       captured.includes('opus'),
-      `Warning should mention opus requirement, got: ${captured}`,
+      `Warning should name the required models, got: ${captured}`,
     );
   });
 
-  test('Test 16: profile-derived max + sonnet via model_overrides — silent skip, no warning', () => {
-    // Quality profile gives gsd-planner effort=max; force model to sonnet via override.
-    // Effort is profile-derived (no effort_overrides), so the skip is silent.
+  test('Test 16: profile-derived max + non-tier model via model_overrides — silent skip, no warning', () => {
+    // Quality profile gives gsd-planner effort=max; force the model to a version-pinned
+    // sonnet-4-6 via override. Effort is profile-derived (no effort_overrides), so the
+    // skip is silent.
     writeConfig({
       model_profile: 'quality',
-      model_overrides: { 'gsd-planner': 'sonnet' },
+      model_overrides: { 'gsd-planner': 'sonnet-4-6' },
     });
     startStderrCapture();
     const result = resolveEffortInternal(tmpDir, 'gsd-planner');
@@ -1515,7 +1518,7 @@ describe('resolveEffortInternal', () => {
     assert.strictEqual(
       result,
       null,
-      'profile-derived max effort dropped silently for sonnet model',
+      'profile-derived max effort dropped silently for a non-tier model',
     );
     assert.strictEqual(
       captured,
@@ -1581,6 +1584,32 @@ describe('resolveEffortInternal', () => {
         captured,
         '',
         `No warning for fable + ${effort}, got: ${captured}`,
+      );
+    }
+  });
+
+  test('Test 18c: sonnet model + xhigh/max effort — passes through (compatible)', () => {
+    // The bare `sonnet` alias resolves to Sonnet 5, which supports the full
+    // low/medium/high/xhigh/max range. Effort must survive rather than being
+    // stripped back to the session default.
+    for (const effort of ['xhigh', 'max']) {
+      writeConfig({
+        model_profile: 'balanced',
+        model_overrides: { 'gsd-executor': 'sonnet' },
+        effort_overrides: { 'gsd-executor': effort },
+      });
+      startStderrCapture();
+      const result = resolveEffortInternal(tmpDir, 'gsd-executor');
+      const captured = stopStderrCapture();
+      assert.strictEqual(
+        result,
+        effort,
+        `${effort} passes through when model is sonnet`,
+      );
+      assert.strictEqual(
+        captured,
+        '',
+        `No warning for sonnet + ${effort}, got: ${captured}`,
       );
     }
   });
