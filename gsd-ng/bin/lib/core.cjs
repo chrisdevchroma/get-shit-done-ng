@@ -662,21 +662,23 @@ function resolveEffortInternal(cwd, agentType) {
   }
 
   // Model-tier compatibility: haiku does not support effort at all; xhigh and max
-  // are opus-only tiers. When the resolved model is known and incompatible with the
-  // resolved effort, suppress (return null) and warn only on explicit overrides.
+  // are high reasoning tiers supported only by opus and fable. When the resolved
+  // model is known and incompatible with the resolved effort, suppress (return
+  // null) and warn only on explicit overrides.
   // resolveModelInternal returns null for session-inherit — leave those alone.
+  const HIGH_TIER_EFFORT_MODELS = ['opus', 'fable'];
   const resolvedModel = resolveModelInternal(cwd, agentType);
   const haikuSkip = resolvedModel === 'haiku';
-  const opusOnlySkip =
+  const highEffortSkip =
     resolvedModel &&
-    resolvedModel !== 'opus' &&
+    !HIGH_TIER_EFFORT_MODELS.includes(resolvedModel) &&
     (effort === 'xhigh' || effort === 'max');
-  if (haikuSkip || opusOnlySkip) {
+  if (haikuSkip || highEffortSkip) {
     if (hasExplicitOverride && effort !== null) {
       const overrideValue = config.effort_overrides[agentType];
       const reason = haikuSkip
         ? 'haiku does not support effort: frontmatter'
-        : `${effort} requires opus (resolved model: ${resolvedModel})`;
+        : `${effort} requires opus or fable (resolved model: ${resolvedModel})`;
       fs.writeSync(
         2,
         `Warning: effort_overrides.${agentType}="${overrideValue}" ignored — ${reason}\n`,

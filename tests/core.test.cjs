@@ -1562,6 +1562,29 @@ describe('resolveEffortInternal', () => {
     );
   });
 
+  test('Test 18b: fable model + xhigh/max effort — passes through (compatible)', () => {
+    for (const effort of ['xhigh', 'max']) {
+      writeConfig({
+        model_profile: 'balanced',
+        model_overrides: { 'gsd-executor': 'fable' },
+        effort_overrides: { 'gsd-executor': effort },
+      });
+      startStderrCapture();
+      const result = resolveEffortInternal(tmpDir, 'gsd-executor');
+      const captured = stopStderrCapture();
+      assert.strictEqual(
+        result,
+        effort,
+        `${effort} passes through when model is fable`,
+      );
+      assert.strictEqual(
+        captured,
+        '',
+        `No warning for fable + ${effort}, got: ${captured}`,
+      );
+    }
+  });
+
   test('Test 19: profile=inherit with explicit max override — no skip (model unknown)', () => {
     writeConfig({
       model_profile: 'inherit',

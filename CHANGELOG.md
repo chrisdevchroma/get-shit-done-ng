@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `resolve-effort` no longer strips the `xhigh` and `max` effort tiers from agents resolved to `fable`. The model-tier compatibility gate accepted only `opus` for those tiers, so an agent pointed at `fable` via `model_overrides` silently fell back to the session default effort. Fable supports the same high reasoning tiers as Opus, so both models are now accepted (and the warning text names both).
+
 ## [1.0.0-dev.17] - 2026-06-07
 
 ### Added
