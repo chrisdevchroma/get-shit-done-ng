@@ -26,6 +26,7 @@ const {
   findPhaseInternal,
   planningPaths,
   getEngineRuntime,
+  readTextArgOrFile,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { MODEL_PROFILES, EFFORT_PROFILES } = require('./model-profiles.cjs');
@@ -673,6 +674,99 @@ function isRecurringDue(todoData) {
     ? new Date(todoData.last_completed).getTime()
     : 0;
   return Date.now() - lastCompleted >= intervalMs;
+}
+
+const DEFAULT_TODO_BODY = '## Problem\n\n## Solution\n';
+
+function yamlScalar(value) {
+  const str = String(value);
+  return /[:#]|^["'\s]|\s$/.test(str) ? JSON.stringify(str) : str;
+}
+
+function splitList(value) {
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function cmdTodoAdd(cwd, opts = {}) {
+  const title = (opts.title || '').trim();
+  if (!title) {
+    error('--title is required for todo add');
+  }
+
+  if (opts.interval && !opts.recurring) {
+    error('--interval requires --recurring — an interval alone is inert');
+  }
+
+  if (opts.interval && !parseDuration(opts.interval)) {
+    error(
+      `Invalid --interval '${opts.interval}' — expected Nd/Nw/Nm/Ny (e.g. 30d)`,
+    );
+  }
+
+  let body;
+  try {
+    body = readTextArgOrFile(cwd, opts.body, opts.body_file, 'body');
+  } catch (e) {
+    error(e.message);
+  }
+  const bodyText = body == null || body === '' ? DEFAULT_TODO_BODY : body;
+
+  const slug = generateSlugInternal(title);
+  if (!slug) {
+    error(`--title '${title}' contains no slug-able characters`);
+  }
+
+  const now = new Date();
+  const created = now.toISOString();
+  const date = created.split('T')[0];
+  const filename = `${date}-${slug}.md`;
+
+  const { todosPending } = planningPaths(cwd);
+  fs.mkdirSync(todosPending, { recursive: true });
+
+  const target = path.join(todosPending, filename);
+  if (fs.existsSync(target)) {
+    error(
+      `Todo already exists: ${filename} — retitle or edit .planning/todos/pending/${filename}`,
+    );
+  }
+
+  const area = (opts.area || '').trim() || 'general';
+  const files = splitList(opts.files);
+  const related = splitList(opts.related);
+
+  const lines = [
+    `created: ${created}`,
+    `title: ${yamlScalar(title)}`,
+    `area: ${yamlScalar(area)}`,
+  ];
+  if (opts.phase) lines.push(`phase: ${yamlScalar(opts.phase)}`);
+  if (files.length) {
+    lines.push('files:', ...files.map((f) => `  - ${yamlScalar(f)}`));
+  }
+  if (related.length) {
+    lines.push('related:', ...related.map((r) => `  - ${yamlScalar(r)}`));
+  }
+  if (opts.recurring) lines.push('recurring: true');
+  if (opts.interval) lines.push(`interval: ${opts.interval}`);
+
+  const content = `---\n${lines.join('\n')}\n---\n\n${bodyText.replace(/\n*$/, '\n')}`;
+  fs.writeFileSync(target, content, 'utf-8');
+
+  const relPath = toPosixPath(path.relative(cwd, target));
+  output(
+    {
+      created: true,
+      file: filename,
+      path: relPath,
+      title,
+      area,
+    },
+    relPath,
+  );
 }
 
 function cmdTodoComplete(cwd, filename) {
@@ -4908,6 +5002,7 @@ module.exports = {
   cmdProgressRender,
   parseDuration,
   isRecurringDue,
+  cmdTodoAdd,
   cmdTodoComplete,
   cmdTodoListByPhase,
   cmdTodoScanPhaseLinked,

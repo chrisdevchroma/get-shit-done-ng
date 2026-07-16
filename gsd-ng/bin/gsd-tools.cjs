@@ -285,7 +285,7 @@ const SUBCOMMANDS = {
   phase: ['next-decimal', 'add', 'insert', 'remove', 'complete'],
   milestone: ['complete'],
   validate: ['consistency', 'health'],
-  todo: ['complete', 'list-by-phase', 'scan-phase-linked'],
+  todo: ['add', 'complete', 'list-by-phase', 'scan-phase-linked'],
   init: [
     'execute-phase',
     'plan-phase',
@@ -417,6 +417,20 @@ const ARG_SCHEMAS = {
     health: { positional: { min: 0, max: 0 }, flags: ['--repair'] },
   },
   todo: {
+    add: {
+      positional: { min: 0, max: 0 },
+      flags: [
+        '--title',
+        '--area',
+        '--phase',
+        '--files',
+        '--related',
+        '--body',
+        '--body-file',
+        '--recurring',
+        '--interval',
+      ],
+    },
     complete: { positional: { min: 1, max: 1 }, flags: [] },
     'list-by-phase': { positional: { min: 1, max: 1 }, flags: [] },
     'scan-phase-linked': { positional: { min: 1, max: 1 }, flags: [] },
@@ -1719,7 +1733,27 @@ async function main() {
     case 'todo': {
       const subcommand = args[1];
       validateArgs('todo', subcommand, args.slice(2));
-      if (subcommand === 'complete') {
+      if (subcommand === 'add') {
+        const titleIdx = args.indexOf('--title');
+        const areaIdx = args.indexOf('--area');
+        const phaseIdx = args.indexOf('--phase');
+        const filesIdx = args.indexOf('--files');
+        const relatedIdx = args.indexOf('--related');
+        const bodyIdx = args.indexOf('--body');
+        const bodyFileIdx = args.indexOf('--body-file');
+        const intervalIdx = args.indexOf('--interval');
+        commands.cmdTodoAdd(cwd, {
+          title: titleIdx !== -1 ? args[titleIdx + 1] : null,
+          area: areaIdx !== -1 ? args[areaIdx + 1] : null,
+          phase: phaseIdx !== -1 ? args[phaseIdx + 1] : null,
+          files: filesIdx !== -1 ? args[filesIdx + 1] : null,
+          related: relatedIdx !== -1 ? args[relatedIdx + 1] : null,
+          body: bodyIdx !== -1 ? args[bodyIdx + 1] : null,
+          body_file: bodyFileIdx !== -1 ? args[bodyFileIdx + 1] : null,
+          recurring: args.includes('--recurring'),
+          interval: intervalIdx !== -1 ? args[intervalIdx + 1] : null,
+        });
+      } else if (subcommand === 'complete') {
         commands.cmdTodoComplete(cwd, args[2]);
       } else if (subcommand === 'list-by-phase') {
         commands.cmdTodoListByPhase(cwd, args[2]);

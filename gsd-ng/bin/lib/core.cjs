@@ -710,6 +710,19 @@ function pathExistsInternal(cwd, targetPath) {
   }
 }
 
+function readTextArgOrFile(cwd, value, filePath, label) {
+  if (!filePath) return value;
+
+  const resolvedPath = path.isAbsolute(filePath)
+    ? filePath
+    : path.join(cwd, filePath);
+  try {
+    return fs.readFileSync(resolvedPath, 'utf-8').trimEnd();
+  } catch {
+    throw new Error(`${label} file not found: ${filePath}`);
+  }
+}
+
 function generateSlugInternal(text, maxLen = 50) {
   if (!text) return null;
   let slug = text
@@ -894,6 +907,7 @@ module.exports = {
   resolveModelInternal,
   resolveEffortInternal,
   pathExistsInternal,
+  readTextArgOrFile,
   generateSlugInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
