@@ -24,7 +24,7 @@ if ! node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" guard init-valid "$INIT" 2>/d
 fi
 ```
 
-Extract from init JSON: `commit_docs`, `date`, `timestamp`, `todo_count`, `todos`, `pending_dir`, `todos_dir_exists`.
+Extract from init JSON: `commit_docs`, `todo_count`, `todos`, `pending_dir`, `todos_dir_exists`.
 
 Ensure directories exist:
 ```bash
@@ -103,27 +103,9 @@ Note: If "Link as related" was selected, `$LINK_AS_RELATED` is set to `true` and
 </step>
 
 <step name="create_file">
-Use values from init context: `timestamp` and `date` are already available.
-
-Generate slug for the title:
-```bash
-slug=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" generate-slug "$title")
-```
-
-Write to `.planning/todos/pending/${date}-${slug}.md`:
+Write the body to a temp file:
 
 ```markdown
----
-created: [timestamp]
-title: [title]
-area: [area]
-files:
-  - [file:lines]
-# Optional — for recurring reminders:
-# recurring: true
-# interval: 30d
----
-
 ## Problem
 
 [problem description - enough context for future Claude to understand weeks later]
@@ -133,9 +115,20 @@ files:
 [approach hints or "TBD"]
 ```
 
-**Recurring todos:** If the user specifies this should be a recurring or permanent reminder, add `recurring: true` and `interval: {duration}` to the frontmatter (uncomment and fill those fields). Valid interval formats: `7d`, `14d`, `30d`, `90d` (any Nd/Nw/Nm/Ny format — d=days, w=weeks, m=months, y=years). Do NOT add `last_completed` — it will be set automatically on first completion. Recurring todos stay in `pending/` after completion and resurface when their interval elapses.
+Then create the todo with a single call — the CLI derives the `YYYY-MM-DD-<slug>.md` filename and writes the frontmatter. Capture the reported filename for later steps rather than reconstructing it:
 
-The `--recurring` and `--interval` flags are recognized when invoking via arguments:
+```bash
+NEW_TODO_FILE=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" todo add \
+  --title "$title" --area "$area" --body-file /tmp/todo-body.md --pick file)
+```
+
+Optional flags: `--files "path/to/a.ts:12,path/to/b.ts:40"` (comma-separated), `--phase N`, and `--related "$EXISTING_TODO_FOR_LINK"` when `$LINK_AS_RELATED` is true (see `git_commit`).
+
+If the title collides with an existing todo for today, `todo add` errors instead of overwriting. Retitle, or treat it as a duplicate and revisit `check_duplicates`.
+
+**Recurring todos:** If the user specifies this should be a recurring or permanent reminder, pass `--recurring --interval {duration}`. Valid interval formats: `7d`, `14d`, `30d`, `90d` (any Nd/Nw/Nm/Ny format — d=days, w=weeks, m=months, y=years). Never author `last_completed` — the CLI omits it and `todo complete` sets it on first completion. Recurring todos stay in `pending/` after completion and resurface when their interval elapses.
+
+The `--recurring` and `--interval` flags are recognized when invoking via arguments, and pass straight through:
 - `{{COMMAND_PREFIX}}add-todo Check upstream changes --recurring --interval 30d`
 </step>
 
@@ -147,15 +140,11 @@ If `.planning/STATE.md` exists:
 </step>
 
 <step name="git_commit">
-**If `$LINK_AS_RELATED` is true**, run the auto-backlink BEFORE committing:
+**If `$LINK_AS_RELATED` is true**, run the reverse backlink BEFORE committing. The forward link was already written by `todo add --related` in `create_file`; only the existing todo still needs updating:
 
 ```bash
-# NEW_TODO_FILE is the filename just created (e.g., "2026-03-29-my-new-todo.md")
+# NEW_TODO_FILE is the filename reported by todo add (e.g., "2026-03-29-my-new-todo.md")
 # EXISTING_TODO_FOR_LINK is the similar todo found during duplicate check (basename only)
-
-# Append to related: on the new todo (creates the array if missing)
-node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" frontmatter array-append \
-  ".planning/todos/pending/$NEW_TODO_FILE" --field related --value "$EXISTING_TODO_FOR_LINK"
 
 # Append to related: on the existing todo (dedupe-aware; coerces scalar/missing to array)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" frontmatter array-append \
@@ -171,7 +160,7 @@ if [[ "$LINK_AS_RELATED" == "true" ]]; then
   node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: capture todo - [title] (linked to $EXISTING_TODO_FOR_LINK)" \
     --files ".planning/todos/pending/$NEW_TODO_FILE" ".planning/todos/pending/$EXISTING_TODO_FOR_LINK" .planning/STATE.md
 else
-  node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: capture todo - [title]" --files .planning/todos/pending/[filename] .planning/STATE.md
+  node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: capture todo - [title]" --files ".planning/todos/pending/$NEW_TODO_FILE" .planning/STATE.md
 fi
 ```
 
@@ -184,7 +173,7 @@ Confirm: "Committed: docs: capture todo - [title]"
 Display the saved todo summary:
 
 ```
-Todo saved: .planning/todos/pending/[filename]
+Todo saved: .planning/todos/pending/$NEW_TODO_FILE
 
   [title]
   Area: [area]

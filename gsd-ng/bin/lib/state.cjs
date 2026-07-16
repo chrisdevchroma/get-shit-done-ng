@@ -12,6 +12,7 @@ const {
   output,
   error,
   planningPaths,
+  readTextArgOrFile,
 } = require('./core.cjs');
 const {
   extractFrontmatter,
@@ -147,19 +148,6 @@ function cmdStateGet(cwd, section) {
     output({ error: `Section or field "${section}" not found` }, '');
   } catch {
     error('STATE.md not found');
-  }
-}
-
-function readTextArgOrFile(cwd, value, filePath, label) {
-  if (!filePath) return value;
-
-  const resolvedPath = path.isAbsolute(filePath)
-    ? filePath
-    : path.join(cwd, filePath);
-  try {
-    return fs.readFileSync(resolvedPath, 'utf-8').trimEnd();
-  } catch {
-    throw new Error(`${label} file not found: ${filePath}`);
   }
 }
 

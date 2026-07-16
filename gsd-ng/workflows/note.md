@@ -1,6 +1,7 @@
 <purpose>
 Zero-friction idea capture. One Write call, one confirmation line. No questions, no prompts.
-Runs inline — no Task, no AskUserQuestion, no Bash.
+Runs inline — no Task, no AskUserQuestion. Capture and list use no Bash; promote shells out to
+`gsd-tools todo add` so the promoted todo matches every other todo on disk.
 </purpose>
 
 <required_reading>
@@ -100,21 +101,10 @@ If a scope has no directory or no entries, show: `(no notes)`
 2. Find entry N from the numbered list
 3. If N is invalid or refers to an already-promoted note, tell the user and stop
 4. **Requires `.planning/` directory** — if it doesn't exist, warn: "Todos require a GSD project. Run `{{COMMAND_PREFIX}}new-project` to initialize one."
-5. Ensure `.planning/todos/pending/` directory exists
-6. Generate todo ID: `{NNN}-{slug}` where NNN is the next sequential number (scan both `.planning/todos/pending/` and `.planning/todos/completed/` for the highest existing number, increment by 1, zero-pad to 3 digits) and slug is the first ~4 meaningful words of the note text
-7. Extract the note text from the source file (body after frontmatter)
-8. Create `.planning/todos/pending/{id}.md`:
+5. Extract the note text from the source file (body after frontmatter)
+6. Write the todo body to a temp file:
 
-```yaml
----
-title: "{note text}"
-status: pending
-priority: P2
-source: "promoted from {{COMMAND_PREFIX}}note"
-created: {YYYY-MM-DD}
-theme: general
----
-
+```markdown
 ## Goal
 
 {note text}
@@ -128,8 +118,17 @@ Promoted from quick note captured on {original date}.
 - [ ] {primary criterion derived from note text}
 ```
 
-9. Mark the source note file as promoted: update its frontmatter to `promoted: true`
-10. Confirm: `Promoted note {N} to todo {id}: {note text}`
+7. Create the todo. `todo add` creates `.planning/todos/pending/` if needed, derives the `YYYY-MM-DD-{slug}.md` filename, and writes the canonical `created`/`title`/`area` frontmatter:
+
+```bash
+TODO_FILE=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" todo add \
+  --title "{note text}" --area general --body-file /tmp/note-promote-body.md --pick file)
+```
+
+If a todo with the same slug already exists for today, `todo add` errors rather than overwriting — report the collision and stop.
+
+8. Mark the source note file as promoted: update its frontmatter to `promoted: true`
+9. Confirm: `Promoted note {N} to todo {TODO_FILE}: {note text}`
 </step>
 
 </process>
