@@ -91,6 +91,7 @@
  *   progress [json|table|bar]          Render progress in various formats
  *
  * Todos:
+ *   todo add --title T [--area A]      Create a pending todo
  *   todo complete <filename>           Move todo from pending to completed
  *
  * Scaffolding:
@@ -1761,21 +1762,18 @@ async function main() {
         commands.cmdTodoScanPhaseLinked(cwd, args[2]);
       } else {
         // Only use same-namespace suggestions to avoid misleading
-        // cross-namespace matches (e.g. "todo add" suggesting "phase add").
+        // cross-namespace matches (e.g. "todo insert" suggesting "phase insert").
         const suggestions = suggestSubcommand(subcommand, 'todo');
-        // Hint users toward the /gsd:add-todo skill for create operations.
-        const skillHint =
-          '\nTo add a todo, use `/gsd:add-todo` (a workflow skill).';
         if (suggestions.sameNamespace.length > 0) {
           const parts = suggestions.sameNamespace
             .slice(0, 2)
             .map((s) => `todo ${s}`);
           error(
-            `Unknown todo subcommand '${subcommand}'. Did you mean: ${parts.join(', ')}?\nAvailable: ${SUBCOMMANDS.todo.join(', ')}${skillHint}`,
+            `Unknown todo subcommand '${subcommand}'. Did you mean: ${parts.join(', ')}?\nAvailable: ${SUBCOMMANDS.todo.join(', ')}`,
           );
         } else {
           error(
-            `Unknown todo subcommand '${subcommand}'. Available: ${SUBCOMMANDS.todo.join(', ')}${skillHint}`,
+            `Unknown todo subcommand '${subcommand}'. Available: ${SUBCOMMANDS.todo.join(', ')}`,
           );
         }
       }

@@ -503,9 +503,9 @@ describe('sync-agents command', () => {
   });
 });
 
-// ─── skill-redirect hints in error messages ──────────────────────────────────
+// ─── todo unknown-subcommand error messaging ─────────────────────────────────
 
-describe('skill-redirect hints in gsd-tools error messages', () => {
+describe('todo unknown subcommand error messaging', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -516,12 +516,12 @@ describe('skill-redirect hints in gsd-tools error messages', () => {
     cleanup(tmpDir);
   });
 
-  test('F-SKILL-HINT: todo unknown subcommand error includes /gsd:add-todo hint', () => {
+  test('F-SKILL-HINT: todo unknown subcommand error does not redirect to /gsd:add-todo', () => {
     const result = runGsdTools('todo unknown-sub', tmpDir);
     assert.strictEqual(result.success, false, 'Should exit non-zero');
     assert.ok(
-      result.error.includes('/gsd:add-todo'),
-      `F-SKILL-HINT: Expected /gsd:add-todo hint in stderr, got: ${result.error}`,
+      !result.error.includes('/gsd:add-todo'),
+      `F-SKILL-HINT: 'todo add' is a real subcommand — the error must not send CLI users to the skill, got: ${result.error}`,
     );
   });
 
@@ -530,7 +530,7 @@ describe('skill-redirect hints in gsd-tools error messages', () => {
     assert.strictEqual(result.success, false, 'Should exit non-zero');
     assert.ok(
       result.error.includes('Available:'),
-      `Expected "Available:" in stderr alongside skill hint, got: ${result.error}`,
+      `Expected "Available:" in stderr, got: ${result.error}`,
     );
   });
 });

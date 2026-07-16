@@ -1189,6 +1189,29 @@ describe('todo add command', () => {
     );
   });
 
+  test('unknown subcommand error does not point at the add-todo skill', () => {
+    const result = runGsdTools('todo bogus', tmpDir);
+    assert.ok(!result.success, 'should fail');
+    assert.ok(
+      !result.error.includes('add-todo'),
+      'must not advertise /gsd:add-todo as the way to add',
+    );
+    assert.ok(
+      !result.error.includes('workflow skill'),
+      'must not call add a workflow skill',
+    );
+  });
+
+  test('unknown subcommand error advertises add as available', () => {
+    const result = runGsdTools('todo bogus', tmpDir);
+    assert.ok(!result.success, 'should fail');
+    assert.match(
+      result.error,
+      /Available:[^\n]*\badd\b/,
+      'Available list should include add',
+    );
+  });
+
   test('created todo is visible to list-todos', () => {
     const added = runGsdTools(
       'todo add --title "Listed todo" --area tooling',
