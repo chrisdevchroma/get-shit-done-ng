@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `resolve-effort` no longer strips the `xhigh` and `max` effort tiers from agents resolved to `fable` or `sonnet`. The model-tier compatibility gate accepted only `opus`, so an agent pointed at either model silently fell back to the session default effort — with a warning only when the effort came from an explicit `effort_overrides` entry. Both now support the same high reasoning tiers as Opus: `fable` always did, and `sonnet` gained `xhigh` when the alias moved to Sonnet 5 (the first Sonnet-tier model with it, and the recommended setting there for the hardest coding and agentic work). The gate matches on the bare aliases the harness resolves, so a version-pinned string such as `sonnet-4-6` is still correctly rejected. The warning text now names all three accepted models.
+
+  In practice this only bit an explicit `effort_overrides` entry on a `sonnet`-resolved agent — for example `effort_overrides.gsd-executor: xhigh` under the `balanced` profile — since no profile assigns `xhigh`/`max` to an agent that resolves below the Opus tier.
+
 ## [1.0.0-dev.17] - 2026-06-07
 
 ### Added
