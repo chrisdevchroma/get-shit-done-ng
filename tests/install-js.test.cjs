@@ -2976,6 +2976,16 @@ test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', (
       fs.writeFileSync(filePath, body);
     }
 
+    // Stale-wipe witness. This is the ONE path on the Claude runtime where the
+    // wipe is observable: it is in the wipe's six-name hook list, but no file of
+    // this name ships in the source hooks/ dir, and the ordinary install's hook
+    // step only copies files in — it never deletes. So a plain reinstall leaves
+    // it alone and only a real wipe removes it. Every other location the wipe
+    // touches (commands/gsd, gsd-ng/, agents/gsd-*.md) is also cleared by the
+    // ordinary install, so absence there would prove nothing.
+    const staleWitness = path.join(claudeDir, 'hooks', 'gsd-check-update.sh');
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
     const settingsPath = path.join(claudeDir, 'settings.json');
     const settingsBefore = fs.existsSync(settingsPath)
       ? fs.readFileSync(settingsPath, 'utf8')
@@ -3012,8 +3022,15 @@ test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', (
       );
     }
 
-    // Guard against a no-op --clean passing this test: the managed tree must
-    // genuinely have been wiped and reinstalled.
+    // The wipe actually ran: a stale GSD-owned file the installer never writes
+    // back is gone. This is the assertion a no-op --clean fails; the refresh
+    // checks below only prove that an install ran.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
     assert.ok(
       fs.existsSync(path.join(claudeDir, 'commands', 'gsd')),
       'commands/gsd/ must be re-installed after --clean',
@@ -3075,6 +3092,31 @@ test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and pres
       fs.writeFileSync(filePath, body);
     }
 
+    // Why this test has no stale-wipe witness, unlike the Claude ones: on the
+    // Copilot runtime every location the wipe touches is ALSO cleared by the
+    // ordinary install that follows it — skills/gsd-* and agents/gsd-*.agent.md
+    // use the same predicates, gsd-ng/ is removed before it is re-copied, and
+    // hooks/gsd-hooks.json is overwritten unconditionally. So the wipe leaves no
+    // observable trace here and no absence check can distinguish it from a
+    // no-op. Pin that redundancy rather than claim a guard this test cannot
+    // have: a plain reinstall alone already removes a stale gsd- skill dir.
+    const staleSkill = path.join(configDir, 'skills', 'gsd-zz-stale', 'SKILL.md');
+    fs.mkdirSync(path.dirname(staleSkill), { recursive: true });
+    fs.writeFileSync(staleSkill, 'stale-gsd-owned-file');
+
+    const rPlain = runInstall();
+    assert.strictEqual(
+      rPlain.status,
+      0,
+      'plain copilot reinstall must exit 0\nstderr: ' + (rPlain.stderr || ''),
+    );
+    assert.ok(
+      !fs.existsSync(staleSkill),
+      'a plain copilot reinstall already removes stale gsd- skills, so --clean ' +
+        'has no observable witness on this runtime: ' +
+        staleSkill,
+    );
+
     const r2 = runInstall(['--clean']);
     assert.strictEqual(
       r2.status,
@@ -3095,7 +3137,8 @@ test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and pres
       );
     }
 
-    // Guard against a no-op --clean passing this test.
+    // Proves an install ran and the user content above survived it. It does NOT
+    // prove a wipe ran — see the note above.
     assert.ok(
       fs.existsSync(path.join(configDir, 'gsd-ng')),
       'gsd-ng/ must be re-installed after copilot --clean',
@@ -3166,6 +3209,13 @@ test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves u
       fs.writeFileSync(filePath, body);
     }
 
+    // Stale-wipe witness — see the Claude local test for why this specific name
+    // is the only observable one: it is in the wipe's hook list but ships in no
+    // source dir, and the ordinary install never deletes from hooks/.
+    const staleWitness = path.join(cfgDir, 'hooks', 'gsd-check-update.sh');
+    fs.mkdirSync(path.dirname(staleWitness), { recursive: true });
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
     const r2 = runInstall(['--clean']);
     assert.strictEqual(
       r2.status,
@@ -3191,7 +3241,15 @@ test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves u
       );
     }
 
-    // Guard against a no-op --clean passing this test.
+    // The wipe actually ran. The stdout line above is printed by the caller of
+    // removeGsdFiles and is ungated on any deletion, so it is not evidence on
+    // its own; this absence check is.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by global --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
     assert.ok(
       fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
       'commands/gsd/ must be re-installed after global --clean',
