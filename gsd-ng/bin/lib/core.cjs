@@ -822,6 +822,40 @@ function getMilestonePhaseFilter(cwd) {
 // ─── Phase Completion Status ────────────────────────────────────────────────
 
 /**
+ * Read the `status:` field from a phase's VERIFICATION.md.
+ *
+ * Returns null when the phase has no verification report, or the report exists
+ * but cannot be read/parsed. Callers must distinguish that null ("nobody has
+ * judged this phase") from a concrete failing status like 'gaps_found'
+ * ("the verifier judged it and the goal is not met") — they mean opposite
+ * things for anything gated on verification.
+ *
+ * Known statuses written by gsd-verifier: passed | gaps_found | human_needed | halted
+ */
+function readVerificationStatus(phaseDir) {
+  let files;
+  try {
+    files = fs.readdirSync(phaseDir);
+  } catch {
+    return null;
+  }
+  const verificationFile = files.find(
+    (f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md',
+  );
+  if (!verificationFile) return null;
+  try {
+    const { extractFrontmatter } = require('./frontmatter.cjs');
+    const fm = extractFrontmatter(
+      fs.readFileSync(path.join(phaseDir, verificationFile), 'utf-8'),
+    );
+    return fm && typeof fm.status === 'string' ? fm.status.trim() : null;
+  } catch {
+    // VERIFICATION.md unreadable — treat as unverified
+    return null;
+  }
+}
+
+/**
  * Determine phase completion status with verification awareness.
  * Returns { isComplete, status } where status is one of:
  *   'not_started', 'in_progress', 'complete (verified)', 'complete (unverified)'
@@ -848,23 +882,8 @@ function getPhaseCompletionStatus(phaseDir) {
   if (summaryCount < planCount)
     return { isComplete: false, status: 'in_progress' };
   // summaries >= plans — phase is complete. Check verification status.
-  const verificationFile = files.find(
-    (f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md',
-  );
-  if (verificationFile) {
-    try {
-      const { extractFrontmatter } = require('./frontmatter.cjs');
-      const verContent = fs.readFileSync(
-        path.join(phaseDir, verificationFile),
-        'utf-8',
-      );
-      const fm = extractFrontmatter(verContent);
-      if (fm && fm.status === 'passed') {
-        return { isComplete: true, status: 'complete (verified)' };
-      }
-    } catch {
-      // VERIFICATION.md unreadable — treat as unverified
-    }
+  if (readVerificationStatus(phaseDir) === 'passed') {
+    return { isComplete: true, status: 'complete (verified)' };
   }
   return { isComplete: true, status: 'complete (unverified)' };
 }
@@ -914,6 +933,7 @@ module.exports = {
   extractCurrentMilestone,
   replaceInCurrentMilestone,
   getPhaseCompletionStatus,
+  readVerificationStatus,
   toPosixPath,
   extractOneLinerFromBody,
   planningPaths,

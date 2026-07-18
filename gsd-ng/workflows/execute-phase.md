@@ -609,9 +609,16 @@ The CLI handles:
 - Updating Progress table (Status → Complete, date)
 - Updating plan count to final
 - Advancing STATE.md to next phase
-- Updating REQUIREMENTS.md traceability
+- Closing REQUIREMENTS.md checkboxes and traceability rows for this phase
 
-Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`.
+**Requirement closure happens here and only here** — not per-plan. `phase complete`
+takes the union of the ROADMAP phase section's `**Requirements:**` line and the
+`requirements:` frontmatter of every PLAN.md in the phase, then closes them
+*unless* VERIFICATION.md reports `gaps_found` or `halted`, in which case they stay
+Pending until gaps are closed and the verifier re-runs.
+
+Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
+`requirements_closed`, `requirements_blocked_by`.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md

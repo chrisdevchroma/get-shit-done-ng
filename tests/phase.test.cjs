@@ -3364,3 +3364,360 @@ describe('cmdPhaseMerge edge cases (alias for plan acceptance)', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase complete — requirement closure is a phase-close action
+//
+// Requirements used to be closed per-plan, at the end of execute-plan, from the
+// finishing plan's own `requirements:` frontmatter. When several plans in a
+// phase declare the same ID — which is routine; several of this repo's own
+// phases have one ID declared by two or three sibling plans — the ID was closed
+// by whichever plan finished FIRST, not when it was actually satisfied. Under
+// the wave-based parallel execution execute-phase performs, "first" is just
+// whichever agent won the race.
+//
+// Closure now happens once, in `phase complete`, on the verifier's authority.
+// These tests pin the three properties that makes it depend on:
+//   1. IDs are collected from ALL plans in the phase (union with the ROADMAP
+//      line), so moving closure later cannot become a never-closes bug.
+//   2. A failing VERIFICATION.md withholds closure entirely.
+//   3. An absent VERIFICATION.md does not — verification is a qualifier, not a
+//      gate, matching getPhaseCompletionStatus.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete requirement closure', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Models phase 65: three plans, IDs shared across them, and a ROADMAP phase
+  // section with NO `**Requirements:**` line — the shape that made the old
+  // roadmap-only closure miss plan-declared IDs entirely.
+  function seedSharedRequirementPhase(opts = {}) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 65: Planning Document Integrity
+
+### Phase 65: Planning Document Integrity
+**Goal:** Planning documents tell the truth
+**Plans:** 3 plans
+
+### Phase 66: Next
+**Goal:** Something else
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements
+
+## v1 Requirements
+
+### Detection
+
+- [ ] **PDI-DETECT-TRACE**: Traceability drift is detected
+- [ ] **PDI-DETECT-ROADMAP**: Roadmap drift is detected
+- [ ] **PDI-VELOCITY-FIX**: Velocity block is recomputed
+- [ ] **PDI-UNRELATED**: Belongs to another phase
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PDI-DETECT-TRACE | Phase 65 | Pending |
+| PDI-DETECT-ROADMAP | Phase 65 | Pending |
+| PDI-VELOCITY-FIX | Phase 65 | Pending |
+| PDI-UNRELATED | Phase 66 | Pending |
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 65\n**Current Phase Name:** Planning Document Integrity\n**Status:** In progress\n**Current Plan:** 65-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n`,
+    );
+
+    const dir = path.join(
+      tmpDir,
+      '.planning',
+      'phases',
+      '65-planning-document-integrity',
+    );
+    fs.mkdirSync(dir, { recursive: true });
+
+    // 65-01 declares all three; 65-02 and 65-03 each re-declare a subset.
+    // Under per-plan closure, 65-01 finishing first closed all three.
+    fs.writeFileSync(
+      path.join(dir, '65-01-PLAN.md'),
+      `---\nrequirements:\n  - PDI-DETECT-TRACE\n  - PDI-DETECT-ROADMAP\n  - PDI-VELOCITY-FIX\n---\n# Plan 65-01\n`,
+    );
+    fs.writeFileSync(
+      path.join(dir, '65-02-PLAN.md'),
+      `---\nrequirements: [PDI-DETECT-TRACE, PDI-DETECT-ROADMAP]\n---\n# Plan 65-02\n`,
+    );
+    fs.writeFileSync(
+      path.join(dir, '65-03-PLAN.md'),
+      `---\nrequirements:\n  - PDI-VELOCITY-FIX\n---\n# Plan 65-03\n`,
+    );
+    for (const id of ['65-01', '65-02', '65-03']) {
+      fs.writeFileSync(path.join(dir, `${id}-SUMMARY.md`), `# Summary ${id}`);
+    }
+
+    if (opts.verificationStatus) {
+      fs.writeFileSync(
+        path.join(dir, '65-VERIFICATION.md'),
+        `---\nstatus: ${opts.verificationStatus}\n---\n# Verification\n`,
+      );
+    }
+
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '66-next'), {
+      recursive: true,
+    });
+    return dir;
+  }
+
+  function readRequirements() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      'utf-8',
+    );
+  }
+
+  test('closes IDs declared only in plan frontmatter, deduped across plans', () => {
+    seedSharedRequirementPhase({ verificationStatus: 'passed' });
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      output.requirements_updated,
+      'requirements should be updated even though ROADMAP has no **Requirements:** line',
+    );
+    // Deduped: two of the three IDs are declared by more than one plan
+    assert.deepStrictEqual(
+      output.requirements_closed.slice().sort(),
+      ['PDI-DETECT-ROADMAP', 'PDI-DETECT-TRACE', 'PDI-VELOCITY-FIX'],
+      'union of all plan-declared IDs, each once',
+    );
+
+    const req = readRequirements();
+    assert.ok(req.includes('- [x] **PDI-DETECT-TRACE**'), 'TRACE checked');
+    assert.ok(req.includes('- [x] **PDI-DETECT-ROADMAP**'), 'ROADMAP checked');
+    assert.ok(req.includes('- [x] **PDI-VELOCITY-FIX**'), 'VELOCITY checked');
+    assert.match(
+      req,
+      /\|\s*PDI-DETECT-TRACE\s*\|[^|]+\|\s*Complete\s*\|/,
+      'TRACE traceability row marked Complete',
+    );
+    // A requirement belonging to another phase is untouched
+    assert.ok(
+      req.includes('- [ ] **PDI-UNRELATED**'),
+      'PDI-UNRELATED belongs to Phase 66 and must stay Pending',
+    );
+  });
+
+  test('withholds closure when VERIFICATION.md reports gaps_found', () => {
+    seedSharedRequirementPhase({ verificationStatus: 'gaps_found' });
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_updated, false);
+    assert.strictEqual(output.requirements_blocked_by, 'gaps_found');
+    assert.strictEqual(output.verification_status, 'gaps_found');
+    assert.deepStrictEqual(output.requirements_closed, []);
+
+    const req = readRequirements();
+    assert.ok(
+      req.includes('- [ ] **PDI-DETECT-TRACE**'),
+      'unmet requirement must stay unchecked when the verifier found gaps',
+    );
+    assert.match(
+      req,
+      /\|\s*PDI-DETECT-TRACE\s*\|[^|]+\|\s*Pending\s*\|/,
+      'traceability row must keep reading Pending',
+    );
+  });
+
+  test('withholds closure when VERIFICATION.md reports halted', () => {
+    seedSharedRequirementPhase({ verificationStatus: 'halted' });
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.strictEqual(
+      JSON.parse(result.output).requirements_blocked_by,
+      'halted',
+    );
+    assert.ok(readRequirements().includes('- [ ] **PDI-DETECT-TRACE**'));
+  });
+
+  test('closes when VERIFICATION.md reports human_needed (approval precedes phase close)', () => {
+    seedSharedRequirementPhase({ verificationStatus: 'human_needed' });
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_blocked_by, null);
+    assert.ok(output.requirements_updated);
+    assert.ok(readRequirements().includes('- [x] **PDI-DETECT-TRACE**'));
+  });
+
+  test('closes when no VERIFICATION.md exists (workflow.verifier disabled)', () => {
+    seedSharedRequirementPhase();
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.verification_status, null);
+    assert.strictEqual(output.requirements_blocked_by, null);
+    assert.ok(
+      output.requirements_updated,
+      'an absent verification report must not strand requirements as Pending forever',
+    );
+    assert.ok(readRequirements().includes('- [x] **PDI-DETECT-TRACE**'));
+  });
+
+  test('re-running after gap closure picks up the previously blocked IDs', () => {
+    const dir = seedSharedRequirementPhase({
+      verificationStatus: 'gaps_found',
+    });
+
+    let result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.ok(readRequirements().includes('- [ ] **PDI-DETECT-TRACE**'));
+
+    // Gaps closed, verifier re-runs and passes
+    fs.writeFileSync(
+      path.join(dir, '65-VERIFICATION.md'),
+      `---\nstatus: passed\nverification_round: 2\n---\n# Verification\n`,
+    );
+
+    result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.ok(JSON.parse(result.output).requirements_updated);
+    assert.ok(readRequirements().includes('- [x] **PDI-DETECT-TRACE**'));
+  });
+
+  test('is idempotent — a second phase complete leaves already-closed IDs alone', () => {
+    seedSharedRequirementPhase({ verificationStatus: 'passed' });
+
+    assert.ok(runGsdTools('phase complete 65 --json', tmpDir).success);
+    const afterFirst = readRequirements();
+
+    assert.ok(runGsdTools('phase complete 65 --json', tmpDir).success);
+    assert.strictEqual(
+      readRequirements(),
+      afterFirst,
+      'REQUIREMENTS.md should be byte-identical after a redundant re-run',
+    );
+  });
+
+  test('still honours the ROADMAP **Requirements:** line, unioned with plan frontmatter', () => {
+    const dir = seedSharedRequirementPhase({ verificationStatus: 'passed' });
+    // Roadmap names an ID that no plan declares — it must still close.
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      fs
+        .readFileSync(roadmapPath, 'utf-8')
+        .replace(
+          '**Plans:** 3 plans',
+          '**Requirements:** PDI-ROADMAP-ONLY\n**Plans:** 3 plans',
+        ),
+    );
+    const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    fs.writeFileSync(
+      reqPath,
+      fs
+        .readFileSync(reqPath, 'utf-8')
+        .replace(
+          '- [ ] **PDI-UNRELATED**',
+          '- [ ] **PDI-ROADMAP-ONLY**: Named only in the roadmap\n- [ ] **PDI-UNRELATED**',
+        ),
+    );
+    assert.ok(fs.existsSync(path.join(dir, '65-01-PLAN.md')));
+
+    const result = runGsdTools('phase complete 65 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const closed = JSON.parse(result.output).requirements_closed;
+    assert.ok(
+      closed.includes('PDI-ROADMAP-ONLY'),
+      'roadmap-declared ID should close',
+    );
+    assert.ok(
+      closed.includes('PDI-DETECT-TRACE'),
+      'plan-declared ID should close',
+    );
+    const req = readRequirements();
+    assert.ok(req.includes('- [x] **PDI-ROADMAP-ONLY**'));
+    assert.ok(req.includes('- [x] **PDI-DETECT-TRACE**'));
+  });
+
+  test('plans with no requirements frontmatter contribute nothing', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [ ] Phase 1: Solo\n\n### Phase 1: Solo\n**Goal:** Ship\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements\n\n- [ ] **SOLO-01**: Untouched\n`,
+    );
+    const dir = path.join(tmpDir, '.planning', 'phases', '01-solo');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '01-01-PLAN.md'),
+      '# Plan with no frontmatter',
+    );
+    fs.writeFileSync(path.join(dir, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(output.requirements_closed, []);
+    assert.strictEqual(output.requirements_updated, false);
+    assert.ok(readRequirements().includes('- [ ] **SOLO-01**'));
+  });
+});
+
+// The per-plan closure this bug came from lived in prose, not code — the
+// executor agent and execute-plan workflow instructed the model to run
+// `requirements mark-complete` at the end of every plan. Deleting the code path
+// is not enough if the instruction survives, so guard the docs directly.
+describe('requirements are not closed per-plan in workflow docs', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+  const PLAN_SCOPED_DOCS = [
+    'agents/gsd-executor.md',
+    'gsd-ng/workflows/execute-plan.md',
+  ];
+
+  for (const rel of PLAN_SCOPED_DOCS) {
+    test(`${rel} does not invoke requirements mark-complete`, () => {
+      const content = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+      const offending = content
+        .split('\n')
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(({ line }) =>
+          /gsd-tools\.cjs["']?\s+requirements\s+mark-complete/.test(line),
+        );
+
+      assert.deepStrictEqual(
+        offending,
+        [],
+        `${rel} closes requirements at plan scope — closure belongs in phase complete. ` +
+          `Offending lines: ${offending.map((o) => `${o.n}: ${o.line.trim()}`).join(' | ')}`,
+      );
+    });
+  }
+});
