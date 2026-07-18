@@ -3031,6 +3031,88 @@ test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', (
   }
 });
 
+// ── --clean on the Copilot runtime ─────────────────────────────────
+
+test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-02-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const configDir = path.join(tmpDir, '.github');
+
+    // Copilot-side user content. Non-gsd-prefixed on purpose: the wipe deletes
+    // only gsd-*.agent.md files and skills/gsd-* directories.
+    const planted = [
+      [path.join(configDir, 'agents', 'zz-user.agent.md'), 'zz-user-agent-body'],
+      [
+        path.join(configDir, 'skills', 'zz-user-skill', 'SKILL.md'),
+        'zz-user-skill-body',
+      ],
+      [
+        path.join(configDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive copilot --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after copilot --clean: ' +
+          filePath,
+      );
+    }
+
+    // Guard against a no-op --clean passing this test.
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'gsd-ng')),
+      'gsd-ng/ must be re-installed after copilot --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'copilot manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── effort frontmatter sync integration tests ───────────────────────────────
 
 describe('install.js - Phase 55 effort frontmatter sync', () => {
