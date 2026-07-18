@@ -312,7 +312,7 @@ Created .planning/codebase/:
 
 `{{COMMAND_PREFIX}}new-project`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

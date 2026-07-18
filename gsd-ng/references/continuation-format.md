@@ -13,7 +13,7 @@ Standard format for presenting next steps after completing a command or workflow
 
 `{command to copy-paste}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -32,6 +32,7 @@ Standard format for presenting next steps after completing a command or workflow
 4. **`/clear` explanation** — always include, keeps it concise but explains why
 5. **"Also available" not "Other options"** — sounds more app-like
 6. **Visual separators** — `---` above and below to make it stand out
+7. **Subtext in `*italics*`, never raw HTML** — de-emphasized lines (the `/clear` hint, "Final plan in Phase 2") use asterisk italics. Continuation blocks are printed straight to the Claude Code terminal, which renders GitHub-flavored markdown *without* inline HTML support — `<sub>`, `<small>`, `<br>` and friends show up literally as raw tags. Asterisks render correctly in both the terminal and on GitHub.
 
 ## Variants
 
@@ -46,7 +47,7 @@ Standard format for presenting next steps after completing a command or workflow
 
 `{{COMMAND_PREFIX}}execute-phase 2`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -67,11 +68,11 @@ Add note that this is the last plan and what comes after:
 ## ▶ Next Up
 
 **02-03: Refresh Token Rotation** — Add /api/auth/refresh with sliding expiry
-<sub>Final plan in Phase 2</sub>
+*Final plan in Phase 2*
 
 `{{COMMAND_PREFIX}}execute-phase 2`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -93,7 +94,7 @@ Add note that this is the last plan and what comes after:
 
 `{{COMMAND_PREFIX}}plan-phase 2`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -122,7 +123,7 @@ Show completion status before next action:
 
 `{{COMMAND_PREFIX}}plan-phase 3`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -151,7 +152,7 @@ When there's no clear primary action:
 
 **To research unknowns:** `{{COMMAND_PREFIX}}research-phase 3`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```
@@ -171,7 +172,7 @@ All 4 phases shipped
 
 `{{COMMAND_PREFIX}}new-milestone`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```

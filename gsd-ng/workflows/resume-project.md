@@ -223,7 +223,7 @@ Based on user selection, route to appropriate workflow:
 
   `{{COMMAND_PREFIX}}execute-phase {phase}`
 
-  <sub>`/clear` first → fresh context window</sub>
+  *`/clear` first → fresh context window*
 
   ---
   ```
@@ -237,7 +237,7 @@ Based on user selection, route to appropriate workflow:
 
   `{{COMMAND_PREFIX}}plan-phase [phase-number]`
 
-  <sub>`/clear` first → fresh context window</sub>
+  *`/clear` first → fresh context window*
 
   ---
 

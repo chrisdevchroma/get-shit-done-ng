@@ -229,7 +229,7 @@ All requirements covered. Cross-phase integration verified. E2E flows complete.
 
 `{{COMMAND_PREFIX}}complete-milestone {version}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 
@@ -274,7 +274,7 @@ Phases needing validation: run `{{COMMAND_PREFIX}}validate-phase {N}` for each f
 
 `{{COMMAND_PREFIX}}plan-milestone-gaps`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 
@@ -316,7 +316,7 @@ All requirements met. No critical blockers. Accumulated tech debt needs review.
 
 `{{COMMAND_PREFIX}}plan-milestone-gaps`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 </offer_next>

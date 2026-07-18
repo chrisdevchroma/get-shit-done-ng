@@ -903,7 +903,7 @@ Tag: v[X.Y]
 
 `{{COMMAND_PREFIX}}new-milestone`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```

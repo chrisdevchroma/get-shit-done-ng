@@ -153,7 +153,7 @@ Full review: {path to UI-REVIEW.md}
 - `{{COMMAND_PREFIX}}verify-work {N}` — UAT testing
 - `{{COMMAND_PREFIX}}plan-phase {N+1}` — plan next phase
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 ```

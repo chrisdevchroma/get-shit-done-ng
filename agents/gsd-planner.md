@@ -1216,7 +1216,7 @@ Return structured planning outcome to orchestrator.
 
 Execute: `/gsd:execute-phase {phase}`
 
-<sub>`/clear` first - fresh context window</sub>
+*`/clear` first → fresh context window*
 ```
 
 ## Gap Closure Plans Created

@@ -17,8 +17,9 @@ const reset = '\x1b[0m';
 // Get version from package.json
 const pkg = require('../package.json');
 const { processTemplate, buildContext, injectAppendToFile, fillBetweenMarkers } = require('../gsd-ng/bin/lib/template-processor.cjs');
-const { getPlatformCliPatterns, PLATFORM_TO_CLI, getReadEditWriteAllowRules, RW_FORMS } = require(path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'allowlist.cjs'));
+const { getPlatformCliPatterns, PLATFORM_TO_CLI, getReadEditWriteAllowRules, RW_FORMS, normalizePermissionRules } = require(path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'allowlist.cjs'));
 const { syncAgentEffortFrontmatter, formatRestartNotice } = require(path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'effort-sync.cjs'));
+const { extractFrontmatter, spliceFrontmatter } = require(path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'frontmatter.cjs'));
 
 // Parse args
 const args = process.argv.slice(2);
@@ -688,6 +689,45 @@ function fileHash(filePath) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+// ─── GSD-managed frontmatter (agent files) ───────────────────────────────────
+// Deployed agents/*.md are rewritten by GSD itself after install, whenever the
+// user makes a supported config change: /gsd:set-profile and
+// `config-set effort_overrides.*` both call syncAgentEffortFrontmatter(), which
+// re-serialises the whole frontmatter block (managed `effort:` value changes,
+// YAML comments drop out, values pick up canonical quoting). A raw sha256 of
+// such a file therefore diverges from the manifest without the user having
+// touched it — so agent entries carry a SECOND, normalised hash taken over the
+// canonicalised frontmatter minus the managed keys, plus the untouched body.
+// Config-driven churn is invisible to that hash; a real edit to the body or to
+// any non-managed frontmatter value still shows up.
+//
+// Known gap: because extractFrontmatter() discards comment lines and
+// spliceFrontmatter() never re-emits them, an edit made *inside* a frontmatter
+// YAML comment is normalised away and is neither reported nor backed up. Agent
+// files ship a commented-out `# hooks:` block that invites exactly that kind of
+// customisation, so this is reachable — though uncommenting the block (the more
+// likely edit) changes real keys and is detected normally.
+
+const MANAGED_AGENT_FRONTMATTER_KEYS = ['effort'];
+
+/**
+ * Canonicalise a deployed agent file for comparison: reparse the frontmatter,
+ * drop the GSD-managed keys, and re-serialise through the same writer the sync
+ * uses. Files that carry no frontmatter are returned unchanged.
+ */
+function stripManagedFrontmatter(content) {
+  if (!/^---\r?\n/.test(content)) return content;
+  const fm = extractFrontmatter(content);
+  for (const key of MANAGED_AGENT_FRONTMATTER_KEYS) delete fm[key];
+  return spliceFrontmatter(content, fm);
+}
+
+/** SHA256 of a file with GSD-managed frontmatter normalised out. */
+function normalizedFileHash(filePath) {
+  const content = stripManagedFrontmatter(fs.readFileSync(filePath, 'utf8'));
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
 /**
  * Recursively collect all files in dir with their hashes
  */
@@ -715,7 +755,12 @@ function writeManifest(configDir, version) {
   const gsdDir = path.join(configDir, 'gsd-ng');
   const commandsDir = path.join(configDir, 'commands', 'gsd');
   const agentsDir = path.join(configDir, 'agents');
-  const manifest = { version: version || pkg.version, timestamp: new Date().toISOString(), schema_version: 2, files: {} };
+  // `files_normalized` is an additive, optional companion map to `files`: same
+  // keys, normalised hashes, populated only for entries with GSD-managed
+  // frontmatter. Older installers ignore it; newer ones fall back to raw-hash
+  // comparison when a pre-existing manifest does not carry it. No schema bump
+  // is needed for either direction.
+  const manifest = { version: version || pkg.version, timestamp: new Date().toISOString(), schema_version: 2, files: {}, files_normalized: {} };
 
   const gsdHashes = generateManifest(gsdDir);
   for (const [rel, hash] of Object.entries(gsdHashes)) {
@@ -730,7 +775,9 @@ function writeManifest(configDir, version) {
   if (fs.existsSync(agentsDir)) {
     for (const file of fs.readdirSync(agentsDir)) {
       if (file.startsWith('gsd-') && file.endsWith('.md')) {
-        manifest.files['agents/' + file] = fileHash(path.join(agentsDir, file));
+        const agentPath = path.join(agentsDir, file);
+        manifest.files['agents/' + file] = fileHash(agentPath);
+        manifest.files_normalized['agents/' + file] = normalizedFileHash(agentPath);
       }
     }
   }
@@ -750,17 +797,29 @@ function _backupModifiedFilesQuiet(configDir) {
   let manifest;
   try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { return { modified: [], patchesDisplayPath: null }; }
   const patchesDir = path.join(configDir, PATCHES_DIR_NAME);
+  const normalizedHashes = manifest.files_normalized || {};
   const modified = [];
   for (const [relPath, originalHash] of Object.entries(manifest.files || {})) {
     const fullPath = path.join(configDir, relPath);
     if (!fs.existsSync(fullPath)) continue;
     const currentHash = fileHash(fullPath);
-    if (currentHash !== originalHash) {
-      const backupPath = path.join(patchesDir, relPath);
-      fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-      fs.copyFileSync(fullPath, backupPath);
-      modified.push(relPath);
+    if (currentHash === originalHash) continue;
+    // A raw mismatch on an entry that carries a normalised hash (agent files)
+    // may be GSD's own doing — a model-profile or effort-override change
+    // rewrote the managed frontmatter. Re-check against the normalised hash,
+    // which sees only the body and the non-managed frontmatter, before calling
+    // it a user modification. Manifests written before this map existed have no
+    // entry here and fall through to the raw verdict.
+    if (
+      normalizedHashes[relPath] &&
+      normalizedFileHash(fullPath) === normalizedHashes[relPath]
+    ) {
+      continue;
     }
+    const backupPath = path.join(patchesDir, relPath);
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.copyFileSync(fullPath, backupPath);
+    modified.push(relPath);
   }
   if (modified.length > 0) {
     const meta = {
@@ -1612,9 +1671,16 @@ function install(isGlobal) {
           // config.json missing or unparseable — skip
         }
 
-        const templateAllow = [...baseTemplateAllow, ...platformRw, ...dynamicEntries];
-        const templateDeny  = sandboxTemplate.permissions?.deny ?? [];
-        const templateAsk   = sandboxTemplate.permissions?.ask  ?? [];
+        // All three sections are normalised before seeding, not just deny. Claude
+        // Code's file permission checks match only Edit(path)/Read(path), so a
+        // Write(path), NotebookEdit(path) or Glob(path) rule never fires — and
+        // since v2.1.210 it also costs a startup warning, for allow, deny AND ask
+        // alike. normalizePermissionRules folds each unmatched form into its
+        // effective spelling and de-dups, so no such rule can reach a user's
+        // settings.json from any section we seed.
+        const templateAllow = normalizePermissionRules([...baseTemplateAllow, ...platformRw, ...dynamicEntries]);
+        const templateDeny  = normalizePermissionRules(sandboxTemplate.permissions?.deny ?? []);
+        const templateAsk   = normalizePermissionRules(sandboxTemplate.permissions?.ask  ?? []);
 
         // -- Three-section union-only sync helper --
         const syncSection = (existing, templateEntries) => {
