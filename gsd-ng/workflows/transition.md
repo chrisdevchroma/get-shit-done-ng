@@ -414,7 +414,7 @@ Exit skill and invoke SlashCommand("{{COMMAND_PREFIX}}discuss-phase [X+1] --auto
 
 `{{COMMAND_PREFIX}}discuss-phase [X+1]` — gather context and clarify approach
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -435,11 +435,11 @@ Exit skill and invoke SlashCommand("{{COMMAND_PREFIX}}discuss-phase [X+1] --auto
 ## ▶ Next Up
 
 **Phase [X+1]: [Name]** — [Goal from ROADMAP.md]
-<sub>✓ Context gathered, ready to plan</sub>
+*✓ Context gathered, ready to plan*
 
 `{{COMMAND_PREFIX}}plan-phase [X+1]`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -490,7 +490,7 @@ Exit skill and invoke SlashCommand("{{COMMAND_PREFIX}}complete-milestone {versio
 
 `{{COMMAND_PREFIX}}complete-milestone {version}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

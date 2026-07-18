@@ -182,7 +182,7 @@ Display in "Next Up" style:
 
 `{command}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 ```
 
 Then add context-aware launch option:

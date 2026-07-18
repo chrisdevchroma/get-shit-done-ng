@@ -95,7 +95,7 @@ Roadmap updated: .planning/ROADMAP.md
 
 `{{COMMAND_PREFIX}}plan-phase {N}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

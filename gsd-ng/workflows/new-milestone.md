@@ -389,7 +389,7 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: create milestone v[X
 
 `{{COMMAND_PREFIX}}discuss-phase [N]` — gather context and clarify approach
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 Also: `{{COMMAND_PREFIX}}plan-phase [N]` — skip discussion, plan directly
 ```

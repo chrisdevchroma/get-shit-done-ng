@@ -836,7 +836,7 @@ Created: .planning/phases/${PADDED_PHASE}-${SLUG}/${PADDED_PHASE}-CONTEXT.md
 
 `{{COMMAND_PREFIX}}plan-phase ${PHASE}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -922,7 +922,7 @@ This keeps the auto-advance chain flat — discuss, plan, and execute all run at
   Auto-advance pipeline finished: discuss → plan → execute
 
   Next: {{COMMAND_PREFIX}}discuss-phase ${NEXT_PHASE} --auto
-  <sub>`/clear` first → fresh context window</sub>
+  *`/clear` first → fresh context window*
   ```
 - **PLANNING COMPLETE** → Planning done, execution didn't complete:
   ```

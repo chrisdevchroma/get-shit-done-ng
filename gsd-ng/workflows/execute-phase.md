@@ -588,7 +588,7 @@ All automated checks passed. {N} items need human testing:
 
 `{{COMMAND_PREFIX}}plan-phase {X} --gaps`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 Also: `cat {phase_dir}/{phase_num}-VERIFICATION.md` — full report
 Also: `{{COMMAND_PREFIX}}verify-work {X}` — manual testing first

@@ -10,6 +10,8 @@ const {
   CLI_SUBCOMMANDS,
   PLATFORM_TO_CLI,
   RW_FORMS,
+  normalizePermissionRules,
+  findUnmatchedPathRules,
 } = require(path.resolve(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'allowlist.cjs'));
 
 // ── getPlatformCliPatterns('gh') returns patterns for all 18 narrowed subcommands (post-54.1) ──
@@ -300,19 +302,43 @@ describe('ALLOW-04: getReadEditWriteAllowRules(linux) returns bare forms', () =>
   test('returns [Edit, Write, Read] in that order', () => {
     assert.deepStrictEqual(getReadEditWriteAllowRules('linux'), ['Edit', 'Write', 'Read']);
   });
+  // Bare Write is a working rule, not an unmatched form: a tool-name rule with
+  // no path matches its tool everywhere and produces no startup warning. It is
+  // kept on Linux rather than folded into bare Edit — see the function docblock.
+  test('bare Write is retained on Linux and survives normalization untouched', () => {
+    const rules = getReadEditWriteAllowRules('linux');
+    assert.ok(rules.includes('Write'), 'Linux must keep the effective bare Write allow rule');
+    assert.deepStrictEqual(normalizePermissionRules(rules), rules,
+      'bare forms must pass through normalization unchanged');
+    assert.deepStrictEqual(findUnmatchedPathRules(rules), [],
+      'bare forms must never be reported as unmatched');
+  });
 });
 
-// ── getReadEditWriteAllowRules(darwin/win32) returns canonical forms ──
+// ── getReadEditWriteAllowRules(darwin/win32) returns glob forms, minus Write(*) ──
+//
+// Write(*) is an unmatched path form — file permission checks consult only
+// Edit(path)/Read(path), so it never matches and (CC >= 2.1.210) costs a startup
+// warning on every macOS/Windows install. Edit(*) governs every built-in
+// file-editing tool, so dropping Write(*) moves the grant rather than removing it.
 
-describe('ALLOW-05: getReadEditWriteAllowRules(darwin) returns canonical forms', () => {
-  test('darwin returns [Edit(*), Write(*), Read(*)]', () => {
-    assert.deepStrictEqual(getReadEditWriteAllowRules('darwin'), ['Edit(*)', 'Write(*)', 'Read(*)']);
+describe('ALLOW-05: getReadEditWriteAllowRules(darwin) returns glob forms without Write(*)', () => {
+  test('darwin returns [Edit(*), Read(*)]', () => {
+    assert.deepStrictEqual(getReadEditWriteAllowRules('darwin'), ['Edit(*)', 'Read(*)']);
   });
-  test('win32 defaults to canonical form pending CC Win32 research', () => {
-    assert.deepStrictEqual(getReadEditWriteAllowRules('win32'), ['Edit(*)', 'Write(*)', 'Read(*)']);
+  test('win32 mirrors darwin pending CC Win32 research', () => {
+    assert.deepStrictEqual(getReadEditWriteAllowRules('win32'), ['Edit(*)', 'Read(*)']);
   });
-  test('unknown platform string defaults to canonical form', () => {
-    assert.deepStrictEqual(getReadEditWriteAllowRules('freebsd'), ['Edit(*)', 'Write(*)', 'Read(*)']);
+  test('unknown platform string defaults to the darwin form', () => {
+    assert.deepStrictEqual(getReadEditWriteAllowRules('freebsd'), ['Edit(*)', 'Read(*)']);
+  });
+  test('no platform emits an unmatched path form', () => {
+    for (const platform of ['linux', 'darwin', 'win32', 'freebsd']) {
+      assert.deepStrictEqual(
+        findUnmatchedPathRules(getReadEditWriteAllowRules(platform)), [],
+        `${platform} must not emit an unmatched Tool(path) allow rule`,
+      );
+    }
   });
 });
 
@@ -465,5 +491,159 @@ describe('ALLOW-19: RW_FORMS export', () => {
       'documented V8 behavior: frozen Set still grows after .add()');
     assert.ok(frozenSet.has('bogus'),
       'documented V8 behavior: frozen Set still contains the newly added value');
+  });
+});
+
+// ── normalizePermissionRules folds unmatched Tool(path) forms into effective ones ──
+//
+// Claude Code's file permission checks match only Edit(path) and Read(path).
+// Write(path), NotebookEdit(path) and Glob(path) are accepted by the settings
+// parser but never matched — and since v2.1.210 each one costs a startup warning,
+// in allow, deny AND ask alike. Edit(path) is the effective spelling for the
+// file-editing tools; Read(path) for Glob(path).
+//
+// The critical boundary these tests lock: a BARE tool-name rule is NOT defective.
+// It matches its tool everywhere and produces no warning, so it must pass through
+// untouched and must never be reported.
+
+describe('ALLOW-23: normalizePermissionRules rewrites unmatched Tool(path) forms', () => {
+  test('Write(<path>) becomes Edit(<path>)', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Write(.env)']), ['Edit(.env)']);
+  });
+
+  test('bare Write passes through untouched — a tool-name rule matches everywhere and does not warn', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Write']), ['Write']);
+  });
+
+  test('every bare tool-name rule passes through untouched', () => {
+    const bare = ['Edit', 'Write', 'Read', 'Glob', 'NotebookEdit'];
+    assert.deepStrictEqual(normalizePermissionRules(bare), bare);
+  });
+
+  test('the degenerate empty-argument form is left alone, not rewritten', () => {
+    // Write() is not a path rule; rewriting it to Edit() would invent meaning.
+    assert.deepStrictEqual(normalizePermissionRules(['Write()']), ['Write()']);
+  });
+
+  test('Write(*) becomes Edit(*)', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Write(*)']), ['Edit(*)']);
+  });
+
+  test('NotebookEdit(<path>) becomes Edit(<path>)', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['NotebookEdit(docs/**)']), ['Edit(docs/**)']);
+  });
+
+  test('Glob(<path>) becomes Read(<path>)', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Glob(docs/**)']), ['Read(docs/**)']);
+  });
+
+  test('glob path arguments survive the conversion intact', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Write(.env.*)']), ['Edit(.env.*)']);
+  });
+
+  test('the Edit/Write pair collapses to the single effective Edit rule', () => {
+    // The exact shape proposed in 36.1-01-PLAN.md:92-97 — Edit/Write pairs.
+    // The Write half is decoration; de-dup must remove it, not preserve it.
+    assert.deepStrictEqual(
+      normalizePermissionRules(['Edit(.env)', 'Write(.env)', 'Edit(.env.*)', 'Write(.env.*)']),
+      ['Edit(.env)', 'Edit(.env.*)'],
+    );
+  });
+
+  test('pair collapses regardless of authoring order (Write first)', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Write(.env)', 'Edit(.env)']), ['Edit(.env)']);
+  });
+
+  test('Read(<path>) passes through untouched — a separate, genuinely enforced rule', () => {
+    assert.deepStrictEqual(
+      normalizePermissionRules(['Read(.env)', 'Write(.env)']),
+      ['Read(.env)', 'Edit(.env)'],
+    );
+  });
+
+  test('Bash(...) and other non-file rules pass through untouched', () => {
+    const input = ['Bash(rm -rf /*)', 'WebFetch(*)', 'Agent(*)'];
+    assert.deepStrictEqual(normalizePermissionRules(input), input);
+  });
+
+  test('does not rewrite tools whose name merely contains a rewritten name', () => {
+    assert.deepStrictEqual(
+      normalizePermissionRules(['NotebookWrite(x)', 'Writer', 'MyGlob(x)']),
+      ['NotebookWrite(x)', 'Writer', 'MyGlob(x)'],
+    );
+  });
+
+  test('exact duplicates collapse', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Edit(.env)', 'Edit(.env)']), ['Edit(.env)']);
+  });
+
+  test('empty list returns empty list', () => {
+    assert.deepStrictEqual(normalizePermissionRules([]), []);
+  });
+
+  test('non-array input returns empty list', () => {
+    assert.deepStrictEqual(normalizePermissionRules(undefined), []);
+    assert.deepStrictEqual(normalizePermissionRules(null), []);
+    assert.deepStrictEqual(normalizePermissionRules('Write(.env)'), []);
+  });
+
+  test('non-string members are skipped', () => {
+    assert.deepStrictEqual(normalizePermissionRules(['Edit(.env)', 42, null, { a: 1 }]), ['Edit(.env)']);
+  });
+
+  test('returns a fresh array — input is not mutated', () => {
+    const input = ['Write(.env)'];
+    const out = normalizePermissionRules(input);
+    assert.notStrictEqual(out, input, 'must return a new array instance');
+    assert.deepStrictEqual(input, ['Write(.env)'], 'input must not be mutated');
+  });
+
+  test('output contains no unmatched path rule for any input', () => {
+    const out = normalizePermissionRules([
+      'Write(*)', 'Write(.env)', 'NotebookEdit(a)', 'Glob(b)', 'Read(.env)', 'Bash(x)',
+    ]);
+    assert.deepStrictEqual(findUnmatchedPathRules(out), [],
+      `normalized output still has an unmatched rule: ${JSON.stringify(out)}`);
+  });
+
+  test('is idempotent', () => {
+    const once = normalizePermissionRules(['Edit(.env)', 'Write(.env)', 'Glob(x)', 'Read(.env)']);
+    assert.deepStrictEqual(normalizePermissionRules(once), once);
+  });
+});
+
+// ── findUnmatchedPathRules reports unmatched forms for assertion sites ──
+
+describe('ALLOW-24: findUnmatchedPathRules flags unmatched Tool(path) rules', () => {
+  test('reports Write(<path>) entries verbatim', () => {
+    assert.deepStrictEqual(
+      findUnmatchedPathRules(['Read(.env)', 'Edit(.env)', 'Write(.env)']),
+      ['Write(.env)'],
+    );
+  });
+
+  test('reports Write(*), NotebookEdit(path) and Glob(path)', () => {
+    assert.deepStrictEqual(
+      findUnmatchedPathRules(['Write(*)', 'NotebookEdit(a)', 'Glob(b)']),
+      ['Write(*)', 'NotebookEdit(a)', 'Glob(b)'],
+    );
+  });
+
+  test('does NOT report bare tool-name rules — they match everywhere and do not warn', () => {
+    assert.deepStrictEqual(findUnmatchedPathRules(['Write', 'Glob', 'NotebookEdit', 'Edit', 'Read']), []);
+  });
+
+  test('does not report the degenerate empty-argument form', () => {
+    assert.deepStrictEqual(findUnmatchedPathRules(['Write()']), []);
+  });
+
+  test('returns empty for a correctly authored list', () => {
+    assert.deepStrictEqual(findUnmatchedPathRules(['Read(.env)', 'Edit(.env)', 'Bash(curl *)']), []);
+  });
+
+  test('returns empty for empty, non-array, and non-string input', () => {
+    assert.deepStrictEqual(findUnmatchedPathRules([]), []);
+    assert.deepStrictEqual(findUnmatchedPathRules(undefined), []);
+    assert.deepStrictEqual(findUnmatchedPathRules([1, null]), []);
   });
 });

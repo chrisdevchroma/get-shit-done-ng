@@ -73,7 +73,6 @@
       "Bash(export *)",
       "Agent(*)",
       "Edit(*)",
-      "Write(*)",
       "Read(*)",
       "Skill(gsd:*)",
       "WebFetch(*)",

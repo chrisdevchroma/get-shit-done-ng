@@ -151,21 +151,129 @@ const RW_FORMS = Object.freeze(
  *   (Edit(*), Write(*), Read(*)) and produces startup warnings or
  *   unexpected prompts. Bare forms are the stable Linux workaround.
  *
- * - darwin / win32 / unknown → canonical glob forms ['Edit(*)', 'Write(*)', 'Read(*)']
- *   Canonical macOS form. Windows defaults to canonical pending CC Windows
- *   permission engine research (TODO: revisit if CC behavior is confirmed).
+ *   Bare `Write` is retained here on purpose. A tool-name rule with no path is
+ *   not an unmatched form: it matches the Write tool everywhere and produces no
+ *   startup warning, so it is a working rule that grants exactly what it was
+ *   seeded for (unprompted file creation). It is deliberately NOT folded into
+ *   bare `Edit` — that would rest on bare `Edit` covering the Write tool, which
+ *   the docs state for `Edit` *file-permission* rules, on the one platform with a
+ *   documented history of permission-engine quirks. Nothing is gained by the
+ *   risk: bare `Write` costs no warning.
+ *
+ * - darwin / win32 / unknown → glob forms ['Edit(*)', 'Read(*)']
+ *   `Write(*)` is deliberately absent. It is an unmatched path form: file
+ *   permission checks consult only `Edit(path)` and `Read(path)` rules, so
+ *   `Write(*)` never matches anything, and since Claude Code v2.1.210 every such
+ *   rule costs a startup warning. `Edit(*)` is the effective spelling and already
+ *   governs every built-in file-editing tool (Edit, Write, NotebookEdit), so the
+ *   Write tool remains allowed — the grant moves, it is not withdrawn.
+ *   Windows mirrors macOS pending CC Windows permission engine research
+ *   (TODO: revisit if CC behavior is confirmed).
  *
  * Pure function — no I/O, no module state. Returns a fresh array on every
  * call so callers can mutate without leaking into shared state.
  *
  * @param {string} platform  process.platform value ('linux', 'darwin', 'win32', ...)
- * @returns {string[]}       array of permission rule strings (length 3)
+ * @returns {string[]}       array of permission rule strings
  */
 function getReadEditWriteAllowRules(platform) {
   if (platform === 'linux') {
     return ['Edit', 'Write', 'Read'];
   }
-  return ['Edit(*)', 'Write(*)', 'Read(*)'];
+  return ['Edit(*)', 'Read(*)'];
+}
+
+/**
+ * Matches a permission rule written in one of Claude Code's *unmatched path
+ * forms* — a tool name that takes no part in file permission checks, carrying
+ * a non-empty path argument. Capture 1 is the tool name, capture 2 the path.
+ *
+ * The argument is deliberately required to be non-empty. A BARE tool-name rule
+ * (`Write`, `Glob`) is a different and entirely valid construct: it matches the
+ * tool everywhere and produces no warning, so it must never be rewritten or
+ * reported. Only the `Tool(path)` spelling is defective.
+ */
+const UNMATCHED_PATH_RULE_RE = /^(Write|NotebookEdit|Glob)\((.+)\)$/;
+
+/**
+ * The effective rule each unmatched path form must be rewritten to.
+ * Per the permissions docs: use `Edit(path)` in place of `Write(path)` or
+ * `NotebookEdit(path)`, and `Read(path)` in place of `Glob(path)`.
+ */
+const UNMATCHED_PATH_RULE_TARGET = {
+  Write: 'Edit',
+  NotebookEdit: 'Edit',
+  Glob: 'Read',
+};
+
+/**
+ * Normalise a permissions list so its file-path rules actually fire.
+ *
+ * Claude Code's file permission checks match only `Edit(path)` and `Read(path)`
+ * rules. A `Write(path)`, `NotebookEdit(path)` or `Glob(path)` rule is accepted
+ * by the settings parser but never matched by those checks — and since v2.1.210
+ * Claude Code warns at startup for every allow, deny *or* ask rule in one of
+ * these forms. Such a rule is therefore dead weight twice over: it reads as
+ * policy, never fires, and costs the user a startup warning. `Edit(path)` is the
+ * effective spelling for any file-editing tool (one `Edit` rule governs Edit,
+ * Write and NotebookEdit alike); `Read(path)` is the effective spelling for
+ * `Glob(path)`.
+ *
+ * This function makes that mistake structurally impossible on every section we
+ * seed: each unmatched path form is down-converted to its effective equivalent,
+ * and the result is de-duplicated in first-seen order. The de-dup is what
+ * neutralises the `Edit(.env)` + `Write(.env)` *pair* pattern (proposed in an
+ * earlier plan and the exact shape to avoid) — the redundant half collapses into
+ * the real rule rather than surviving as decoration.
+ *
+ * Two categories pass through untouched:
+ *   - BARE tool-name rules (`Write`, `Read`, `Edit`, `Glob`). A rule with no
+ *     path matches its tool everywhere and produces no warning, so it is a
+ *     deliberate, working construct — notably the Linux allow forms emitted by
+ *     getReadEditWriteAllowRules(). Rewriting one would silently change a
+ *     correct rule's meaning.
+ *   - Rules for tools outside the file-permission path (`Bash(...)`,
+ *     `Agent(*)`, ...). `Read(<path>)` in particular is a separate, genuinely
+ *     enforced rule and must be kept alongside `Edit(<path>)` for secrets.
+ *
+ * Pure function — no I/O, no module state. Returns a fresh array.
+ *
+ * @param {string[]} entries  permission rules as authored (e.g. from a template)
+ * @returns {string[]}        rules with unmatched path forms folded into effective ones
+ */
+function normalizePermissionRules(entries) {
+  if (!Array.isArray(entries)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string') continue;
+    const match = UNMATCHED_PATH_RULE_RE.exec(entry);
+    const normalized = match
+      ? `${UNMATCHED_PATH_RULE_TARGET[match[1]]}(${match[2]})`
+      : entry;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+/**
+ * Report which entries of a permissions list use an unmatched path form.
+ *
+ * Companion to normalizePermissionRules for assertion sites (template lint
+ * tests, installer diagnostics) that want to *fail* on the mistake rather than
+ * silently repair it. Returns the offending entries verbatim so a message can
+ * quote them. Bare tool-name rules are correct and are never reported.
+ *
+ * @param {string[]} entries  permission rules to inspect
+ * @returns {string[]}        the subset in an unmatched Tool(path) form
+ */
+function findUnmatchedPathRules(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.filter(
+    (e) => typeof e === 'string' && UNMATCHED_PATH_RULE_RE.test(e),
+  );
 }
 
 module.exports = {
@@ -175,4 +283,6 @@ module.exports = {
   getPlatformCliPatterns,
   getAllPlatformCliPatterns,
   getReadEditWriteAllowRules,
+  normalizePermissionRules,
+  findUnmatchedPathRules,
 };

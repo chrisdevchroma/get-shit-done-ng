@@ -157,7 +157,7 @@ Read its `<objective>` section.
 
 `{{COMMAND_PREFIX}}execute-phase {phase}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```
@@ -176,11 +176,11 @@ Check if `{phase_num}-CONTEXT.md` exists in phase directory.
 ## ▶ Next Up
 
 **Phase {N}: {Name}** — {Goal from ROADMAP.md}
-<sub>✓ Context gathered, ready to plan</sub>
+*✓ Context gathered, ready to plan*
 
 `{{COMMAND_PREFIX}}plan-phase {phase-number}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```
@@ -196,7 +196,7 @@ Check if `{phase_num}-CONTEXT.md` exists in phase directory.
 
 `{{COMMAND_PREFIX}}discuss-phase {phase}` — gather context and clarify approach
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -222,7 +222,7 @@ UAT.md exists with gaps (diagnosed issues). User needs to plan fixes.
 
 `{{COMMAND_PREFIX}}plan-phase {phase} --gaps`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -269,7 +269,7 @@ Read ROADMAP.md to get the next phase's name and goal.
 
 `{{COMMAND_PREFIX}}discuss-phase {Z+1}` — gather context and clarify approach
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -297,7 +297,7 @@ All {N} phases finished!
 
 `{{COMMAND_PREFIX}}complete-milestone`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 
@@ -328,7 +328,7 @@ Ready to plan the next milestone.
 
 `{{COMMAND_PREFIX}}new-milestone`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 ```

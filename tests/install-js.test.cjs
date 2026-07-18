@@ -11,6 +11,10 @@ const crypto = require('crypto');
 const INSTALLER = path.resolve(__dirname, '..', 'bin', 'install.js');
 
 const { RUNTIMES } = require('../gsd-ng/bin/lib/template-processor.cjs');
+const {
+  normalizePermissionRules,
+  findUnmatchedPathRules,
+} = require('../gsd-ng/bin/lib/allowlist.cjs');
 
 // Resolve a writable temp base — sandbox sets TMPDIR=/tmp/claude which may not exist on disk
 const { resolveTmpDir, cleanup } = require('./helpers.cjs');
@@ -208,14 +212,22 @@ test('PATH-04: install.js local install must not produce ./.claude/ paths in bas
   }
 });
 
-// ── settings-sandbox.json template contains Agent(*), canonical Edit(*)/Write(*)/Read(*),
-//            no deny rules, subshell builtins.
+// ── settings-sandbox.json template contains Agent(*), glob Edit(*)/Read(*),
+//            no unmatched path forms, no deny rules, subshell builtins.
 //
-//            Template uses canonical macOS forms (Edit(*), Write(*), Read(*)).
-//            install.js down-converts to bare forms on Linux via getReadEditWriteAllowRules().
+//            Template uses glob macOS forms (Edit(*), Read(*)). install.js
+//            down-converts to bare forms on Linux via getReadEditWriteAllowRules().
 //            See 54-CONTEXT.md "Template allow canonicalisation" decision.
+//
+//            Write(*) was REMOVED from this contract. It is an unmatched path form:
+//            file permission checks consult only Edit(path)/Read(path), so Write(*)
+//            never matches, and since CC v2.1.210 it emits a startup warning on
+//            every macOS/Windows install. Edit(*) already governs every built-in
+//            file-editing tool, so the Write tool stays allowed. The two-sided
+//            contract is now: glob Edit(*)/Read(*) present, bare forms absent, and
+//            NO entry anywhere in the allow list in an unmatched Tool(path) form.
 
-test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(*)/Write(*)/Read(*), excludes bare Edit/Write/Read, no deny rules, subshell builtins', () => {
+test('PERM-06: settings-sandbox.json template contains Agent(*), glob Edit(*)/Read(*), no unmatched path forms, excludes bare Edit/Write/Read, no deny rules, subshell builtins', () => {
   const templatePath = path.resolve(
     __dirname,
     '..',
@@ -232,12 +244,22 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
     'template must include canonical Edit(*) (down-converted to bare Edit on Linux at install time)',
   );
   assert.ok(
-    allow.includes('Write(*)'),
-    'template must include canonical Write(*) (down-converted to bare Write on Linux at install time)',
+    !allow.includes('Write(*)'),
+    'template must NOT include Write(*) — an unmatched path form that never fires and ' +
+      'emits a CC >= 2.1.210 startup warning. Edit(*) already covers the Write tool.',
   );
   assert.ok(
     allow.includes('Read(*)'),
     'template must include canonical Read(*) (down-converted to bare Read on Linux at install time)',
+  );
+  // Whole-list guard: no allow entry may use an unmatched Tool(path) form.
+  const unmatchedAllow = findUnmatchedPathRules(allow);
+  assert.deepStrictEqual(
+    unmatchedAllow,
+    [],
+    'template.permissions.allow must contain no unmatched Tool(path) rules — ' +
+      'use Edit(<path>) for Write/NotebookEdit and Read(<path>) for Glob. Offending entries: ' +
+      unmatchedAllow.join(', '),
   );
   // Two-sided contract: bare forms must NOT be present in the template
   assert.ok(
@@ -246,7 +268,7 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
   );
   assert.ok(
     !allow.includes('Write'),
-    'template must NOT include bare Write — use Write(*)',
+    'template must NOT include bare Write — Edit(*) covers the Write tool',
   );
   assert.ok(
     !allow.includes('Read'),
@@ -275,6 +297,66 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
     'template must include Bash(uniq *)',
   );
   assert.ok(allow.includes('Bash(seq *)'), 'template must include Bash(seq *)');
+});
+
+// ── settings-sandbox.json allow/deny/ask must use effective forms, never Tool(<path>) ──
+//
+//            Claude Code's file permission checks match only Edit(path) and
+//            Read(path) rules. A Write(path), NotebookEdit(path) or Glob(path)
+//            rule is accepted by the parser but never matched — it reads as
+//            policy, never fires, and (CC >= 2.1.210) costs a startup warning.
+//            One Edit(path) entry governs every file-editing tool, so Edit(path)
+//            is the effective spelling; Read(path) replaces Glob(path).
+//
+//            This covers ALL THREE seeded sections, not just deny — the startup
+//            warning fires for allow, deny and ask alike, and install.js now runs
+//            each of them through normalizePermissionRules(). The assertion keeps
+//            the template itself honest so the mistake is caught at source rather
+//            than repaired at install time. It also rejects the Edit/Write *pair*
+//            shape proposed in 36.1-01-PLAN.md:92-97 — the Write half is
+//            decoration, not defence.
+//
+//            A BARE tool-name rule (e.g. deny 'Write') is NOT flagged: it matches
+//            the tool everywhere and emits no warning, so it is a valid construct.
+
+test('PERM-09: settings-sandbox.json allow/deny/ask rules use effective forms, never an unmatched Tool(path) form', () => {
+  const templatePath = path.resolve(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'templates',
+    'settings-sandbox.json',
+  );
+  const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+
+  for (const section of ['allow', 'deny', 'ask']) {
+    const entries = template.permissions[section] ?? [];
+    assert.ok(
+      Array.isArray(entries),
+      `template.permissions.${section} must be an array when present (PERM-09)`,
+    );
+
+    const unmatched = findUnmatchedPathRules(entries);
+    assert.deepStrictEqual(
+      unmatched,
+      [],
+      `template.permissions.${section} must not contain unmatched Tool(path) rules — they are ` +
+        'never matched by the file permission engine and warn at startup. Use Edit(<path>) for ' +
+        'Write/NotebookEdit and Read(<path>) for Glob (and keep Read(<path>) alongside Edit(<path>) ' +
+        'for secrets). Offending entries: ' +
+        unmatched.join(', ') +
+        ' (PERM-09)',
+    );
+
+    // Normalisation must be a no-op on a correctly authored template — proves the
+    // shipped list is already in the form install.js would seed.
+    assert.deepStrictEqual(
+      normalizePermissionRules(entries),
+      entries,
+      `template.permissions.${section} must already be in normalised form ` +
+        '(no unmatched path rules, no duplicates) (PERM-09)',
+    );
+  }
 });
 
 // ── install seeds granular platform CLI patterns, not blanket wildcards ──
@@ -2975,6 +3057,7 @@ test('ALLOW-07: install.js --local on Linux writes bare Edit/Write/Read forms', 
     const allow = settings.permissions?.allow ?? [];
 
     assert.ok(allow.includes('Edit'), 'Linux must include bare Edit');
+    // Bare Write is an effective, warning-free tool-name rule — retained on Linux.
     assert.ok(allow.includes('Write'), 'Linux must include bare Write');
     assert.ok(allow.includes('Read'), 'Linux must include bare Read');
     assert.ok(
@@ -2994,7 +3077,63 @@ test('ALLOW-07: install.js --local on Linux writes bare Edit/Write/Read forms', 
   }
 });
 
-// ── install.js writes canonical Edit(*)/Write(*)/Read(*) on macOS ──
+// ── seeded settings.json carries no unmatched Tool(path) rule, on any platform ──
+//
+// The end-to-end guard for the defect the unit tests only approximate: the
+// installer used to seed Write(*) into permissions.allow on every macOS/Windows
+// install, which CC >= 2.1.210 reports as a startup warning. Asserting on the
+// file install.js actually writes — across all three seeded sections and every
+// platform branch — is what keeps a regression from shipping, since the template
+// and the platform allow list are separate sources that both feed this output.
+
+test('PERM-10: install.js seeds no unmatched Tool(path) rule into allow/deny/ask on any platform', () => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, `gsd-perm10-${platform}-`));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            GSD_TEST_FORCE_PLATFORM: platform,
+          }),
+        },
+      );
+      assert.strictEqual(result.status, 0, `install.js failed on ${platform}: ${result.stderr}`);
+
+      const settings = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, '.claude', 'settings.json'), 'utf8'),
+      );
+      for (const section of ['allow', 'deny', 'ask']) {
+        const entries = settings.permissions?.[section] ?? [];
+        const unmatched = findUnmatchedPathRules(entries);
+        assert.deepStrictEqual(
+          unmatched,
+          [],
+          `${platform}: seeded permissions.${section} must contain no unmatched Tool(path) rule ` +
+            `(never matched by the file permission engine; warns at startup on CC >= 2.1.210). ` +
+            `Offending entries: ${unmatched.join(', ')}`,
+        );
+      }
+
+      // The Write tool must still be granted — by the effective spelling for the
+      // platform, not withdrawn. Linux keeps bare Write; macOS/Windows rely on Edit(*).
+      const allow = settings.permissions?.allow ?? [];
+      assert.ok(
+        platform === 'linux' ? allow.includes('Write') : allow.includes('Edit(*)'),
+        `${platform}: file-editing must still be allowed after dropping the unmatched form`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  }
+});
+
+// ── install.js writes glob Edit(*)/Read(*) on macOS (no unmatched Write(*)) ──
 
 test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-08-'));
@@ -3019,7 +3158,8 @@ test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => 
     );
     const allow = settings.permissions?.allow ?? [];
     assert.ok(allow.includes('Edit(*)'));
-    assert.ok(allow.includes('Write(*)'));
+    assert.ok(!allow.includes('Write(*)'),
+      'macOS must NOT carry Write(*) — unmatched path form; Edit(*) covers the Write tool');
     assert.ok(allow.includes('Read(*)'));
     assert.ok(!allow.includes('Edit'), 'macOS must not carry bare Edit');
     // Narrowed verbs land — gated on gh presence on host
@@ -3083,8 +3223,8 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
       'win32 must include canonical Edit(*)',
     );
     assert.ok(
-      allow.includes('Write(*)'),
-      'win32 must include canonical Write(*)',
+      !allow.includes('Write(*)'),
+      'win32 must NOT include Write(*) — unmatched path form; Edit(*) covers the Write tool',
     );
     assert.ok(
       allow.includes('Read(*)'),
@@ -3378,4 +3518,182 @@ test('COPILOT-RT: runtime-comparison prose survives Copilot conversion intact', 
     output.includes('`.github/copilot-instructions.md` for Copilot'),
     `COPILOT-RT: expected '\`.github/copilot-instructions.md\` for Copilot' to survive verbatim, got: ${output}`,
   );
+});
+
+// ── GSD's own agent-frontmatter sync is not a "local modification" ──
+
+function runLocalInstall(tmpDir) {
+  return spawnSync(process.execPath, [INSTALLER, '--runtime', 'claude', '--local'], {
+    encoding: 'utf8',
+    timeout: 15000,
+    cwd: tmpDir,
+    env: Object.assign({}, process.env, { HOME: os.homedir() }),
+  });
+}
+
+// Reproduces what /gsd:set-profile and `config-set effort_overrides.*` do to the
+// deployed agent files: write a profile, then run the real sync helper.
+function applyProfileSync(tmpDir, profile) {
+  const {
+    syncAgentEffortFrontmatter,
+  } = require('../gsd-ng/bin/lib/effort-sync.cjs');
+  fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'),
+    JSON.stringify({ model_profile: profile }),
+  );
+  return syncAgentEffortFrontmatter(
+    tmpDir,
+    path.join(tmpDir, '.claude', 'agents'),
+  );
+}
+
+test('MANIFEST-SYNC-01: agent files rewritten by GSD\'s own effort sync are NOT reported as locally modified', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-01-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-01)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const synced = applyProfileSync(tmpDir, 'quality');
+    assert.ok(
+      synced.changes.length > 0,
+      'profile switch must rewrite at least one agent file, else the test proves nothing (MANIFEST-SYNC-01)',
+    );
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-01)\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const r2Stdout = r2.stdout || '';
+    assert.ok(
+      !/Found \d+ locally modified GSD file/.test(r2Stdout),
+      'config-driven effort frontmatter must NOT be reported as a local modification (MANIFEST-SYNC-01).\n' +
+        'stdout: ' +
+        r2Stdout.slice(0, 2000),
+    );
+
+    const patchesDir = path.join(tmpDir, '.claude', 'gsd-local-patches');
+    if (fs.existsSync(patchesDir)) {
+      const entries = fs.readdirSync(patchesDir).filter((e) => e !== '.gitkeep');
+      assert.strictEqual(
+        entries.length,
+        0,
+        'gsd-local-patches/ must stay empty after a profile switch (MANIFEST-SYNC-01). Entries: ' +
+          entries.join(', '),
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('MANIFEST-SYNC-02: a real body edit is still detected when GSD also rewrote the same file\'s frontmatter', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-02-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-02)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Hand-edit the body of ONE agent, then let GSD's sync rewrite the managed
+    // frontmatter of ALL of them on top. Only the hand-edited one is a patch.
+    const editedAgent = path.join(tmpDir, '.claude', 'agents', 'gsd-planner.md');
+    const marker = '<!-- local body edit -->';
+    fs.appendFileSync(editedAgent, '\n' + marker + '\n');
+    applyProfileSync(tmpDir, 'quality');
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-02)\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const r2Stdout = r2.stdout || '';
+    assert.ok(
+      /Found 1 locally modified GSD file/.test(r2Stdout),
+      'exactly one file (the hand-edited agent) must be reported (MANIFEST-SYNC-02).\n' +
+        'stdout: ' +
+        r2Stdout.slice(0, 2000),
+    );
+
+    const backup = path.join(
+      tmpDir,
+      '.claude',
+      'gsd-local-patches',
+      'agents',
+      'gsd-planner.md',
+    );
+    assert.ok(
+      fs.existsSync(backup),
+      'hand-edited agent must be backed up to gsd-local-patches/ (MANIFEST-SYNC-02)',
+    );
+    assert.ok(
+      fs.readFileSync(backup, 'utf8').includes(marker),
+      'the backed-up copy must retain the user body edit (MANIFEST-SYNC-02)',
+    );
+
+    const meta = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpDir, '.claude', 'gsd-local-patches', 'backup-meta.json'),
+        'utf8',
+      ),
+    );
+    assert.deepStrictEqual(
+      meta.files,
+      ['agents/gsd-planner.md'],
+      'backup-meta.json must list only the hand-edited agent (MANIFEST-SYNC-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash comparison', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-03-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-03)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Simulate a manifest written by a pre-fix installer: raw hashes only.
+    const manifestPath = path.join(tmpDir, '.claude', 'gsd-file-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.ok(
+      manifest.files_normalized &&
+        manifest.files_normalized['agents/gsd-planner.md'],
+      'fresh manifest must carry a normalized hash for agent files (MANIFEST-SYNC-03)',
+    );
+    delete manifest.files_normalized;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    applyProfileSync(tmpDir, 'quality');
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-03)\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      /Found \d+ locally modified GSD file/.test(r2.stdout || ''),
+      'legacy manifest must keep the old raw-hash verdict rather than silently trusting the file (MANIFEST-SYNC-03).\n' +
+        'stdout: ' +
+        (r2.stdout || '').slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });
