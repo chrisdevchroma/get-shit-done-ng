@@ -2930,6 +2930,107 @@ test('CLEAN-04: --help output documents --clean', () => {
   }
 });
 
+// ── --clean preserves user-owned content ───────────────────────────
+
+test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-01-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // User-owned content the wipe must never touch. Deliberately NOT gsd-prefixed:
+    // gsd-*.md agents and the six named gsd hook files are deleted by design.
+    const planted = [
+      [path.join(claudeDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(claudeDir, 'hooks', 'zz-user-hook.js'), 'zz-user-hook-body'],
+      [path.join(claudeDir, 'commands', 'zz-user-cmd.md'), 'zz-user-cmd-body'],
+      [
+        path.join(claudeDir, 'commands', 'zz-user-dir', 'nested.md'),
+        'zz-user-nested-body',
+      ],
+      [
+        path.join(claudeDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    const settingsBefore = fs.existsSync(settingsPath)
+      ? fs.readFileSync(settingsPath, 'utf8')
+      : null;
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after --clean: ' + filePath,
+      );
+    }
+
+    if (settingsBefore !== null) {
+      assert.ok(
+        fs.existsSync(settingsPath),
+        'settings.json must survive --clean',
+      );
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, 'utf8'),
+        settingsBefore,
+        'settings.json content must be unchanged by --clean',
+      );
+    }
+
+    // Guard against a no-op --clean passing this test: the managed tree must
+    // genuinely have been wiped and reinstalled.
+    assert.ok(
+      fs.existsSync(path.join(claudeDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(claudeDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── effort frontmatter sync integration tests ───────────────────────────────
 
 describe('install.js - Phase 55 effort frontmatter sync', () => {
