@@ -3113,6 +3113,102 @@ test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and pres
   }
 });
 
+// ── --clean --global targets CLAUDE_CONFIG_DIR, not the real home ──
+
+test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-03-'));
+  try {
+    const cfgDir = path.join(tmpDir, 'fakehome', '.claude');
+    fs.mkdirSync(cfgDir, { recursive: true });
+
+    // SAFETY: CLAUDE_CONFIG_DIR is set on EVERY invocation below. getGlobalDir
+    // reads it ahead of the home directory, so the global target stays inside
+    // tmpDir. A single call missing it would target the real user config dir.
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--global', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            CLAUDE_CONFIG_DIR: cfgDir,
+          }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline global install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Containment gate — must hold before any --clean run. If the redirect is
+    // not honored the install landed elsewhere and this test must stop here.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'global install must land in the redirected config dir, not the real home',
+    );
+
+    const planted = [
+      [path.join(cfgDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(cfgDir, 'CLAUDE.md'), 'zz-user-memory-body'],
+      [
+        path.join(cfgDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'global --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      /Wiped managed tree/.test(r2.stdout || ''),
+      'global --clean must report the wipe. stdout:\n' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive global --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after global --clean: ' +
+          filePath,
+      );
+    }
+
+    // Guard against a no-op --clean passing this test.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after global --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(cfgDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'global manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── effort frontmatter sync integration tests ───────────────────────────────
 
 describe('install.js - Phase 55 effort frontmatter sync', () => {
