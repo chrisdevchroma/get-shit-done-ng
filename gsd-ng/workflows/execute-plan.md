@@ -437,14 +437,17 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" roadmap update-plan-progress "${PH
 Counts PLAN vs SUMMARY files on disk. Updates progress table row with correct count and status (`In Progress` or `Complete` with date).
 </step>
 
-<step name="update_requirements">
-Mark completed requirements from the PLAN.md frontmatter `requirements:` field:
+<step name="requirements_are_not_closed_here">
+**Do not mark requirements complete at plan close.** Requirement closure happens
+once per phase, in `gsd-tools phase complete`, after the verifier has assessed
+the phase.
 
-```bash
-node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" requirements mark-complete ${REQ_IDS}
-```
-
-Extract requirement IDs from the plan's frontmatter (e.g., `requirements: [AUTH-01, AUTH-02]`). If no requirements field, skip.
+A plan finishing is not evidence that the requirements it declares are met.
+Plans in a phase routinely share a requirement ID — closing per-plan meant the
+ID flipped to Complete when the *first* of them finished, which under wave-based
+parallel execution is whichever agent happened to win the race. The plan's
+`requirements:` frontmatter stays as a declaration of intent; `phase complete`
+collects it across all plans in the phase and closes the union.
 </step>
 
 <step name="git_commit_metadata">

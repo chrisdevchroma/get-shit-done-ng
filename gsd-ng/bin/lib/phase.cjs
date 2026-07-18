@@ -14,6 +14,7 @@ const {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  readVerificationStatus,
   toPosixPath,
   output,
   error,
@@ -21,6 +22,117 @@ const {
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { writeStateMd } = require('./state.cjs');
+
+// VERIFICATION.md statuses that mean the verifier judged the phase goal NOT met.
+// Requirement closure is withheld for these so the traceability table keeps
+// telling the truth until the gaps are closed and the verifier re-runs.
+// 'human_needed' is deliberately absent: it means every automated check passed
+// and execute-phase only reaches phase-close after the human approves.
+const FAILED_VERIFICATION_STATUSES = new Set(['gaps_found', 'halted']);
+
+/**
+ * Split a requirement-ID list into individual IDs.
+ * Accepts comma-separated, space-separated, and bracket-wrapped forms.
+ */
+function parseRequirementIdList(raw) {
+  return String(raw)
+    .replace(/[[\]]/g, '')
+    .split(/[,\s]+/)
+    .map((r) => r.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Collect every requirement ID a phase is responsible for.
+ *
+ * Union of two sources, because neither is reliably complete on its own:
+ *   1. The ROADMAP.md phase section's `**Requirements:**` line — authoritative
+ *      when present, but frequently absent or stale.
+ *   2. The `requirements:` frontmatter of every PLAN.md in the phase directory
+ *      — what the plans actually claim to satisfy.
+ *
+ * Taking the union is what keeps the move to phase-close closure from becoming
+ * a never-closes bug: before this, plan-declared IDs were closed by the
+ * per-plan hook, so a phase whose roadmap section omits `**Requirements:**`
+ * would otherwise leave those IDs Pending forever.
+ */
+function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
+  const ids = [];
+  const seen = new Set();
+  const add = (id) => {
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  };
+
+  // Source 1: ROADMAP.md phase section (scoped to avoid cross-phase matching)
+  if (roadmapContent) {
+    const phaseEsc = escapeRegex(phaseNum);
+    const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
+      new RegExp(
+        `(#{2,4}\\s*Phase\\s+${phaseEsc}[:\\s][\\s\\S]*?)(?=#{2,4}\\s*Phase\\s+|$)`,
+        'i',
+      ),
+    );
+    const reqMatch = (phaseSectionMatch ? phaseSectionMatch[1] : '').match(
+      /\*\*Requirements:\*\*\s*([^\n]+)/i,
+    );
+    if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
+  }
+
+  // Source 2: `requirements:` frontmatter of every plan in the phase directory
+  const phaseDir = path.join(cwd, phaseInfo.directory);
+  for (const planFile of phaseInfo.plans || []) {
+    try {
+      const fm = extractFrontmatter(
+        fs.readFileSync(path.join(phaseDir, planFile), 'utf-8'),
+      );
+      const declared = fm && fm.requirements;
+      if (Array.isArray(declared)) {
+        for (const entry of declared)
+          parseRequirementIdList(entry).forEach(add);
+      } else if (typeof declared === 'string' && declared) {
+        parseRequirementIdList(declared).forEach(add);
+      }
+    } catch {
+      // Unreadable plan — its IDs simply don't contribute
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Check off the given requirement IDs in REQUIREMENTS.md.
+ * Returns true when the file was written. Idempotent: IDs already Complete
+ * match neither pattern, so re-running a phase-close is a no-op for them.
+ */
+function closePhaseRequirements(cwd, reqIds) {
+  const reqPath = planningPaths(cwd).requirements;
+  if (reqIds.length === 0 || !fs.existsSync(reqPath)) return false;
+
+  let reqContent = fs.readFileSync(reqPath, 'utf-8');
+  for (const reqId of reqIds) {
+    const reqEscaped = escapeRegex(reqId);
+    // Checkbox: - [ ] **<id>** → - [x] **<id>**
+    reqContent = reqContent.replace(
+      new RegExp(`(-\\s*\\[)[ ](\\]\\s*\\*\\*${reqEscaped}\\*\\*)`, 'gi'),
+      '$1x$2',
+    );
+    // Traceability table: | <id> | phase | Pending/In Progress | → | ... | Complete |
+    reqContent = reqContent.replace(
+      new RegExp(
+        `(\\|\\s*${reqEscaped}\\s*\\|[^|]+\\|)\\s*(?:Pending|In Progress)\\s*(\\|)`,
+        'gi',
+      ),
+      '$1 Complete $2',
+    );
+  }
+
+  fs.writeFileSync(reqPath, reqContent, 'utf-8');
+  return true;
+}
 
 function cmdPhasesList(cwd, options) {
   const { phases: phasesDir } = planningPaths(cwd);
@@ -929,10 +1041,11 @@ function cmdPhaseComplete(cwd, phaseNum) {
   const planCount = phaseInfo.plans.length;
   const summaryCount = phaseInfo.summaries.length;
   let requirementsUpdated = false;
+  let roadmapContent = null;
 
   // Update ROADMAP.md: mark phase complete
   if (fs.existsSync(roadmapPath)) {
-    let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+    roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
 
     // Checkbox: - [ ] Phase N: → - [x] Phase N: (...completed DATE)
     const checkboxPattern = new RegExp(
@@ -981,52 +1094,41 @@ function cmdPhaseComplete(cwd, phaseNum) {
     );
 
     fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  }
 
-    // Update REQUIREMENTS.md traceability for this phase's requirements
-    const reqPath = planningPaths(cwd).requirements;
-    if (fs.existsSync(reqPath)) {
-      // Extract the current phase section from roadmap (scoped to avoid cross-phase matching)
-      const phaseEsc = escapeRegex(phaseNum);
-      const currentMilestoneRoadmap = extractCurrentMilestone(roadmapContent);
-      const phaseSectionMatch = currentMilestoneRoadmap.match(
-        new RegExp(
-          `(#{2,4}\\s*Phase\\s+${phaseEsc}[:\\s][\\s\\S]*?)(?=#{2,4}\\s*Phase\\s+|$)`,
-          'i',
-        ),
-      );
+  // ── Requirement closure ───────────────────────────────────────────────────
+  // Closing requirements is a phase-close action gated on the verifier's
+  // assessment, never a per-plan side effect. When it fired per-plan, whichever
+  // plan finished first closed every ID it declared — so an ID shared by many
+  // plans in a phase read Complete while most of its work was unstarted, and
+  // under wave-based parallel execution two executors could also clobber each
+  // other's REQUIREMENTS.md write. VERIFICATION.md is the completion authority
+  // everywhere else in GSD (see getPhaseCompletionStatus); it is here too.
+  const verificationStatus = readVerificationStatus(
+    path.join(cwd, phaseInfo.directory),
+  );
+  const requirementsBlockedBy = FAILED_VERIFICATION_STATUSES.has(
+    verificationStatus,
+  )
+    ? verificationStatus
+    : null;
 
-      const sectionText = phaseSectionMatch ? phaseSectionMatch[1] : '';
-      const reqMatch = sectionText.match(/\*\*Requirements:\*\*\s*([^\n]+)/i);
-
-      if (reqMatch) {
-        const reqIds = reqMatch[1]
-          .replace(/[\[\]]/g, '')
-          .split(/[,\s]+/)
-          .map((r) => r.trim())
-          .filter(Boolean);
-        let reqContent = fs.readFileSync(reqPath, 'utf-8');
-
-        for (const reqId of reqIds) {
-          const reqEscaped = escapeRegex(reqId);
-          // Update checkbox: - [ ] **<id>** → - [x] **<id>**
-          reqContent = reqContent.replace(
-            new RegExp(`(-\\s*\\[)[ ](\\]\\s*\\*\\*${reqEscaped}\\*\\*)`, 'gi'),
-            '$1x$2',
-          );
-          // Update traceability table: | <id> | phase | Pending/In Progress | → | <id> | phase | Complete |
-          reqContent = reqContent.replace(
-            new RegExp(
-              `(\\|\\s*${reqEscaped}\\s*\\|[^|]+\\|)\\s*(?:Pending|In Progress)\\s*(\\|)`,
-              'gi',
-            ),
-            '$1 Complete $2',
-          );
-        }
-
-        fs.writeFileSync(reqPath, reqContent, 'utf-8');
-        requirementsUpdated = true;
-      }
-    }
+  let requirementIds = [];
+  if (requirementsBlockedBy) {
+    // Verifier says the goal is not met — leave every ID Pending. A later
+    // re-run after gap closure will pick them up.
+  } else {
+    // Either the verifier passed, it needs human sign-off (which execute-phase
+    // obtains before reaching phase-close), or no VERIFICATION.md exists at all
+    // because workflow.verifier is off. Verification is a qualifier, not a gate
+    // — an absent report must not strand requirements as permanently Pending.
+    requirementIds = collectPhaseRequirementIds(
+      cwd,
+      phaseNum,
+      phaseInfo,
+      roadmapContent,
+    );
+    requirementsUpdated = closePhaseRequirements(cwd, requirementIds);
   }
 
   // Find next phase — check both filesystem AND roadmap
@@ -1179,6 +1281,9 @@ function cmdPhaseComplete(cwd, phaseNum) {
     roadmap_updated: fs.existsSync(roadmapPath),
     state_updated: fs.existsSync(statePath),
     requirements_updated: requirementsUpdated,
+    requirements_closed: requirementIds,
+    verification_status: verificationStatus,
+    requirements_blocked_by: requirementsBlockedBy,
   };
 
   output(result);
