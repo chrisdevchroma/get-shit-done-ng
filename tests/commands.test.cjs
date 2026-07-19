@@ -5392,11 +5392,23 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
     return JSON.parse(r.output).permissions.allow;
   }
 
+  // Neither writer may emit a rule in an unmatched path form — a rule the
+  // permission engine never matches and warns about at startup. Both sanitise
+  // the same template, so this must hold on both sides of the parity check.
+  function assertNoUnmatchedPathRules(installAllow, generateAllow) {
+    const {
+      findUnmatchedPathRules,
+    } = require('../gsd-ng/bin/lib/allowlist.cjs');
+    assert.deepStrictEqual(findUnmatchedPathRules(installAllow), []);
+    assert.deepStrictEqual(findUnmatchedPathRules(generateAllow), []);
+  }
+
   test('darwin: set-equal to install.js --local output', () => {
     const cwd = createTempProject();
     try {
       const installAllow = runInstallAndRead('darwin');
       const generateAllow = runGenerateAllowlist(cwd, 'darwin');
+      assertNoUnmatchedPathRules(installAllow, generateAllow);
       assert.deepStrictEqual(
         new Set(installAllow),
         new Set(generateAllow),
@@ -5437,6 +5449,7 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
     try {
       const installAllow = runInstallAndRead('linux');
       const generateAllow = runGenerateAllowlist(cwd, 'linux');
+      assertNoUnmatchedPathRules(installAllow, generateAllow);
       assert.deepStrictEqual(new Set(installAllow), new Set(generateAllow));
       assert.ok(generateAllow.includes('Edit'));
       assert.ok(!generateAllow.includes('Edit(*)'));
@@ -5465,6 +5478,78 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
       } catch {
         /* gh not installed — skip narrow-verb parity */
       }
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  // Both writers read the same template, so both must sanitise it. The shipped
+  // template currently holds no unmatched path form, which makes the set-equality
+  // checks above blind to the difference — they would still pass with only one
+  // writer normalising. Feeding a doctored template through the generate path
+  // asserts the sanitising directly instead of relying on the template's contents.
+  test('generate-allowlist normalises unmatched path forms out of the template', () => {
+    const {
+      findUnmatchedPathRules,
+    } = require('../gsd-ng/bin/lib/allowlist.cjs');
+    const cwd = createTempProject();
+    try {
+      const doctored = JSON.stringify({
+        sandbox: { enabled: true, autoAllowBashIfSandboxed: true },
+        permissions: {
+          allow: [
+            'Bash(node *)',
+            'Write(/etc/hosts)',
+            'Edit(/etc/hosts)',
+            'Glob(src/**)',
+          ],
+        },
+      });
+      const COMMANDS = path.resolve(
+        __dirname,
+        '..',
+        'gsd-ng',
+        'bin',
+        'lib',
+        'commands.cjs',
+      );
+      // Intercept only the template read; everything else hits the real disk.
+      const script = [
+        `const fs = require('fs');`,
+        `const realReadFileSync = fs.readFileSync;`,
+        `fs.readFileSync = function (p, ...rest) {`,
+        `  if (String(p).endsWith('settings-sandbox.json')) return ${JSON.stringify(doctored)};`,
+        `  return realReadFileSync.call(this, p, ...rest);`,
+        `};`,
+        `require(${JSON.stringify(COMMANDS)}).cmdGenerateAllowlist(${JSON.stringify(cwd)}, 'darwin');`,
+      ].join('\n');
+
+      const r = spawnSyncMod(process.execPath, ['-e', script], {
+        encoding: 'utf-8',
+      });
+      assert.strictEqual(r.status, 0, `generate failed: ${r.stderr}`);
+      const allow = JSON.parse(r.stdout).permissions.allow;
+
+      assert.deepStrictEqual(
+        findUnmatchedPathRules(allow),
+        [],
+        'generate must not emit a rule Claude Code never matches and warns about',
+      );
+      assert.ok(
+        !allow.includes('Write(/etc/hosts)'),
+        'Write(path) must be folded into Edit(path)',
+      );
+      assert.ok(
+        !allow.includes('Glob(src/**)'),
+        'Glob(path) must be folded into Read(path)',
+      );
+      assert.strictEqual(
+        allow.filter((e) => e === 'Edit(/etc/hosts)').length,
+        1,
+        'the folded rule must collapse into the existing Edit rule, not duplicate it',
+      );
+      assert.ok(allow.includes('Read(src/**)'));
+      assert.ok(allow.includes('Bash(node *)'), 'unrelated rules pass through');
     } finally {
       cleanup(cwd);
     }

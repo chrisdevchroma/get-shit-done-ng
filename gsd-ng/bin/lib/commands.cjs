@@ -41,6 +41,7 @@ const {
   PLATFORM_TO_CLI,
   getReadEditWriteAllowRules,
   RW_FORMS,
+  normalizePermissionRules,
 } = require('./allowlist.cjs');
 const {
   compareSemVer,
@@ -4212,8 +4213,16 @@ function cmdGenerateAllowlist(cwd, platform = process.platform) {
     }
   } catch {}
 
-  // 5. Merge static + dynamic, sort for consistency
-  const allEntries = [...new Set([...staticEntries, ...dynamicEntries])].sort();
+  // 5. Merge static + dynamic, normalise, sort for consistency.
+  //    normalizePermissionRules folds every unmatched path form (a rule Claude
+  //    Code accepts but never matches, and warns about at startup) into the
+  //    effective spelling. install.js runs the same pass over the settings it
+  //    seeds; both writers consume the same template, so both must sanitise it
+  //    or an unmatched form authored into the template leaks out of this one.
+  const allEntries = normalizePermissionRules([
+    ...staticEntries,
+    ...dynamicEntries,
+  ]).sort();
 
   // 6. Build output JSON
   const result = {

@@ -617,8 +617,21 @@ takes the union of the ROADMAP phase section's `**Requirements:**` line and the
 *unless* VERIFICATION.md reports `gaps_found` or `halted`, in which case they stay
 Pending until gaps are closed and the verifier re-runs.
 
+Closure is scoped to this phase. An ID the REQUIREMENTS.md traceability table
+assigns to a *different* phase is never closed here, however the plan frontmatter
+declares it — closing it would make the table assert that unstarted work is done.
+Such IDs come back in `requirements_other_phase`, and IDs missing from the table
+entirely come back in `requirements_unmapped`.
+
 Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
-`requirements_closed`, `requirements_blocked_by`.
+`requirements_closed`, `requirements_blocked_by`, `requirements_other_phase`,
+`requirements_unmapped`.
+
+**Report both discrepancy lists to the user** if non-empty. `requirements_other_phase`
+means a plan believed it delivered a requirement the roadmap owes to another phase
+— either the plan overreached or the traceability table is wrong, and a human must
+decide which. `requirements_unmapped` means the traceability table has a coverage
+gap that roadmap or milestone-gap planning should fill.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md
