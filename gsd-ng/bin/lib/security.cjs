@@ -96,7 +96,6 @@ const INJECTION_PATTERNS = [
 const INJECTION_PATTERNS_TIERED = [
   // ── HIGH confidence — unambiguous attack indicators ─────────────────────────
 
-  // Direct instruction override — the canonical prompt injection attack
   // Covers: "ignore all previous instructions", "ignore the above directions", etc.
   {
     pattern:
@@ -113,7 +112,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'INSTR-OVERRIDE-SYSTEM',
     description: 'system/previous prompt override',
   },
-  // Hidden instruction markers — <system>, <assistant>, <human> tags
   {
     pattern: /<\/?(?:system|assistant|human)>/i,
     confidence: 'high',
@@ -166,7 +164,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'MD-LINK-TOKEN-IN-QUERY',
     description: 'secret-bearing query param in markdown link',
   },
-  // ADMIN OVERRIDE: authority claim variant (case-insensitive)
   {
     pattern: /ADMIN\s+OVERRIDE\s*:/i,
     confidence: 'high',
@@ -180,7 +177,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'JAILBREAK-DAN',
     description: 'DAN jailbreak family',
   },
-  // JAILBREAK prefix: explicit jailbreak label (case-insensitive)
   {
     pattern: /\bJAILBREAK\s*(?::|mode\b)|\bJAILBREAK\b/i,
     confidence: 'high',
@@ -190,7 +186,6 @@ const INJECTION_PATTERNS_TIERED = [
 
   // ── MEDIUM confidence — advisory-only (could be legitimate in security docs) ─
 
-  // Role/identity manipulation
   {
     pattern: /you\s+are\s+now\s+(?:a|an|the)\s+/i,
     confidence: 'medium',
@@ -204,14 +199,12 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'ROLE-SUBST-ACT-AS',
     description: 'act-as role substitution',
   },
-  // Pretend to be / pretend you're
   {
     pattern: /pretend\s+(?:you(?:'re| are)\s+|to\s+be\s+)/i,
     confidence: 'medium',
     id: 'ROLE-SUBST-PRETEND',
     description: 'pretend-to-be identity shift',
   },
-  // System prompt extraction
   {
     pattern:
       /(?:print|output|reveal|show|display|repeat)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions)/i,
@@ -250,7 +243,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'OBFUSC-BASE64-EXEC',
     description: 'base64+execute obfuscation',
   },
-  // Tool output / search result indirect injection
   // Attacker plants instructions in tool output that agent will process
   {
     pattern:
@@ -406,7 +398,6 @@ const INJECTION_PATTERNS_TIERED = [
   // FP guard: legitimate uses like "from now on the project will" (no "you")
   // and "the new instructions document" (no colon, no second-person verb) stay clean.
 
-  // "From/starting now/today, you will/must/shall/are to ..."
   {
     pattern:
       /\b(?:from\s+now\s+on|starting\s+(?:now|today))\s*,?\s*you\s+(?:will|must|shall|are\s+to)\b/i,
@@ -414,7 +405,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'CTX-RESET-FROM-NOW',
     description: 'context-reset "from now on you will"',
   },
-  // "New/Updated/Revised instructions:" prefix
   {
     pattern: /\b(?:new|updated|revised)\s+instructions\s*:/i,
     confidence: 'high',
@@ -429,7 +419,6 @@ const INJECTION_PATTERNS_TIERED = [
   // FP guard: "Authorization:" header, "the admin endpoint", "as a developer, I prefer X"
   // (no privilege-claim noun phrase) stay clean.
 
-  // "I am authorized to ..." / "I have admin/root/sudo/superuser/elevated permission/access/privileges"
   {
     pattern:
       /\bi\s+(?:am\s+authorized\s+to|have\s+(?:admin|root|sudo|superuser|elevated)\s+(?:permission|access|privilege)s?)/i,
@@ -437,7 +426,6 @@ const INJECTION_PATTERNS_TIERED = [
     id: 'AUTHORITY-SELF-CLAIM',
     description: 'self-asserted authorization claim',
   },
-  // "As an administrator/admin/root/sysadmin/developer with full access"
   {
     pattern:
       /\bas\s+(?:an?\s+)?(?:administrator|admin|root|sysadmin|developer\s+with\s+full\s+access)\b/i,
