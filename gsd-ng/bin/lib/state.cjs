@@ -145,13 +145,9 @@ function cmdStateGet(cwd, section) {
     const sectionMatch = content.match(sectionPattern);
     if (sectionMatch) {
       const sectionContent = sectionMatch[1].trim();
-      // Scan the section body, but keep the banner OUT of the string that gets
-      // parsed. Prepending it first and parsing afterwards let
-      // parseSectionContent read the banner's own "key: value" shape and
-      // swallow it into a pseudo-field, which destroyed the canonical
-      // `[SECURITY WARNING:` marker callers are told to look for. Structure the
-      // untrusted body, then attach the banner ahead of it — the same order the
-      // bold-field and plain-field branches already produce.
+      // Parse the untrusted body before attaching the banner: parseSectionContent
+      // reads the banner's own "key: value" shape as a field and swallows the
+      // `[SECURITY WARNING:` marker callers match on.
       const warning = securityWarningFor(sectionContent);
       const structured = parseSectionContent(sectionContent);
       const display = JSON.stringify(structured);
@@ -380,12 +376,9 @@ function cmdStateAdvancePlan(cwd) {
     return stateReplaceFieldWithFallback(c, primary, value);
   };
 
-  // Derive the position from disk instead of incrementing the stored value.
-  // Wave-based execution runs several executors against one STATE.md at once;
-  // read-value-then-write-value-plus-one lands at +1 however many plans just
-  // finished, because every executor reads the same number before any of them
-  // writes. Counting SUMMARY files gives every caller the same answer, makes a
-  // repeat call a no-op, and makes the value correct again after a failed run.
+  // Wave execution runs several executors against one STATE.md concurrently, so
+  // the position is counted from disk rather than incremented — that keeps a
+  // repeat call idempotent where read-then-write-plus-one races.
   const phasePrefixMatch = legacyPlan && legacyPlan.match(/^(\d+)-\d+$/);
   const phaseRef =
     stateExtractField(content, 'Current Phase') ||
@@ -393,9 +386,8 @@ function cmdStateAdvancePlan(cwd) {
   const completedOnDisk = countCompletedPlansOnDisk(cwd, phaseRef);
   const derivedFromDisk = completedOnDisk !== null;
 
-  // A finished plan writes its SUMMARY before calling this, so the count
-  // includes the caller's own plan — the next position is count + 1, and the
-  // phase is done once the count reaches the plan total.
+  // A finished plan writes its SUMMARY before calling this, so the count already
+  // includes the caller's own plan.
   const nextPlan = derivedFromDisk ? completedOnDisk + 1 : currentPlan + 1;
   const atEndOfPhase = derivedFromDisk
     ? completedOnDisk >= totalPlans
@@ -428,8 +420,6 @@ function cmdStateAdvancePlan(cwd) {
       const newPlanValue = planField.replace(/^\d+/, String(nextPlan));
       content = stateReplaceField(content, 'Plan', newPlanValue) || content;
     } else {
-      // Preserve original format: "02-08" → "02-09", "08" → "09", "8" → "9".
-      // Non-numeric values have no format to preserve — write the bare number.
       const legacyPlanRaw = stateExtractField(content, 'Current Plan');
       const newValue =
         formatPlanPosition(legacyPlanRaw, nextPlan) || String(nextPlan);

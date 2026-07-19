@@ -151,24 +151,10 @@ const RW_FORMS = Object.freeze(
  *   (Edit(*), Write(*), Read(*)) and produces startup warnings or
  *   unexpected prompts. Bare forms are the stable Linux workaround.
  *
- *   Bare `Write` is retained here on purpose. A tool-name rule with no path is
- *   not an unmatched form: it matches the Write tool everywhere and produces no
- *   startup warning, so it is a working rule that grants exactly what it was
- *   seeded for (unprompted file creation). It is deliberately NOT folded into
- *   bare `Edit` — that would rest on bare `Edit` covering the Write tool, which
- *   the docs state for `Edit` *file-permission* rules, on the one platform with a
- *   documented history of permission-engine quirks. Nothing is gained by the
- *   risk: bare `Write` costs no warning.
- *
  * - darwin / win32 / unknown → glob forms ['Edit(*)', 'Read(*)']
- *   `Write(*)` is deliberately absent. It is an unmatched path form: file
- *   permission checks consult only `Edit(path)` and `Read(path)` rules, so
- *   `Write(*)` never matches anything, and since Claude Code v2.1.210 every such
- *   rule costs a startup warning. `Edit(*)` is the effective spelling and already
- *   governs every built-in file-editing tool (Edit, Write, NotebookEdit), so the
- *   Write tool remains allowed — the grant moves, it is not withdrawn.
- *   Windows mirrors macOS pending CC Windows permission engine research
- *   (TODO: revisit if CC behavior is confirmed).
+ *   `Write(*)` is absent because it is an unmatched path form — see
+ *   normalizePermissionRules below. Windows mirrors macOS pending CC Windows
+ *   permission engine research (TODO: revisit if CC behavior is confirmed).
  *
  * Pure function — no I/O, no module state. Returns a fresh array on every
  * call so callers can mutate without leaking into shared state.
@@ -213,25 +199,17 @@ const UNMATCHED_PATH_RULE_TARGET = {
  * rules. A `Write(path)`, `NotebookEdit(path)` or `Glob(path)` rule is accepted
  * by the settings parser but never matched by those checks — and since v2.1.210
  * Claude Code warns at startup for every allow, deny *or* ask rule in one of
- * these forms. Such a rule is therefore dead weight twice over: it reads as
- * policy, never fires, and costs the user a startup warning. `Edit(path)` is the
- * effective spelling for any file-editing tool (one `Edit` rule governs Edit,
- * Write and NotebookEdit alike); `Read(path)` is the effective spelling for
- * `Glob(path)`.
+ * these forms. `Edit(path)` is the effective spelling for any file-editing tool
+ * (one `Edit` rule governs Edit, Write and NotebookEdit alike); `Read(path)` is
+ * the effective spelling for `Glob(path)`.
  *
- * This function makes that mistake structurally impossible on every section we
- * seed: each unmatched path form is down-converted to its effective equivalent,
- * and the result is de-duplicated in first-seen order. The de-dup is what
- * neutralises the `Edit(.env)` + `Write(.env)` *pair* pattern — the redundant
- * half collapses into
- * the real rule rather than surviving as decoration.
+ * Each unmatched path form is down-converted to its effective equivalent and the
+ * result de-duplicated in first-seen order, which also collapses the
+ * `Edit(.env)` + `Write(.env)` pair pattern into the one rule that fires.
  *
  * Two categories pass through untouched:
- *   - BARE tool-name rules (`Write`, `Read`, `Edit`, `Glob`). A rule with no
- *     path matches its tool everywhere and produces no warning, so it is a
- *     deliberate, working construct — notably the Linux allow forms emitted by
- *     getReadEditWriteAllowRules(). Rewriting one would silently change a
- *     correct rule's meaning.
+ *   - BARE tool-name rules (`Write`, `Read`, `Edit`, `Glob`) — notably the Linux
+ *     allow forms emitted by getReadEditWriteAllowRules().
  *   - Rules for tools outside the file-permission path (`Bash(...)`,
  *     `Agent(*)`, ...). `Read(<path>)` in particular is a separate, genuinely
  *     enforced rule and must be kept alongside `Edit(<path>)` for secrets.
