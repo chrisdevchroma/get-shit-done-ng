@@ -2,11 +2,22 @@ name: Security Scan
 
 on:
   pull_request_target:
+    # Must stay set-equal to SCAN_PATHS in scripts/ci-security-scan.cjs.
+    # A path listed there but missing here never starts this workflow.
     paths:
-      - '.planning/**'
       - '.claude/**'
       - '.github/**'
+      - '.planning/**'
+      - 'agents/**'
+      - 'assets/**'
+      - 'bin/**'
+      - 'commands/**'
+      - 'docs/**'
+      - 'gsd-ng/**'
+      - 'hooks/**'
       - 'scripts/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
 
 permissions:
   checks: write
