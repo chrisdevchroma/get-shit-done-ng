@@ -257,18 +257,17 @@ describe('c8-ignore baseline check', () => {
     );
   });
 
-  test('initial baseline is all zeros (sanity for first scan)', () => {
-    // Documents the seeded state. Once justified ignores legitimately land,
-    // adjust this assertion or delete it; it exists as a one-time guard
-    // confirming the seed step completed correctly.
+  test('every baseline entry is a non-negative integer count', () => {
     const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
-    const nonZero = Object.entries(baseline).filter(([, v]) => v !== 0);
-    // Soft assertion — non-zero is acceptable once justified ignores land.
-    // The strict bound is the per-file ceiling test above; this just notes
-    // the current seeded state.
-    assert.ok(
-      nonZero.length === 0 || nonZero.length > 0,
-      'Baseline structure check (always passes; informational).',
+    const entries = Object.entries(baseline);
+    assert.ok(entries.length > 0, 'baseline must not be empty');
+    const malformed = entries.filter(
+      ([, v]) => !Number.isInteger(v) || v < 0,
+    );
+    assert.deepEqual(
+      malformed,
+      [],
+      `baseline counts must be non-negative integers; got ${JSON.stringify(malformed)}`,
     );
   });
 });
