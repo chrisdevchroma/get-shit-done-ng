@@ -32,15 +32,17 @@ test('test-baseline lib module', async (t) => {
     'gsd-tools test capture-baseline with no args produces Too few arguments error',
     () => {
       let output = '';
+      let exited = false;
       try {
         execSync(`node "${GSD_TOOLS}" test capture-baseline`, {
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-        assert.fail('should have exited with error');
       } catch (err) {
+        exited = true;
         output = (err.stdout || '') + (err.stderr || '');
       }
+      assert.ok(exited, 'should have exited with error');
       assert.ok(
         output.includes('Too few arguments'),
         `expected "Too few arguments" in output, got: ${output}`,
@@ -50,15 +52,17 @@ test('test-baseline lib module', async (t) => {
 
   await t.test('gsd-tools test with unknown subcommand produces error', () => {
     let output = '';
+    let exited = false;
     try {
       execSync(`node "${GSD_TOOLS}" test unknown-subcmd arg1 arg2`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      assert.fail('should have exited with error');
     } catch (err) {
+      exited = true;
       output = (err.stdout || '') + (err.stderr || '');
     }
+    assert.ok(exited, 'should have exited with error');
     assert.ok(
       output.includes('Unknown test subcommand') ||
         output.includes('unknown-subcmd'),

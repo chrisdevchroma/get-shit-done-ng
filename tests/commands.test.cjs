@@ -1448,7 +1448,7 @@ describe('todo add YAML scalar safety', () => {
 
     const content = readTodo('bell-ring');
     assert.ok(
-      !/[ --]/.test(content),
+      !/[\x00-\x08\x0b-\x1f\x7f]/.test(content),
       'no raw control character may reach the file',
     );
     assert.match(
