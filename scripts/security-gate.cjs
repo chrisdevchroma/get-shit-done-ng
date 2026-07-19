@@ -6,14 +6,11 @@
  * The gate is a COMMIT STATUS posted against the pull request head commit
  * under the context `security-gate`. It is not a check run.
  *
- * Why a status and not a check run: GitHub only permits the app that created a
- * check run to update it, so an override that mutates a check run depends on
- * an undocumented property of GitHub's authorization model and cannot be
- * verified from inside this repository. Commit statuses have no such
- * restriction — any token with write access may post one, and the newest
- * status for a context is the one that counts. The override therefore
- * SUPERSEDES the failing gate by posting a newer status rather than mutating
- * an existing object. Nothing here rests on undocumented behaviour.
+ * A status, not a check run: GitHub only permits the app that created a check
+ * run to update it. Any token with write access may post a commit status, and
+ * the newest status for a context is the one that counts — so the override
+ * SUPERSEDES the failing gate by posting a newer status rather than mutating an
+ * existing object.
  *
  * Both halves take an injected client (the Octokit instance that
  * actions/github-script provides), so the logic runs under test against a
@@ -43,7 +40,6 @@ const GATE_CONTEXT = 'security-gate';
 
 const OVERRIDE_PREFIX = '/security-override:';
 
-// Collaborator permission levels that may override the gate.
 const OVERRIDE_PERMISSIONS = ['write', 'admin', 'maintain'];
 
 // GitHub rejects a commit-status description longer than this.

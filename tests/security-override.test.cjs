@@ -4,22 +4,13 @@
 //
 // SCOPE BOUNDARY — READ BEFORE TRUSTING THESE TESTS.
 //
-// Every platform interaction here is a stub. These tests prove that OUR logic
-// is correct given an API that conforms to the documented commit-status
-// contract. They prove NOTHING about GitHub's actual behaviour: not that a
-// newer status supersedes an older one for the same context, not that
-// permission levels are reported as modelled, not that a required status
-// context gates a merge. That is simulation, not live fire.
+// Every platform interaction here is a stub. These tests prove OUR logic is
+// correct given an API that conforms to the documented commit-status contract.
+// They prove NOTHING about GitHub's actual behaviour: not that a newer status
+// supersedes an older one, not that permission levels are reported as modelled,
+// not that a required status context gates a merge.
 //
-// What the design buys is narrower and real. The override posts a NEW commit
-// status under an existing context rather than mutating a check run. Mutating
-// a check run is restricted to the app that created it — an undocumented
-// property of GitHub's authorization model, unverifiable from here. Posting a
-// commit status carries no such restriction. The mechanism therefore no longer
-// depends on undocumented behaviour, which is a different and stronger claim
-// than "we tested GitHub".
-//
-// The static workflow assertions at the bottom are not simulations. They read
+// The static workflow assertions at the bottom are not simulations — they read
 // the committed workflow files and pin structural invariants directly.
 
 const fs = require('fs');
@@ -193,7 +184,6 @@ describe('security gate: maintainer override', () => {
   });
 
   test('a commit with no failing gate is a no-op', async () => {
-    // Gate already green: nothing to override.
     const green = makeGitHubStub({ gateState: 'success' });
     const passed = await override(
       green,
@@ -650,7 +640,6 @@ describe('security gate: workflow invariants', () => {
     const yaml = readWorkflow('security-override.yml');
     assert.match(yaml, /\bsecurity-gate\.cjs\b/);
     assert.match(yaml, /\bprocessOverride\b/);
-    // The superseded design mutated a check run inline.
     assert.doesNotMatch(yaml, /checks\.update/);
   });
 
@@ -672,7 +661,6 @@ describe('security gate: workflow invariants', () => {
         !granted.some((g) => g.startsWith('checks:')),
         `${name} no longer uses the Checks API and must not request it`,
       );
-      // Nothing in either workflow writes to the repository or its issues.
       assert.ok(
         !granted.includes('contents: write'),
         `${name} must not gain write scope over repository contents`,
