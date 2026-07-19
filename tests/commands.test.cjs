@@ -5627,6 +5627,37 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
     }
   }
 
+  function ghAvailable() {
+    try {
+      require('child_process').execSync('which gh', {
+        stdio: 'ignore',
+        timeout: 2000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function assertNarrowedGhVerbs(installAllow, generateAllow) {
+    assert.ok(
+      installAllow.includes('Bash(gh repo view *)'),
+      'install.js must seed narrowed repo view',
+    );
+    assert.ok(
+      generateAllow.includes('Bash(gh repo view *)'),
+      'generateSettings must emit narrowed repo view',
+    );
+    assert.ok(
+      !installAllow.includes('Bash(gh repo *)'),
+      'install.js must NOT seed broad gh repo',
+    );
+    assert.ok(
+      !generateAllow.includes('Bash(gh repo *)'),
+      'generateSettings must NOT emit broad gh repo',
+    );
+  }
+
   function runGenerateAllowlist(cwd, platform) {
     const r = runGsdTools(
       `generate-allowlist --platform ${platform} --json`,
@@ -5647,7 +5678,7 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
     assert.deepStrictEqual(findUnmatchedPathRules(generateAllow), []);
   }
 
-  test('darwin: set-equal to install.js --local output', () => {
+  test('darwin: set-equal to install.js --local output', (t) => {
     const cwd = createTempProject();
     try {
       const installAllow = runInstallAndRead('darwin');
@@ -5658,37 +5689,17 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
         new Set(generateAllow),
         `Set mismatch:\ninstall only: ${installAllow.filter((x) => !generateAllow.includes(x)).join(', ')}\ngenerate only: ${generateAllow.filter((x) => !installAllow.includes(x)).join(', ')}`,
       );
-      // Narrowed-verb parity check: narrowed verbs appear in both outputs.
-      try {
-        require('child_process').execSync('which gh', {
-          stdio: 'ignore',
-          timeout: 2000,
-        });
-        assert.ok(
-          installAllow.includes('Bash(gh repo view *)'),
-          'install.js must seed narrowed repo view',
-        );
-        assert.ok(
-          generateAllow.includes('Bash(gh repo view *)'),
-          'generateSettings must emit narrowed repo view',
-        );
-        assert.ok(
-          !installAllow.includes('Bash(gh repo *)'),
-          'install.js must NOT seed broad gh repo',
-        );
-        assert.ok(
-          !generateAllow.includes('Bash(gh repo *)'),
-          'generateSettings must NOT emit broad gh repo',
-        );
-      } catch {
-        /* gh not installed — skip narrow-verb parity */
+      if (!ghAvailable()) {
+        t.skip('gh not installed — narrowed-verb parity not checkable');
+        return;
       }
+      assertNarrowedGhVerbs(installAllow, generateAllow);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test('linux: set-equal to install.js --local output (bare Edit/Write/Read)', () => {
+  test('linux: set-equal to install.js --local output (bare Edit/Write/Read)', (t) => {
     const cwd = createTempProject();
     try {
       const installAllow = runInstallAndRead('linux');
@@ -5697,31 +5708,11 @@ describe('ALLOW-15: cmdGenerateAllowlist parity with install.js seeding', () => 
       assert.deepStrictEqual(new Set(installAllow), new Set(generateAllow));
       assert.ok(generateAllow.includes('Edit'));
       assert.ok(!generateAllow.includes('Edit(*)'));
-      // Narrowed-verb parity check: narrowed verbs appear in both outputs.
-      try {
-        require('child_process').execSync('which gh', {
-          stdio: 'ignore',
-          timeout: 2000,
-        });
-        assert.ok(
-          installAllow.includes('Bash(gh repo view *)'),
-          'install.js must seed narrowed repo view',
-        );
-        assert.ok(
-          generateAllow.includes('Bash(gh repo view *)'),
-          'generateSettings must emit narrowed repo view',
-        );
-        assert.ok(
-          !installAllow.includes('Bash(gh repo *)'),
-          'install.js must NOT seed broad gh repo',
-        );
-        assert.ok(
-          !generateAllow.includes('Bash(gh repo *)'),
-          'generateSettings must NOT emit broad gh repo',
-        );
-      } catch {
-        /* gh not installed — skip narrow-verb parity */
+      if (!ghAvailable()) {
+        t.skip('gh not installed — narrowed-verb parity not checkable');
+        return;
       }
+      assertNarrowedGhVerbs(installAllow, generateAllow);
     } finally {
       cleanup(cwd);
     }
