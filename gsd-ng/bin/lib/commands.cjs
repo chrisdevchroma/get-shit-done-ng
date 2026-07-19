@@ -681,7 +681,9 @@ const DEFAULT_TODO_BODY = '## Problem\n\n## Solution\n';
 
 function yamlScalar(value) {
   const str = String(value);
-  return /[:#]|^["'\s]|\s$/.test(str) ? JSON.stringify(str) : str;
+  return /[:#]|[\u0000-\u001f\u007f]|^["'\s]|\s$/.test(str)
+    ? JSON.stringify(str)
+    : str;
 }
 
 function splitList(value) {
@@ -2340,7 +2342,16 @@ function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
     issueData.number = issueData.iid;
   }
 
-  const issueNumber = issueData.number || parseInt(String(number), 10);
+  const rawNumber = issueData.number != null ? issueData.number : number;
+  let issueNumber = parseInt(String(rawNumber), 10);
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    issueNumber = parseInt(String(number), 10);
+  }
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    error(
+      `Invalid issue number '${String(rawNumber).slice(0, 40)}' from ${platform}: expected a positive integer.`,
+    );
+  }
   const title = issueData.title || `Issue #${issueNumber}`;
   const body = issueData.body || '';
   const rawLabels = issueData.labels || [];
@@ -2434,7 +2445,8 @@ function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
   const content = [
     '---',
     `created: ${created}`,
-    `title: ${title}`,
+    `title: ${yamlScalar(title)}`,
+    'untrusted_title: true',
     `area: ${area}`,
     `external_ref: "${externalRef}"`,
     'files: []',
@@ -2471,7 +2483,7 @@ function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
   const result = {
     imported: true,
     todo_file: filename,
-    title,
+    title: wrapUntrustedContent(title, `${externalRef}:title`),
     external_ref: externalRef,
     commented,
   };
