@@ -369,10 +369,12 @@ describe('Entropy: measured false positives on benign content', () => {
         e.trips_entropy,
         `${e.id} (${e.provenance}): recorded trips_entropy=${e.trips_entropy} but the scanner disagrees`,
       );
+      // Recorded to three decimals, so the tolerance covers rounding and nothing
+      // else. The value must be re-derivable from the text it claims to describe.
+      const live = shannon(e.text);
       assert.ok(
-        Math.abs(shannon(e.text) - e.measured_H) < 0.15 ||
-          e.measured_H > 0,
-        `${e.id}: measured_H not recorded`,
+        Math.abs(live - e.measured_H) < 0.005,
+        `${e.id}: recorded measured_H ${e.measured_H} does not match the live measurement ${live.toFixed(3)}`,
       );
     }
     // Recorded outcome: base64 digests trip; lowercase-hex content does not.
