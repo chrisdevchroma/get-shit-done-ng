@@ -1,23 +1,12 @@
 name: Security Scan
 
 on:
+  # Must stay unfiltered: `security-gate` is a required status check, and a
+  # required context on a path-filtered workflow deadlocks — a pull request
+  # outside the filter never starts the workflow, so the status it waits on is
+  # never posted. Scope is applied to changed files by SCAN_PATHS in
+  # scripts/ci-security-scan.cjs instead.
   pull_request_target:
-    # Must stay set-equal to SCAN_PATHS in scripts/ci-security-scan.cjs.
-    # A path listed there but missing here never starts this workflow.
-    paths:
-      - '.claude/**'
-      - '.github/**'
-      - '.planning/**'
-      - 'agents/**'
-      - 'assets/**'
-      - 'bin/**'
-      - 'commands/**'
-      - 'docs/**'
-      - 'gsd-ng/**'
-      - 'hooks/**'
-      - 'scripts/**'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
 
 permissions:
   contents: read
@@ -43,7 +32,14 @@ jobs:
         # Deferred so the gate status is always published, including on a
         # blocking verdict. The job is failed again by the final step.
         continue-on-error: true
-        run: node scripts/ci-security-scan.cjs
+        # `outcome` cannot tell a blocking finding (exit 1) from a scan that
+        # never completed (exit 2); the gate description differs between them.
+        run: |
+          set +e
+          node scripts/ci-security-scan.cjs
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,21 +53,24 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { publishGateVerdict } = require(
+            const { classifyScanOutcome, publishGateVerdict } = require(
               `${process.env.GITHUB_WORKSPACE}/scripts/security-gate.cjs`
             );
-            // Anything other than a clean exit is a blocking verdict: a scan
-            // that crashed or was skipped has not cleared the pull request.
-            const blocked = process.env.SCAN_OUTCOME !== 'success';
+            const verdict = classifyScanOutcome({
+              outcome: process.env.SCAN_OUTCOME,
+              exitCode: process.env.SCAN_EXIT_CODE,
+            });
             const status = await publishGateVerdict({
               github,
               owner: context.repo.owner,
               repo: context.repo.repo,
               headSha: context.payload.pull_request.head.sha,
-              blocked,
+              blocked: verdict.blocked,
+              incomplete: verdict.incomplete,
             });
             core.info(`Published ${status.context} status: ${status.state}`);
 

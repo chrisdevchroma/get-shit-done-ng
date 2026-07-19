@@ -174,11 +174,21 @@ When writing content to external systems (PR descriptions, issue comments):
 
 ## CI Security Gate and Override
 
-Pull requests that touch agent-context paths are scanned by `.github/workflows/security-scan.yml`.
-The scan's verdict is published as a **commit status** under the context **`security-gate`**, posted
-by `scripts/security-gate.cjs`.
+Every pull request is processed by `.github/workflows/security-scan.yml`. The scan's verdict is
+published as a **commit status** under the context **`security-gate`**, posted by
+`scripts/security-gate.cjs`.
 
 The gate is posted on **every** run of the scan workflow, with state `success` or `failure`.
+
+The workflow is deliberately **not** path-filtered, while `SCAN_PATHS` in
+`scripts/ci-security-scan.cjs` still decides which changed files are inspected. A `paths:` trigger
+would make `security-gate` unsatisfiable as a required status check: a pull request touching no
+listed path never starts the workflow, so the required status is never posted and the pull request
+waits on it indefinitely. A pull request outside `SCAN_PATHS` therefore runs the workflow, scans no
+files and receives a passing gate.
+
+A failure carries one of two descriptions: findings were detected, or the scan did not complete
+(crash, bad environment, skipped or cancelled step). Both block; only the first is a finding.
 
 A commit status rather than a check run is a deliberate choice. GitHub only permits the app that
 *created* a check run to update it, so an override that mutates a check run depends on an

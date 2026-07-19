@@ -48,6 +48,10 @@ const OVERRIDE_PERMISSIONS = ['write', 'admin', 'maintain'];
 // GitHub rejects a commit-status description longer than this.
 const MAX_DESCRIPTION = 140;
 
+// The combined-status endpoint defaults to 30 statuses per page, accepts 100.
+const STATUS_PAGE_SIZE = 100;
+const MAX_STATUS_PAGES = 10;
+
 /**
  * Post a commit status under the gate context.
  *
@@ -83,22 +87,33 @@ async function postGateStatus(opts) {
  * Read the current gate state for a commit.
  *
  * The combined-status endpoint reports the latest status per context, which is
- * exactly the value branch protection would evaluate.
+ * exactly the value branch protection would evaluate. It is paginated and the
+ * gate's position among a commit's contexts is not ours to control, so the
+ * pages are walked rather than read once.
  *
  * @returns {Promise<string|null>} the gate state, or null when never posted
  */
 async function readGateStatus(opts) {
   const { client, owner, repo, sha } = opts;
 
-  const { data } = await client.rest.repos.getCombinedStatusForRef({
-    owner,
-    repo,
-    ref: sha,
-  });
+  for (let page = 1; page <= MAX_STATUS_PAGES; page++) {
+    const { data } = await client.rest.repos.getCombinedStatusForRef({
+      owner,
+      repo,
+      ref: sha,
+      per_page: STATUS_PAGE_SIZE,
+      page,
+    });
 
-  const statuses = (data && data.statuses) || [];
-  const gate = statuses.find((s) => s && s.context === GATE_CONTEXT);
-  return gate ? gate.state : null;
+    const statuses = (data && data.statuses) || [];
+    const gate = statuses.find((s) => s && s.context === GATE_CONTEXT);
+    if (gate) return gate.state;
+    if (statuses.length < STATUS_PAGE_SIZE) return null;
+  }
+
+  // Past the cap the state is unknown. Reporting it as absent is the
+  // fail-closed direction: an absent gate cannot be overridden.
+  return null;
 }
 
 function truncate(text, limit) {
@@ -121,28 +136,56 @@ function parseOverrideReason(body) {
 }
 
 /**
+ * Turn the scan step's result into a gate verdict.
+ *
+ * Anything that is not a clean run blocks. `incomplete` separates a scan that
+ * reached no verdict from one that found something, which only the exit code
+ * distinguishes: exit 1 is a finding, anything else is an incomplete run.
+ *
+ * @param {object} opts
+ * @param {string} opts.outcome - the Actions step outcome
+ * @param {string|number} [opts.exitCode] - absent when the step never ran
+ * @returns {{blocked: boolean, incomplete: boolean}}
+ */
+function classifyScanOutcome(opts) {
+  const { outcome, exitCode } = opts || {};
+
+  if (outcome === 'success') return { blocked: false, incomplete: false };
+
+  const code = exitCode == null || exitCode === '' ? null : Number(exitCode);
+  return { blocked: true, incomplete: code !== 1 };
+}
+
+/**
  * Publish the scan verdict as the gate status.
  *
  * Called on every run of the scan workflow, whatever the scan concluded, so
  * that every pull request produces a gate verdict. A gate that only appeared
  * on failure would leave clean pull requests pending forever once the context
- * is required.
+ * is required, as would a workflow that a pull request never starts.
  *
  * @param {object} opts
  * @param {object} opts.github - Octokit-shaped client
  * @param {string} opts.owner
  * @param {string} opts.repo
  * @param {string} opts.headSha
- * @param {boolean} opts.blocked - true when the scan found blocking findings
+ * @param {boolean} opts.blocked - true when the run did not clear the PR
+ * @param {boolean} [opts.incomplete] - true when the scan reached no verdict;
+ *   changes the message only, never the state
  * @returns {Promise<object>} the created status
  */
 async function publishGateVerdict(opts) {
-  const { github, owner, repo, headSha, blocked } = opts;
+  const { github, owner, repo, headSha, blocked, incomplete = false } = opts;
 
   const state = blocked ? 'failure' : 'success';
-  const description = blocked
-    ? `Injection findings detected. Maintainers: ${OVERRIDE_PREFIX} <reason>`
-    : 'No blocking findings.';
+  let description;
+  if (!blocked) {
+    description = 'No blocking findings.';
+  } else if (incomplete) {
+    description = `Scan did not complete; no verdict. Maintainers: ${OVERRIDE_PREFIX} <reason>`;
+  } else {
+    description = `Injection findings detected. Maintainers: ${OVERRIDE_PREFIX} <reason>`;
+  }
 
   return postGateStatus({
     client: github,
@@ -257,7 +300,10 @@ module.exports = {
   OVERRIDE_PREFIX,
   OVERRIDE_PERMISSIONS,
   MAX_DESCRIPTION,
+  STATUS_PAGE_SIZE,
+  MAX_STATUS_PAGES,
   truncate,
+  classifyScanOutcome,
   postGateStatus,
   readGateStatus,
   parseOverrideReason,

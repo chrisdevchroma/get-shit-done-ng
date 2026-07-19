@@ -12,6 +12,9 @@
  *   0 — clean or warnings only
  *   1 — high-confidence detections found (blocking), or a scannable file
  *       whose content could not be retrieved (fail closed)
+ *   2 — the scan did not complete (bad environment, API or runtime error)
+ *
+ * Both 1 and 2 block. They are distinct so the gate status can say which.
  */
 
 const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
@@ -31,9 +34,8 @@ const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
 // canonical agent-context locations in an installed project; they are listed
 // so a change that introduces them here is covered from the first commit.
 //
-// Must match the 'paths:' trigger in .github/workflows/security-scan.yml —
-// a path scanned here but absent there never starts the workflow at all. The
-// two lists are asserted equal by the test suite.
+// This list narrows the changed files, not the workflow trigger — see the
+// 'on:' comment in .github/workflows/security-scan.yml.
 const SCAN_PATHS = [
   '.claude/',
   '.github/',
@@ -272,6 +274,10 @@ async function analyzePullRequestFiles(files, opts = {}) {
   };
 }
 
+const EXIT_CLEAN = 0;
+const EXIT_BLOCKED = 1;
+const EXIT_INCOMPLETE = 2;
+
 async function main(env = process.env) {
   const prNumber = env.PR_NUMBER;
   const token = env.GITHUB_TOKEN;
@@ -281,7 +287,7 @@ async function main(env = process.env) {
     console.error(
       'Missing required env vars: PR_NUMBER, GITHUB_TOKEN, GITHUB_REPOSITORY',
     );
-    return 1;
+    return EXIT_INCOMPLETE;
   }
 
   const files = await fetchPRFiles({ repository, prNumber, token });
@@ -289,9 +295,11 @@ async function main(env = process.env) {
     getContent: (file) => fetchFileContent(file, { token }),
   });
 
+  // Out-of-scope diffs must exit clean, not skip: the gate status is published
+  // from this exit code and a required check needs a verdict.
   if (report.scannable.length === 0) {
     console.log('No scannable files in PR diff.');
-    return 0;
+    return EXIT_CLEAN;
   }
 
   for (const annotation of report.annotations) {
@@ -315,10 +323,10 @@ async function main(env = process.env) {
   if (report.hasBlocking) {
     console.log('\nHigh-confidence injection detected. PR check failed.');
     console.log('Maintainers can override with: /security-override: <reason>');
-    return 1;
+    return EXIT_BLOCKED;
   }
 
-  return 0;
+  return EXIT_CLEAN;
 }
 
 if (require.main === module) {
@@ -326,11 +334,14 @@ if (require.main === module) {
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error(`Security scan failed: ${err.message}`);
-      process.exit(1);
+      process.exit(EXIT_INCOMPLETE);
     });
 }
 
 module.exports = {
+  EXIT_CLEAN,
+  EXIT_BLOCKED,
+  EXIT_INCOMPLETE,
   SCAN_PATHS,
   BLOCK_EXEMPT_PATHS,
   MAX_FILE_PAGES,
