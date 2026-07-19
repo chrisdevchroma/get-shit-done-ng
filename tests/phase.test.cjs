@@ -3942,6 +3942,427 @@ describe('phase complete requirement closure', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Closure keys off delivered work, not declared intent.
+//
+// A PLAN's `requirements:` frontmatter is what the plan set out to deliver. The
+// paired SUMMARY is the record that it ran, and its `requirements-completed`
+// frontmatter is the record of what actually landed. Closure reads the delivery
+// record; the declaration is only a fallback for summaries that are silent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete closes delivered work, not declared intent', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function readRequirements() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      'utf-8',
+    );
+  }
+
+  // Two plans in one phase. Each plan and each summary is supplied verbatim by
+  // the caller so a test can withhold a summary or make one disagree with its
+  // plan. `roadmapRequirements` adds the phase-section `**Requirements:**` line.
+  function seedDeliveryPhase(opts = {}) {
+    const reqLine = opts.roadmapRequirements
+      ? `**Requirements:** ${opts.roadmapRequirements}\n`
+      : '';
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 70: Delivery Tracking
+
+### Phase 70: Delivery Tracking
+**Goal:** Requirements close on what shipped
+${reqLine}**Plans:** 2 plans
+
+### Phase 71: Next
+**Goal:** Something else
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements
+
+- [ ] **DLV-EXECUTED**: Delivered by the plan that ran
+- [ ] **DLV-DEVIATED**: Declared but abandoned mid-execution
+- [ ] **DLV-UNRUN**: Declared by a plan that never executed
+- [ ] **DLV-EXTRA**: Delivered without ever being declared
+- [ ] **DLV-ROADMAP**: Named only on the roadmap line
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| DLV-EXECUTED | Phase 70 | Pending |
+| DLV-DEVIATED | Phase 70 | Pending |
+| DLV-UNRUN | Phase 70 | Pending |
+| DLV-EXTRA | Phase 70 | Pending |
+| DLV-ROADMAP | Phase 70 | Pending |
+`,
+    );
+
+    const dir = path.join(
+      tmpDir,
+      '.planning',
+      'phases',
+      '70-delivery-tracking',
+    );
+    fs.mkdirSync(dir, { recursive: true });
+
+    for (const [planId, spec] of Object.entries(opts.plans || {})) {
+      fs.writeFileSync(
+        path.join(dir, `${planId}-PLAN.md`),
+        `---\nrequirements: [${spec.declared.join(', ')}]\n---\n# Plan ${planId}\n`,
+      );
+      if (spec.summary === undefined) continue;
+      const body =
+        spec.summary === null
+          ? `# Summary ${planId}\n`
+          : `---\nrequirements-completed: [${spec.summary.join(', ')}]\n---\n# Summary ${planId}\n`;
+      fs.writeFileSync(path.join(dir, `${planId}-SUMMARY.md`), body);
+    }
+
+    fs.writeFileSync(
+      path.join(dir, '70-VERIFICATION.md'),
+      '---\nstatus: passed\n---\n# Verification\n',
+    );
+    return dir;
+  }
+
+  test('an unexecuted plan contributes none of its declared IDs', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED'], summary: ['DLV-EXECUTED'] },
+        '70-02': { declared: ['DLV-UNRUN'] },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['DLV-EXECUTED'],
+      'a plan with no SUMMARY has not completed — its declared IDs must not close',
+    );
+    assert.ok(
+      readRequirements().includes('- [ ] **DLV-UNRUN**'),
+      'the unexecuted plan leaves its requirement Pending',
+    );
+  });
+
+  test('a summary that records less than its plan declared closes only what it records', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': {
+          declared: ['DLV-EXECUTED', 'DLV-DEVIATED'],
+          summary: ['DLV-EXECUTED'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['DLV-EXECUTED'],
+      'an ID the executor deviated away from must not close on the declaration alone',
+    );
+    const req = readRequirements();
+    assert.ok(req.includes('- [x] **DLV-EXECUTED**'));
+    assert.ok(
+      req.includes('- [ ] **DLV-DEVIATED**'),
+      'the abandoned requirement stays Pending',
+    );
+  });
+
+  test('an ID the summary records but the plan never declared is closed and reported', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': {
+          declared: ['DLV-EXECUTED'],
+          summary: ['DLV-EXECUTED', 'DLV-EXTRA'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_undeclared,
+      ['DLV-EXTRA'],
+      'delivery beyond the plan is a discrepancy to surface, not to swallow',
+    );
+    assert.ok(
+      output.requirements_closed.includes('DLV-EXTRA'),
+      'the summary is the delivery record, so the ID still closes',
+    );
+  });
+
+  test('a summary with no requirements-completed falls back to its plan declaration', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED'], summary: [] },
+        '70-02': { declared: ['DLV-DEVIATED'], summary: null },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed.slice().sort(),
+      ['DLV-DEVIATED', 'DLV-EXECUTED'],
+      'an empty or absent delivery record must not strand a plan that ran',
+    );
+    assert.deepStrictEqual(output.requirements_undeclared, []);
+  });
+
+  test('a summary that records its IDs as a bare string is read the same way', () => {
+    const dir = seedDeliveryPhase({
+      plans: { '70-01': { declared: ['DLV-EXECUTED', 'DLV-DEVIATED'] } },
+    });
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nrequirements-completed: DLV-EXECUTED\n---\n# Summary\n',
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(JSON.parse(result.output).requirements_closed, [
+      'DLV-EXECUTED',
+    ]);
+  });
+
+  test('an unreadable summary falls back to its plan declaration', () => {
+    const dir = seedDeliveryPhase({
+      plans: { '70-01': { declared: ['DLV-EXECUTED'] } },
+    });
+    // A directory occupying the summary's name: the plan counts as executed,
+    // but nothing can be read out of the delivery record.
+    fs.mkdirSync(path.join(dir, '70-01-SUMMARY.md'));
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(
+      JSON.parse(result.output).requirements_closed,
+      ['DLV-EXECUTED'],
+      'an unreadable record is silence, not a denial that the work happened',
+    );
+  });
+
+  test('the roadmap requirements line closes once every plan has a summary', () => {
+    seedDeliveryPhase({
+      roadmapRequirements: 'DLV-ROADMAP',
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED'], summary: ['DLV-EXECUTED'] },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.ok(
+      JSON.parse(result.output).requirements_closed.includes('DLV-ROADMAP'),
+      'a complete phase still closes IDs named only on the roadmap line',
+    );
+  });
+
+  test('the roadmap requirements line is withheld while a plan is unexecuted', () => {
+    seedDeliveryPhase({
+      roadmapRequirements: 'DLV-ROADMAP',
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED'], summary: ['DLV-EXECUTED'] },
+        '70-02': { declared: ['DLV-UNRUN'] },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.requirements_closed.includes('DLV-ROADMAP'),
+      'the phase-level declaration is intent for work that has not all landed',
+    );
+    assert.ok(readRequirements().includes('- [ ] **DLV-ROADMAP**'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A failing verification report that predates later work is stale by
+// construction. Closure stays withheld — a gate that expires is not a gate —
+// but the staleness is reported so the block is diagnosable and the operator
+// knows to re-run verification rather than assume the gaps are current.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete reports a stale failing verification', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function readRequirements() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      'utf-8',
+    );
+  }
+
+  // One phase, two plans, both executed, with a VERIFICATION.md whose mtime the
+  // caller places before or after the summaries.
+  function seedStalePhase({ status = 'gaps_found', verificationAge } = {}) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [ ] Phase 72: Gap Closure\n\n### Phase 72: Gap Closure\n**Goal:** Close the gaps\n**Plans:** 2 plans\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements\n\n- [ ] **STALE-01**: Reported as a gap\n\n## Traceability\n\n| Requirement | Phase | Status |\n|-------------|-------|--------|\n| STALE-01 | Phase 72 | Pending |\n`,
+    );
+
+    const dir = path.join(tmpDir, '.planning', 'phases', '72-gap-closure');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '72-01-PLAN.md'),
+      '---\nrequirements: [STALE-01]\n---\n# Plan\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, '72-01-SUMMARY.md'),
+      '---\nrequirements-completed: [STALE-01]\n---\n# Summary\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, '72-02-PLAN.md'),
+      '---\nrequirements: [STALE-01]\n---\n# Gap closure plan\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, '72-02-SUMMARY.md'),
+      '---\nrequirements-completed: [STALE-01]\n---\n# Gap closure summary\n',
+    );
+    const verificationPath = path.join(dir, '72-VERIFICATION.md');
+    fs.writeFileSync(
+      verificationPath,
+      `---\nstatus: ${status}\n---\n# Verification\n`,
+    );
+
+    // Place the report an hour before or after every summary. Explicit times
+    // keep the test independent of filesystem timestamp granularity.
+    const base = Date.now() / 1000;
+    const offset = verificationAge === 'older' ? -3600 : 3600;
+    fs.utimesSync(verificationPath, base + offset, base + offset);
+    for (const name of ['72-01-SUMMARY.md', '72-02-SUMMARY.md']) {
+      fs.utimesSync(path.join(dir, name), base, base);
+    }
+    return dir;
+  }
+
+  test('a failing report older than the summaries is flagged stale', () => {
+    seedStalePhase({ verificationAge: 'older' });
+
+    const result = runGsdTools('phase complete 72 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.verification_stale,
+      true,
+      'a report written before the work it judges cannot be judging that work',
+    );
+    assert.deepStrictEqual(
+      output.verification_stale_summaries.slice().sort(),
+      ['72-01-SUMMARY.md', '72-02-SUMMARY.md'],
+      'the summaries that postdate the report are named as the evidence',
+    );
+    assert.match(
+      output.requirements_blocked_hint,
+      /verif/i,
+      'the block must come with an actionable hint, not just a status word',
+    );
+  });
+
+  test('a stale failing report still withholds closure', () => {
+    seedStalePhase({ verificationAge: 'older' });
+
+    const result = runGsdTools('phase complete 72 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_blocked_by, 'gaps_found');
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      [],
+      'age is not evidence the gaps were closed — waiting must never open the gate',
+    );
+    assert.ok(readRequirements().includes('- [ ] **STALE-01**'));
+  });
+
+  test('a failing report newer than every summary is not stale', () => {
+    seedStalePhase({ verificationAge: 'newer' });
+
+    const result = runGsdTools('phase complete 72 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.verification_stale, false);
+    assert.deepStrictEqual(output.verification_stale_summaries, []);
+    assert.strictEqual(output.requirements_blocked_by, 'gaps_found');
+  });
+
+  test('a passing report carries no block hint', () => {
+    seedStalePhase({ status: 'passed', verificationAge: 'older' });
+
+    const result = runGsdTools('phase complete 72 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_blocked_by, null);
+    assert.strictEqual(output.requirements_blocked_hint, null);
+    assert.strictEqual(
+      output.verification_stale,
+      true,
+      'staleness is reported wherever it is observed, blocking or not',
+    );
+    assert.ok(readRequirements().includes('- [x] **STALE-01**'));
+  });
+
+  test('a phase with no verification report is never stale', () => {
+    const dir = seedStalePhase({ verificationAge: 'older' });
+    cleanupSubdir(dir, '72-VERIFICATION.md');
+
+    const result = runGsdTools('phase complete 72 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.verification_stale, false);
+    assert.deepStrictEqual(output.verification_stale_summaries, []);
+    assert.strictEqual(output.requirements_blocked_hint, null);
+  });
+});
+
 // Per-plan closure lives in prose, not code — the
 // executor agent and execute-plan workflow instructed the model to run
 // `requirements mark-complete` at the end of every plan. Deleting the code path

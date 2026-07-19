@@ -611,27 +611,56 @@ The CLI handles:
 - Advancing STATE.md to next phase
 - Closing REQUIREMENTS.md checkboxes and traceability rows for this phase
 
-**Requirement closure happens here and only here** — not per-plan. `phase complete`
-takes the union of the ROADMAP phase section's `**Requirements:**` line and the
-`requirements:` frontmatter of every PLAN.md in the phase, then closes them
-*unless* VERIFICATION.md reports `gaps_found` or `halted`, in which case they stay
-Pending until gaps are closed and the verifier re-runs.
+**Requirement closure happens here and only here** — not per-plan. Closure keys off
+*delivered* work, not declared intent. For each PLAN.md in the phase, `phase complete`
+looks for the paired SUMMARY.md:
 
-Closure is scoped to this phase. An ID the REQUIREMENTS.md traceability table
+- **No summary** — the plan never executed, so none of its `requirements:` close.
+- **Summary with `requirements-completed:`** — those IDs are what shipped, and they
+  are what closes. An ID the executor deviated away from mid-plan does not close
+  just because the plan declared it.
+- **Summary with the field empty or absent** — falls back to the plan's
+  `requirements:` declaration, so summaries written before the field existed still
+  close their work.
+
+The ROADMAP phase section's `**Requirements:**` line is unioned in on top, but only
+once *every* plan in the phase has a summary — it is a phase-level declaration, not
+a delivery record, so it must not close while work is outstanding.
+
+Closure is then scoped to this phase. An ID the REQUIREMENTS.md traceability table
 assigns to a *different* phase is never closed here, however the plan frontmatter
 declares it — closing it would make the table assert that unstarted work is done.
 Such IDs come back in `requirements_other_phase`, and IDs missing from the table
-entirely come back in `requirements_unmapped`.
+entirely come back in `requirements_unmapped`. An ID a summary claims but its plan
+never declared still closes, and comes back in `requirements_undeclared`.
+
+Closure is withheld entirely when VERIFICATION.md reports `gaps_found` or `halted`
+(`requirements_blocked_by`), and stays withheld until the gaps are closed and the
+verifier re-runs.
+
+**Stale verification.** If the report is older than summaries in the phase — the
+usual cause is gap-closure plans executed with `workflow.verifier` disabled, so
+nothing rewrote it — `verification_stale` is `true` and
+`verification_stale_summaries` names the offending files. The block still stands:
+a report's age is not evidence its gaps were closed, and a gate that expires on its
+own is not a gate. **Surface `requirements_blocked_hint` to the user verbatim** —
+it tells them the remedy is to re-run verification for this phase, not to wait or
+to re-close the same gaps. (The retained manual `requirements mark-complete` remains
+the deliberate override.)
 
 Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
-`requirements_closed`, `requirements_blocked_by`, `requirements_other_phase`,
-`requirements_unmapped`.
+`requirements_closed`, `requirements_blocked_by`, `requirements_blocked_hint`,
+`requirements_other_phase`, `requirements_unmapped`, `requirements_undeclared`,
+`verification_stale`, `verification_stale_summaries`.
 
-**Report both discrepancy lists to the user** if non-empty. `requirements_other_phase`
+**Report every non-empty discrepancy list to the user.** `requirements_other_phase`
 means a plan believed it delivered a requirement the roadmap owes to another phase
 — either the plan overreached or the traceability table is wrong, and a human must
 decide which. `requirements_unmapped` means the traceability table has a coverage
 gap that roadmap or milestone-gap planning should fill.
+`requirements_undeclared` means a plan delivered a requirement it never planned to —
+scope grew during execution, and the roadmap or the requirement's owning phase may
+now be wrong.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md

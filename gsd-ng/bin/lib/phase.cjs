@@ -15,6 +15,7 @@ const {
   extractCurrentMilestone,
   replaceInCurrentMilestone,
   readVerificationStatus,
+  getPhaseCompletionStatus,
   toPosixPath,
   output,
   error,
@@ -43,17 +44,69 @@ function parseRequirementIdList(raw) {
 }
 
 /**
- * Collect every requirement ID a phase is responsible for.
+ * Read a frontmatter field that holds requirement IDs in any of the shapes the
+ * templates produce: a YAML list, a bracketed inline list, or a bare string.
+ * Anything else (a null field parses to an empty object) yields no IDs.
+ */
+function readRequirementIdField(value) {
+  const ids = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) ids.push(...parseRequirementIdList(entry));
+  } else if (typeof value === 'string' && value) {
+    ids.push(...parseRequirementIdList(value));
+  }
+  return ids;
+}
+
+/**
+ * The identifier a plan document shares with its execution record, so the two
+ * can be paired. Both the numbered and the bare filename forms reduce to the
+ * same key.
+ */
+function planDocumentId(filename) {
+  return filename.replace(/-?(?:PLAN|SUMMARY)\.md$/i, '');
+}
+
+/**
+ * Read the requirement IDs the frontmatter of one file declares under `field`.
+ * An unreadable file contributes nothing rather than aborting collection.
+ */
+function readFrontmatterRequirements(filePath, field) {
+  try {
+    const fm = extractFrontmatter(fs.readFileSync(filePath, 'utf-8'));
+    return readRequirementIdField(fm && fm[field]);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Collect every requirement ID a phase has actually delivered.
  *
- * Union of two sources, because neither is reliably complete on its own:
- *   1. The ROADMAP.md phase section's `**Requirements:**` line — authoritative
- *      when present, but frequently absent or stale.
- *   2. The `requirements:` frontmatter of every PLAN.md in the phase directory
- *      — what the plans actually claim to satisfy.
+ * Closure must key off delivered work, not declared intent. A PLAN's
+ * `requirements:` frontmatter is a statement of what the plan set out to do; the
+ * executor may deviate, and a plan may never run at all. The SUMMARY is the
+ * record that a plan executed, and its `requirements-completed:` frontmatter is
+ * the record of what landed. So each plan is resolved against its own summary:
  *
- * The union is load-bearing, not belt-and-braces: a phase whose roadmap section
- * omits `**Requirements:**` would otherwise leave every plan-declared ID Pending
- * forever, since phase-close is the only place closure happens.
+ *   - no paired summary → the plan has not completed and contributes nothing,
+ *     matching how completion is judged everywhere else;
+ *   - summary lists IDs → those are the delivered IDs, and any of them the plan
+ *     never declared is returned as `undeclared` so the divergence surfaces
+ *     instead of being silently accepted;
+ *   - summary is silent (field absent, empty, or the file unreadable) → fall
+ *     back to the plan's declaration. The field is a comparatively recent
+ *     addition and its template default is an empty list, so failing closed
+ *     here would strand every requirement of every phase written before it.
+ *
+ * The ROADMAP.md phase section's `**Requirements:**` line is a third source and
+ * is unioned in, because a phase whose plans carry no `requirements:` would
+ * otherwise never close anything — phase-close is the only place closure
+ * happens. It is a phase-level declaration, though, not a delivery record, so it
+ * is admitted only once every plan in the phase has a summary. Until then it is
+ * intent covering work that has not all landed.
+ *
+ * @returns {{ids: string[], undeclared: string[]}}
  */
 function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   const ids = [];
@@ -65,8 +118,11 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     }
   };
 
-  // Source 1: ROADMAP.md phase section (scoped to avoid cross-phase matching)
-  if (roadmapContent) {
+  const phaseDir = path.join(cwd, phaseInfo.directory);
+
+  // Source 1: ROADMAP.md phase section (scoped to avoid cross-phase matching),
+  // admitted only for a phase whose every plan has been executed.
+  if (roadmapContent && getPhaseCompletionStatus(phaseDir).isComplete) {
     const phaseEsc = escapeRegex(phaseNum);
     const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
       new RegExp(
@@ -80,26 +136,45 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
   }
 
-  // Source 2: `requirements:` frontmatter of every plan in the phase directory
-  const phaseDir = path.join(cwd, phaseInfo.directory);
+  // Source 2: each executed plan, read through the summary that records it.
+  const summaryByPlanId = new Map();
+  for (const summaryFile of phaseInfo.summaries || []) {
+    summaryByPlanId.set(planDocumentId(summaryFile), summaryFile);
+  }
+
+  const undeclared = [];
+  const undeclaredSeen = new Set();
+
   for (const planFile of phaseInfo.plans || []) {
-    try {
-      const fm = extractFrontmatter(
-        fs.readFileSync(path.join(phaseDir, planFile), 'utf-8'),
-      );
-      const declared = fm && fm.requirements;
-      if (Array.isArray(declared)) {
-        for (const entry of declared)
-          parseRequirementIdList(entry).forEach(add);
-      } else if (typeof declared === 'string' && declared) {
-        parseRequirementIdList(declared).forEach(add);
+    const summaryFile = summaryByPlanId.get(planDocumentId(planFile));
+    if (!summaryFile) continue;
+
+    const declaredIds = readFrontmatterRequirements(
+      path.join(phaseDir, planFile),
+      'requirements',
+    );
+    const deliveredIds = readFrontmatterRequirements(
+      path.join(phaseDir, summaryFile),
+      'requirements-completed',
+    );
+
+    if (deliveredIds.length === 0) {
+      declaredIds.forEach(add);
+      continue;
+    }
+
+    const declaredKeys = new Set(declaredIds.map((id) => id.toLowerCase()));
+    for (const id of deliveredIds) {
+      add(id);
+      const key = id.toLowerCase();
+      if (!declaredKeys.has(key) && !undeclaredSeen.has(key)) {
+        undeclaredSeen.add(key);
+        undeclared.push(id);
       }
-    } catch {
-      // Unreadable plan — its IDs simply don't contribute
     }
   }
 
-  return ids;
+  return { ids, undeclared };
 }
 
 // Status values the traceability table uses. Doubles as the signal that a
@@ -278,6 +353,50 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
   fs.writeFileSync(reqPath, reqContent, 'utf-8');
   result.updated = true;
   return result;
+}
+
+/**
+ * Names of the summaries in a phase that were written after its VERIFICATION.md.
+ *
+ * A verification report judges the state of the work as it stood when the
+ * verifier ran. Summaries that postdate it record work the report never saw, so
+ * its verdict — pass or fail — no longer describes the phase. The usual way this
+ * happens is gap-closure plans executed with the verifier turned off: nothing
+ * rewrites the report, and a failing verdict then blocks closure indefinitely
+ * with no indication that it is obsolete.
+ *
+ * This is evidence for a human, never a trigger for automatic behaviour.
+ * Timestamps are weak evidence — a fresh clone or checkout rewrites every mtime
+ * — and more importantly, age is not evidence that gaps were closed. Acting on
+ * staleness would mean a failing gate expires on its own, which is the same as
+ * having no gate. So the result is reported and nothing else.
+ *
+ * @returns {string[]} summary filenames newer than the report, oldest-first
+ */
+function summariesNewerThanVerification(phaseDir, summaries) {
+  let verifiedAt;
+  try {
+    const verificationFile = fs
+      .readdirSync(phaseDir)
+      .find((f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md');
+    if (!verificationFile) return [];
+    verifiedAt = fs.statSync(path.join(phaseDir, verificationFile)).mtimeMs;
+  } catch {
+    // No readable report to compare against — nothing can be stale relative to it
+    return [];
+  }
+
+  const newer = [];
+  for (const summaryFile of summaries || []) {
+    try {
+      if (fs.statSync(path.join(phaseDir, summaryFile)).mtimeMs > verifiedAt) {
+        newer.push(summaryFile);
+      }
+    } catch {
+      // Summary vanished between listing and stat — nothing to compare
+    }
+  }
+  return newer;
 }
 
 function cmdPhasesList(cwd, options) {
@@ -1250,35 +1369,58 @@ function cmdPhaseComplete(cwd, phaseNum) {
   // under wave-based parallel execution two executors could also clobber each
   // other's REQUIREMENTS.md write. VERIFICATION.md is the completion authority
   // everywhere else in GSD (see getPhaseCompletionStatus); it is here too.
-  const verificationStatus = readVerificationStatus(
-    path.join(cwd, phaseInfo.directory),
-  );
+  const phaseDirAbs = path.join(cwd, phaseInfo.directory);
+  const verificationStatus = readVerificationStatus(phaseDirAbs);
   const requirementsBlockedBy = FAILED_VERIFICATION_STATUSES.has(
     verificationStatus,
   )
     ? verificationStatus
     : null;
 
+  // A report older than the work it judges is stale by construction. Reported
+  // either way; it changes nothing about whether closure proceeds.
+  const staleSummaries = summariesNewerThanVerification(
+    phaseDirAbs,
+    phaseInfo.summaries,
+  );
+  const verificationStale = staleSummaries.length > 0;
+
   let requirementIds = [];
   let requirementsOtherPhase = [];
   let requirementsUnmapped = [];
+  let requirementsUndeclared = [];
+  let requirementsBlockedHint = null;
   if (requirementsBlockedBy) {
     // Verifier says the goal is not met — leave every ID Pending. A later
-    // re-run after gap closure will pick them up.
+    // re-run after gap closure will pick them up. When the report predates the
+    // summaries it is blocking on, say so: the block is otherwise indistinguish-
+    // able from a current verdict, and an operator has no way to tell that the
+    // remedy is to re-run the verifier rather than to re-close the same gaps.
+    requirementsBlockedHint = verificationStale
+      ? `Requirement closure is blocked by a verification report (${requirementsBlockedBy}) ` +
+        `that predates ${staleSummaries.length} summary file(s) in this phase: ` +
+        `${staleSummaries.join(', ')}. The report cannot reflect that work. ` +
+        `Re-run verification for this phase; closure stays withheld until it does, ` +
+        `because the report's age is not evidence the gaps were closed.`
+      : `Requirement closure is blocked by a verification report (${requirementsBlockedBy}). ` +
+        `Close the reported gaps and re-run verification.`;
   } else {
     // Either the verifier passed, it needs human sign-off (which execute-phase
     // obtains before reaching phase-close), or no VERIFICATION.md exists at all
     // because workflow.verifier is off. Verification is a qualifier, not a gate
     // — an absent report must not strand requirements as permanently Pending.
-    const closure = closePhaseRequirements(
+    const collected = collectPhaseRequirementIds(
       cwd,
-      collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent),
       phaseNum,
+      phaseInfo,
+      roadmapContent,
     );
+    const closure = closePhaseRequirements(cwd, collected.ids, phaseNum);
     requirementsUpdated = closure.updated;
     requirementIds = closure.closed;
     requirementsOtherPhase = closure.otherPhase;
     requirementsUnmapped = closure.unmapped;
+    requirementsUndeclared = collected.undeclared;
   }
 
   // Find next phase — check both filesystem AND roadmap
@@ -1434,8 +1576,12 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirements_closed: requirementIds,
     requirements_other_phase: requirementsOtherPhase,
     requirements_unmapped: requirementsUnmapped,
+    requirements_undeclared: requirementsUndeclared,
     verification_status: verificationStatus,
+    verification_stale: verificationStale,
+    verification_stale_summaries: staleSummaries,
     requirements_blocked_by: requirementsBlockedBy,
+    requirements_blocked_hint: requirementsBlockedHint,
   };
 
   output(result);
