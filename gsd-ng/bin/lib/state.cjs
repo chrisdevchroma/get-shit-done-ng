@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   loadConfig,
+  findPhaseInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
   getPhaseCompletionStatus,
@@ -279,6 +280,37 @@ function stateReplaceFieldWithFallback(content, fieldName, newValue) {
   return content.trimEnd() + '\n**' + fieldName + ':** ' + newValue + '\n';
 }
 
+/**
+ * Count completed plans for a phase by counting SUMMARY files on disk.
+ *
+ * Returns null when the phase cannot be located, which lets callers fall back
+ * to whatever STATE.md claims — projects without on-disk phase directories
+ * still get the old in-place behavior.
+ */
+function countCompletedPlansOnDisk(cwd, phaseRef) {
+  if (!phaseRef) return null;
+  try {
+    const info = findPhaseInternal(cwd, phaseRef);
+    if (!info || !info.found) return null;
+    return info.summaries.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Render a plan position using the same shape as the value already in STATE.md:
+ * ("02-08", 9) -> "02-09", ("08", 9) -> "09", ("8", 9) -> "9".
+ * Returns null when the existing value is not a recognized numeric form.
+ */
+function formatPlanPosition(existingValue, planNumber) {
+  const formatMatch = existingValue && existingValue.match(/^(\d+-)?(\d+)$/);
+  if (!formatMatch) return null;
+  const prefix = formatMatch[1] || '';
+  const width = formatMatch[2].length;
+  return `${prefix}${String(planNumber).padStart(width, '0')}`;
+}
+
 function cmdStateAdvancePlan(cwd) {
   const { state: statePath } = planningPaths(cwd);
   if (!fs.existsSync(statePath)) {
@@ -330,7 +362,28 @@ function cmdStateAdvancePlan(cwd) {
     return stateReplaceFieldWithFallback(c, primary, value);
   };
 
-  if (currentPlan >= totalPlans) {
+  // Derive the position from disk instead of incrementing the stored value.
+  // Wave-based execution runs several executors against one STATE.md at once;
+  // read-value-then-write-value-plus-one lands at +1 however many plans just
+  // finished, because every executor reads the same number before any of them
+  // writes. Counting SUMMARY files gives every caller the same answer, makes a
+  // repeat call a no-op, and makes the value correct again after a failed run.
+  const phasePrefixMatch = legacyPlan && legacyPlan.match(/^(\d+)-\d+$/);
+  const phaseRef =
+    stateExtractField(content, 'Current Phase') ||
+    (phasePrefixMatch ? phasePrefixMatch[1] : null);
+  const completedOnDisk = countCompletedPlansOnDisk(cwd, phaseRef);
+  const derivedFromDisk = completedOnDisk !== null;
+
+  // A finished plan writes its SUMMARY before calling this, so the count
+  // includes the caller's own plan — the next position is count + 1, and the
+  // phase is done once the count reaches the plan total.
+  const nextPlan = derivedFromDisk ? completedOnDisk + 1 : currentPlan + 1;
+  const atEndOfPhase = derivedFromDisk
+    ? completedOnDisk >= totalPlans
+    : currentPlan >= totalPlans;
+
+  if (atEndOfPhase) {
     content = replaceField(
       content,
       'Status',
@@ -345,35 +398,24 @@ function cmdStateAdvancePlan(cwd) {
         reason: 'last_plan',
         current_plan: currentPlan,
         total_plans: totalPlans,
+        completed_plans: completedOnDisk,
+        derived_from_disk: derivedFromDisk,
         status: 'ready_for_verification',
       },
       'false',
     );
   } else {
-    const newPlan = currentPlan + 1;
     if (useCompoundFormat) {
       // Preserve compound format: "X of Y in current phase" → replace X only
-      const newPlanValue = planField.replace(/^\d+/, String(newPlan));
+      const newPlanValue = planField.replace(/^\d+/, String(nextPlan));
       content = stateReplaceField(content, 'Plan', newPlanValue) || content;
     } else {
-      // Preserve original format: "02-08" → "02-09", "08" → "09", "8" → "9"
+      // Preserve original format: "02-08" → "02-09", "08" → "09", "8" → "9".
+      // Non-numeric values have no format to preserve — write the bare number.
       const legacyPlanRaw = stateExtractField(content, 'Current Plan');
-      const formatMatch =
-        legacyPlanRaw && legacyPlanRaw.match(/^(\d+-)?(\d+)$/);
-      if (formatMatch) {
-        const prefix = formatMatch[1] || '';
-        const num = parseInt(formatMatch[2], 10);
-        const width = formatMatch[2].length;
-        const incremented = String(num + 1).padStart(width, '0');
-        const newValue = `${prefix}${incremented}`;
-        content =
-          stateReplaceField(content, 'Current Plan', newValue) || content;
-      } else {
-        // Non-numeric format — fall back to plain increment
-        content =
-          stateReplaceField(content, 'Current Plan', String(newPlan)) ||
-          content;
-      }
+      const newValue =
+        formatPlanPosition(legacyPlanRaw, nextPlan) || String(nextPlan);
+      content = stateReplaceField(content, 'Current Plan', newValue) || content;
     }
     content = replaceField(content, 'Status', null, 'Ready to execute');
     content = replaceField(content, 'Last Activity', 'Last activity', today);
@@ -382,8 +424,10 @@ function cmdStateAdvancePlan(cwd) {
       {
         advanced: true,
         previous_plan: currentPlan,
-        current_plan: newPlan,
+        current_plan: nextPlan,
         total_plans: totalPlans,
+        completed_plans: completedOnDisk,
+        derived_from_disk: derivedFromDisk,
       },
       'true',
     );

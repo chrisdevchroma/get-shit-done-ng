@@ -392,7 +392,7 @@ Do NOT skip. Do NOT proceed to state updates if self-check fails.
 After SUMMARY.md, update STATE.md using gsd-tools:
 
 ```bash
-# Advance plan counter (handles edge cases automatically)
+# Recalculate plan position from disk (handles edge cases automatically)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state advance-plan
 
 # Recalculate progress bar from disk state
@@ -427,7 +427,7 @@ the ID Complete as soon as the *first* of them finished. Leave the plan's
 `requirements:` frontmatter as the declaration it is; `phase complete` reads it.
 
 **State command behaviors:**
-- `state advance-plan`: Increments Current Plan, detects last-plan edge case, sets status
+- `state advance-plan`: Recalculates Current Plan from SUMMARY.md counts on disk, detects last-plan edge case, sets status. Idempotent — safe to run concurrently from parallel waves and safe to re-run after a failure
 - `state update-progress`: Recalculates progress bar from SUMMARY.md counts on disk
 - `state record-metric`: Appends to Performance Metrics table
 - `state add-decision`: Adds to Decisions section, removes placeholders
