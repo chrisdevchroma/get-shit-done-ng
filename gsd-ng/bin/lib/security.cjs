@@ -738,41 +738,17 @@ function isEntropyGloballyEnabled(cwd) {
 // ─── normalizeForScan ─────────────────────────────────────────────────────────
 
 /**
- * Characters removed from the scan copy before pattern matching.
+ * Invisible codepoints removed from the scan copy before matching.
  *
- * These are codepoints that render as nothing, so an LLM reading the text sees
- * "ignore all previous instructions" whether or not they are present, while a
- * regex sees a word broken in half. Leaving them in place made every
- * high-confidence pattern trivially evadable by one invisible character.
- *
- * Included:
- *   - \p{Cf} (format characters). Covers zero-width space/non-joiner/joiner
- *     (U+200B–U+200D), the bidi marks and embedding/override/isolate controls
- *     (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), word joiner and the
- *     invisible math operators (U+2060–U+2064), soft hyphen (U+00AD),
- *     zero-width no-break space / BOM (U+FEFF), Mongolian vowel separator
- *     (U+180E), and the deprecated TAG block (U+E0001, U+E0020–U+E007F) used
- *     by "ASCII smuggling" payloads. Script-specific Cf members (Arabic number
- *     sign U+0600, Kaithi number sign U+110BD, …) are format marks that are
- *     themselves invisible, so removing them from the scan copy cannot hide a
- *     word from the multi-language patterns, whose source codepoints are all
- *     letters.
- *   - Variation selectors (U+FE00–U+FE0F and the U+E0100–U+E01EF supplement).
- *     These are Mn, not Cf, but are equally invisible and equally usable as
- *     word-breaking filler.
- *
- * Deliberately NOT included: general combining marks (\p{Mn} at large). They
- * carry visible meaning — stripping them would fold "resumé" into "resume" and
- * mangle every non-English script, a normalization change far beyond hiding.
- *
- * Rebuilt per call site via a literal (no shared lastIndex) — the `g` flag on a
- * module-level regex would make `.replace` results depend on call order.
+ * \p{Cf} covers the zero-width set, bidi marks and isolates, soft hyphen, BOM
+ * and the TAG block. Variation selectors are Mn rather than Cf but are equally
+ * invisible, so they are listed explicitly. General combining marks are
+ * excluded: they carry visible meaning, and folding them would mangle every
+ * accented script rather than reveal a hidden keyword.
  */
 const INVISIBLE_SCAN_CHARS = /[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
 
 /**
- * Remove invisible/format characters for matching purposes only.
- *
  * @param {string} s - Input string
  * @returns {string} String with invisible codepoints removed
  */
@@ -792,11 +768,8 @@ function stripInvisibleForScan(s) {
  *   3. TR39 confusable substitution: collapses visual homoglyphs (Cyrillic а,
  *      Greek α, Math-Latin 𝐚, Cherokee, etc.) to their Latin a-z/A-Z target.
  *
- * Used internally by scanForInjection. Original content is NEVER mutated;
- * downstream display, audit logs, and outbound prompts must use the original.
- * The separate zero-width/bidi detector in scanForInjection still runs against
- * the ORIGINAL content and still reports — stripping here changes what the
- * patterns match, not what the audit trail records.
+ * Stripping applies to the scan copy only. The content the caller gets back is
+ * byte-identical, and the zero-width/bidi detector still scans the original.
  *
  * @param {string} content - Input string
  * @returns {string} Normalized string. Step 2 shortens the string when
@@ -832,18 +805,11 @@ function normalizeForScan(content) {
  *
  * Used by callers to populate `chars_changed` audit-log fields.
  *
- * normalizeForScan performs two kinds of edit, and this diff models both:
- *   - substitution (homoglyph folded to its Latin target) → {from, to}
- *   - removal (invisible/format character dropped)        → {from, to: ''}
+ * normalizeForScan both substitutes and removes, so the two strings differ in
+ * length and a positional comparison would desynchronise at the first removal.
+ * Removals are emitted as {from, to: ''} and hold the normalized cursor.
  *
- * A naive index-by-index comparison would desynchronise permanently at the
- * first removal and report every subsequent character as changed. So when the
- * original character at a mismatch is one the normalizer removes, the original
- * cursor advances alone and the normalized cursor holds — keeping the two
- * aligned for the remainder of the string and keeping the audit log readable.
- *
- * Offsets are positions in the ORIGINAL string's codepoint-array view, which is
- * what a human reviewing the log needs in order to find the character.
+ * Offsets index the ORIGINAL string's codepoint-array view.
  *
  * @param {string} original   - Pre-normalization string
  * @param {string} normalized - Post-normalization string (output of normalizeForScan)
@@ -898,19 +864,14 @@ function diffConfusables(original, normalized) {
  * opts.entropy=false overrides opts.external=true to disable entropy scanning.
  * opts.cwd enables global config toggle reading from .planning/config.json.
  *
- * Patterns run against a normalized copy of the input: NFKC, then removal of
- * invisible/format characters, then TR39 confusable folding. This defeats both
- * homoglyph evasion (Cyrillic 'а' for Latin 'a') and invisible-character
- * evasion (a zero-width space inside a keyword). When a pattern matches the
- * normalized form but NOT the original, the resulting blocked/findings entry
- * carries a "[homoglyph-evasion]" tag — the tag marks "matched only after
- * normalization" and so covers both evasion classes.
+ * Patterns run against a normalized copy: NFKC, invisible-character removal,
+ * then TR39 confusable folding. A pattern matching the normalized form but NOT
+ * the original carries a "[homoglyph-evasion]" tag, which marks "matched only
+ * after normalization" and so covers invisible-character evasion too.
  *
- * Original content is preserved unchanged in the return value, audit logs, and
- * downstream prompts. The Unicode bidi/zero-width detector and the entropy scan
- * continue to run against the ORIGINAL content: stripping is for matching only,
- * and the presence of invisible characters in untrusted content remains an
- * audit signal in its own right, reported alongside whatever the patterns found.
+ * Original content is preserved unchanged in the return value, audit logs and
+ * downstream prompts. The bidi/zero-width detector and the entropy scan run
+ * against the ORIGINAL content.
  *
  * @param {string} content   - Text to scan (e.g., .planning/ file content)
  * @param {object} [opts]
@@ -1099,22 +1060,12 @@ function sanitizeForPrompt(content, opts = {}) {
 /**
  * Neutralise the containment sentinel inside untrusted content.
  *
- * The wrapper's whole value is the boundary: an agent is told to treat anything
- * between the tags as data. Content that carries its own `</untrusted-content>`
- * closes the boundary early, and every byte after it reads as trusted narration
- * in a file the agent treats as project state. Nothing in the pattern set
- * matches a bare sentinel, so such a body scans clean and arrives unannounced.
+ * Escapes the lone `<` rather than a whole well-formed tag, so a dangling
+ * `<untrusted-content` with no `>` is caught too — such a fragment would
+ * otherwise pair with the wrapper's own closer and swallow it as one tag.
  *
- * Every `<` that begins an `untrusted-content` tag — opening or closing, any
- * case, terminated or not — becomes `&lt;`. Escaping the lone `<` rather than
- * the whole tag means a dangling `<untrusted-content` with no `>` is neutralised
- * too, which matters because such a fragment would otherwise pair with the
- * wrapper's own closer and swallow it as one long opening tag.
- *
- * One-way by design. stripUntrustedWrappers does NOT reverse this, so no
- * round-trip through the outbound path can reconstitute a live sentinel. The
- * cost is that an issue body legitimately discussing GSD's own wrapper reads as
- * `&lt;/untrusted-content>` — visible, unambiguous, and inert.
+ * One-way by design: stripUntrustedWrappers does not reverse it, so no outbound
+ * round-trip can reconstitute a live sentinel.
  *
  * @param {string} content - Untrusted content
  * @returns {string} Content with sentinel-forming '<' escaped
@@ -1126,10 +1077,8 @@ function escapeUntrustedSentinels(content) {
 /**
  * Escape a value for use inside a double-quoted XML attribute.
  *
- * `source` reaches this function from CLI arguments (`--repo`), so an
- * unescaped interpolation lets a caller inject further attributes:
- * `--repo 'x" y="z'` produced `source="x" y="z"`. Newlines are escaped as well
- * — the wrapper is written into files whose structure is line-oriented.
+ * `source` reaches this function from CLI arguments, so it is attacker-shaped.
+ * Newlines are escaped too: the wrapper is written into line-oriented files.
  *
  * @param {string} value - Raw attribute value
  * @returns {string} Value safe to place between double quotes
@@ -1154,13 +1103,10 @@ function escapeXmlAttribute(value) {
  *   {content}
  * </untrusted-content>
  *
- * The tag name is a fixed, documented contract — references/security-untrusted-content.md
- * teaches agents to distrust what sits inside it, the create-pr workflow greps
- * for it, and contract tests assert it. Containment is therefore enforced by
- * escaping the sentinel out of the content (see escapeUntrustedSentinels)
- * rather than by randomising the tag name per call: a nonce would be robust
- * against a body that guesses the tag, but it would also make the boundary
- * unnameable in the very documentation that tells agents to respect it.
+ * The tag name is a fixed contract: references/security-untrusted-content.md
+ * names it to agents, the create-pr workflow greps for it, contract tests assert
+ * it. Containment is therefore enforced by escaping the sentinel out of the
+ * content rather than by randomising the tag name per call.
  *
  * @param {string} content  - Content from external source (e.g., GitHub issue body)
  * @param {string} source   - Source identifier (e.g., 'github:#42', 'gitlab:!123')
@@ -1180,15 +1126,10 @@ function wrapUntrustedContent(content, source) {
  * Used when building outbound content (PR bodies, issue comments) — wrapper tags
  * are for internal agent use and should not appear in external systems.
  *
- * The pair match is non-greedy, so before wrapUntrustedContent escaped the
- * sentinel a body carrying its own closing tag ended the match early: the strip
- * consumed the wrapper's opener through the ATTACKER's closer and shipped the
- * injected prose plus an orphan tag onward. Content produced by
- * wrapUntrustedContent can no longer contain a raw sentinel, so that pairing is
- * gone by construction. This function is nonetheless hardened for content of
- * unknown provenance: after pairs are removed, any orphaned wrapper tag left
- * behind is removed too, so no half-boundary can survive into an external
- * system and imply a containment that is not there.
+ * The pair match is non-greedy, so it relies on wrapped content containing no
+ * raw sentinel. For content of unknown provenance any orphaned tag left after
+ * pair removal is stripped as well: a half-boundary reaching an external system
+ * would imply a containment that is not there.
  *
  * @param {string} content  - Content potentially containing <untrusted-content> wrappers
  * @returns {string} Content with wrapper tags removed, inner content preserved
