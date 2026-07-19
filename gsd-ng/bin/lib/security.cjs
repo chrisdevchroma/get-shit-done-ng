@@ -42,9 +42,9 @@ const { CONFUSABLES_MAP } = require('./confusables.cjs');
  *   - "act as a plan" / "act as a phase" / "act as a wave" → allowed (GSD uses these)
  *   - "<instructions>" tag → allowed (GSD uses it as prompt structure in agent files)
  *
- * BACKWARD COMPAT: This array is unchanged from Phase 31. Existing callers using
- * `const { clean, findings } = scanForInjection(content)` continue to work.
- * New code should use INJECTION_PATTERNS_TIERED for tiered confidence classification.
+ * Retained for the legacy `const { clean, findings } = scanForInjection(content)`
+ * call shape. New code should use INJECTION_PATTERNS_TIERED, which carries tiered
+ * confidence classification.
  *
  * Exported for test visibility.
  */
