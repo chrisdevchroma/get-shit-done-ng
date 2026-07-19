@@ -687,12 +687,31 @@ function isEntropyGloballyEnabled(cwd) {
  * Invisible codepoints removed from the scan copy before matching.
  *
  * \p{Cf} covers the zero-width set, bidi marks and isolates, soft hyphen, BOM
- * and the TAG block. Variation selectors are Mn rather than Cf but are equally
- * invisible, so they are listed explicitly. General combining marks are
- * excluded: they carry visible meaning, and folding them would mangle every
- * accented script rather than reveal a hidden keyword.
+ * and the TAG block. The rest are enumerated one codepoint at a time because
+ * they render with no advance width while sitting in categories whose members
+ * are overwhelmingly visible. Widening to those categories would fold every
+ * accented and Indic script instead of revealing a hidden keyword, so the list
+ * stays explicit:
+ *
+ *   U+034F           combining grapheme joiner \u2014 defined as having no glyph
+ *   U+17B4, U+17B5   Khmer inherent vowels \u2014 pronounced, never rendered
+ *   U+180B-U+180D,   Mongolian free variation selectors \u2014 glyph selectors
+ *   U+180F             that add nothing of their own
+ *   U+FE00 .. U+FE0F variation selectors, same role
+ *   U+E0100 .. U+E01EF
+ *   U+16FE4          Khitan small script filler \u2014 zero-width placeholder
+ *   U+115F, U+1160   Hangul choseong/jungseong fillers \u2014 zero-width slots
+ *   U+3164, U+FFA0   Hangul fillers that NFKC folds to U+1160; listed anyway
+ *                      so diffConfusables, which tests the pre-NFKC string,
+ *                      still classifies them as removals
+ *   U+2800           braille blank \u2014 every dot unraised, so nothing is inked
+ *
+ * Deliberately excluded: U+1680 OGHAM SPACE MARK and U+3000 IDEOGRAPHIC SPACE
+ * are whitespace that \s already matches, and stripping them would weld
+ * separate words together.
  */
-const INVISIBLE_SCAN_CHARS = /[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+const INVISIBLE_SCAN_CHARS =
+  /[\p{Cf}\u034F\u17B4\u17B5\u180B-\u180D\u180F\u2800\u115F\u1160\u3164\uFE00-\uFE0F\uFFA0\u{16FE4}\u{E0100}-\u{E01EF}]/gu;
 
 /**
  * @param {string} s - Input string
