@@ -2003,11 +2003,6 @@ describe('SEC40-SCANREAD — cmdStateGet', () => {
     });
   }
 
-  // Section mode structures the body and attaches the banner afterwards, so
-  // the banner is never fed back through parseSectionContent. Previously it
-  // was, and the parser read the banner's own "key: value" shape into a
-  // pseudo-field keyed "[SECURITY WARNING", destroying the canonical marker
-  // that references/security-untrusted-content.md tells agents to look for.
   test('section mode emits the canonical marker intact, ahead of the structured body', () => {
     writeState(`## Notes\n\n${ATTACK}`);
 

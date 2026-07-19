@@ -1051,7 +1051,6 @@ function sanitizeForPrompt(content, opts = {}) {
   if (warning === null) {
     return content;
   }
-  // Prepend advisory warning with tier — never strip or escape original content
   return `${warning}\n\n${content}`;
 }
 

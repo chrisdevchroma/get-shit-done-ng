@@ -193,9 +193,7 @@ function entropySegments(result) {
  * Measure one corpus.
  *
  * Every item is scanned twice: once with entropy off, isolating pattern hits,
- * and once with entropy on, isolating the statistical signal. Phase 50's corpus
- * run passed no options at all, so entropy was off for every one of its rows —
- * measuring both here is the point.
+ * and once with entropy on, isolating the statistical signal.
  *
  * @param {Array<{ref: string, content: string}>} items
  * @returns {object} measurement
@@ -246,12 +244,10 @@ function measureCorpus(items) {
   };
 }
 
-/** Measure Corpus A — the repository walk. */
 function measureRepoWalk() {
   return measureCorpus(walkRepoFiles());
 }
 
-/** Measure Corpus B — the GSD-prose corpus. */
 function measureGsdProse() {
   return measureCorpus(
     loadGsdProse().map((e) => ({ ref: e.id, content: e.text, entry: e })),

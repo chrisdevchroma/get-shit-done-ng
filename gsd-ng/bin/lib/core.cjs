@@ -850,7 +850,6 @@ function readVerificationStatus(phaseDir) {
     );
     return fm && typeof fm.status === 'string' ? fm.status.trim() : null;
   } catch {
-    // VERIFICATION.md unreadable — treat as unverified
     return null;
   }
 }

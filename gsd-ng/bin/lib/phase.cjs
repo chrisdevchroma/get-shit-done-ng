@@ -120,8 +120,6 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
 
   const phaseDir = path.join(cwd, phaseInfo.directory);
 
-  // Source 1: ROADMAP.md phase section (scoped to avoid cross-phase matching),
-  // admitted only for a phase whose every plan has been executed.
   if (roadmapContent && getPhaseCompletionStatus(phaseDir).isComplete) {
     const phaseEsc = escapeRegex(phaseNum);
     const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
@@ -136,7 +134,6 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
   }
 
-  // Source 2: each executed plan, read through the summary that records it.
   const summaryByPlanId = new Map();
   for (const summaryFile of phaseInfo.summaries || []) {
     summaryByPlanId.set(planDocumentId(summaryFile), summaryFile);
@@ -409,7 +406,6 @@ function summariesNewerThanVerification(phaseDir, summaries) {
     if (!verificationFile) return [];
     verifiedAt = fs.statSync(path.join(phaseDir, verificationFile)).mtimeMs;
   } catch {
-    // No readable report to compare against — nothing can be stale relative to it
     return [];
   }
 
@@ -1389,13 +1385,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
   }
 
   // ── Requirement closure ───────────────────────────────────────────────────
-  // Closing requirements is a phase-close action gated on the verifier's
-  // assessment, never a per-plan side effect. Firing per-plan would let whichever
-  // plan finished first close every ID it declared — an ID shared by many plans
-  // in a phase would read Complete while most of its work was unstarted, and
-  // under wave-based parallel execution two executors could also clobber each
-  // other's REQUIREMENTS.md write. VERIFICATION.md is the completion authority
-  // everywhere else in GSD (see getPhaseCompletionStatus); it is here too.
+  // Gated on the verifier's assessment: VERIFICATION.md is the completion
+  // authority everywhere in GSD (see getPhaseCompletionStatus).
   const phaseDirAbs = path.join(cwd, phaseInfo.directory);
   const verificationStatus = readVerificationStatus(phaseDirAbs);
   const requirementsBlockedBy = FAILED_VERIFICATION_STATUSES.has(
