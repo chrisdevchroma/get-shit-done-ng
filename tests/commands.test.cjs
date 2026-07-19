@@ -771,9 +771,41 @@ describe('todo complete command', () => {
       'utf-8',
     );
     assert.ok(
-      content.startsWith('completed:'),
-      'should have completed timestamp',
+      !content.startsWith('completed:'),
+      'completed must not sit above the frontmatter fence',
     );
+    assert.strictEqual(
+      extractFrontmatter(content).completed,
+      output.date,
+      'completed date must be readable as frontmatter',
+    );
+  });
+
+  test('completed todo round-trips with title and completed date readable', () => {
+    const added = runGsdTools(
+      'todo add --title "Round trip" --area tooling --json',
+      tmpDir,
+    );
+    assert.ok(added.success, `Add failed: ${added.error}`);
+    const { file } = JSON.parse(added.output);
+
+    const completed = runGsdTools(`todo complete ${file} --json`, tmpDir);
+    assert.ok(completed.success, `Complete failed: ${completed.error}`);
+    const { date } = JSON.parse(completed.output);
+
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'todos', 'completed', file),
+      'utf-8',
+    );
+    assert.ok(
+      content.startsWith('---\n'),
+      'the frontmatter fence must still open the file',
+    );
+
+    const fm = extractFrontmatter(content);
+    assert.strictEqual(fm.title, 'Round trip', 'title must survive completion');
+    assert.strictEqual(fm.area, 'tooling', 'area must survive completion');
+    assert.strictEqual(fm.completed, date, 'completed date must be readable');
   });
 
   test('fails for nonexistent todo', () => {

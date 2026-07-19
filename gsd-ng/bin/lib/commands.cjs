@@ -905,7 +905,9 @@ function cmdTodoComplete(cwd, filename) {
   fs.mkdirSync(completedDir, { recursive: true });
 
   const today = new Date().toISOString().split('T')[0];
-  const completedContent = `completed: ${today}\n` + content;
+  const completedContent = /^---\r?\n/.test(content)
+    ? content.replace(/^---(\r?\n)/, `---$1completed: ${today}$1`)
+    : `---\ncompleted: ${today}\n---\n\n${content}`;
 
   fs.writeFileSync(
     path.join(completedDir, resolvedName),
