@@ -2354,8 +2354,9 @@ const LABEL_AREA_MAP = {
  * @returns {{ imported, todo_file, title, external_ref, commented }}
  */
 function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
-  // Back-compat: callers historically passed _testOverrides as the 5th positional
-  // arg. Distinguish by shape — the options bag never carries a cliInvoker.
+  // The 5th positional may be either an options bag or an overrides object.
+  // `cliInvoker` is the sole discriminator, so an overrides object that omits
+  // it is silently accepted as options and its overrides are dropped.
   let opts = options && typeof options === 'object' ? options : {};
   let overridesArg = _testOverrides;
   if (opts.cliInvoker) {
@@ -2501,8 +2502,8 @@ function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
     `created: ${created}`,
     `title: ${yamlScalar(title)}`,
     'untrusted_title: true',
-    `area: ${area}`,
-    `external_ref: "${externalRef}"`,
+    `area: ${yamlScalar(area)}`,
+    `external_ref: ${yamlScalar(externalRef)}`,
     'files: []',
     '---',
     '',

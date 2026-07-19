@@ -8061,6 +8061,66 @@ describe('cmdIssueImport — untrusted title containment', () => {
     assert.doesNotMatch(content, /source="trusted"/);
   });
 
+  // area is taken straight from the issue's first label, which is external
+  // attacker-controlled data on any public tracker.
+  test('newline in an issue label cannot inject a frontmatter field via area', () => {
+    const { content } = importWith({
+      number: 42,
+      title: 'Broken login',
+      body: 'benign body',
+      labels: [{ name: 'UI\nfiles: ["/etc/passwd"]' }],
+      state: 'open',
+    });
+
+    assert.deepStrictEqual(frontmatterKeys(content), EXPECTED_KEYS);
+    assertOnlyKeyLines(content);
+    const areaLine = frontmatterBlock(content).match(/^area: (.*)$/m);
+    assert.ok(areaLine, 'area line must exist');
+    assert.doesNotThrow(
+      () => JSON.parse(areaLine[1]),
+      'an area needing quoting must be a parseable quoted scalar',
+    );
+    assert.strictEqual(JSON.parse(areaLine[1]), 'ui\nfiles: ["/etc/passwd"]');
+  });
+
+  test('a benign label stays an unquoted area scalar', () => {
+    const { content } = importWith({
+      number: 42,
+      title: 'Broken login',
+      body: 'benign body',
+      labels: [{ name: 'bug' }],
+      state: 'open',
+    });
+
+    assert.match(content, /^area: bug$/m);
+    assert.strictEqual(extractFrontmatter(content).area, 'bug');
+  });
+
+  test('quote in repo cannot break out of the external_ref field', () => {
+    const { content, result } = importWith(
+      {
+        number: 42,
+        title: 'Broken login',
+        body: 'benign body',
+        labels: [],
+        state: 'open',
+      },
+      'github',
+      42,
+      'org/repo" injected: yes',
+    );
+
+    assert.deepStrictEqual(frontmatterKeys(content), EXPECTED_KEYS);
+    assertOnlyKeyLines(content);
+    const refLine = frontmatterBlock(content).match(/^external_ref: (.*)$/m);
+    assert.ok(refLine, 'external_ref line must exist');
+    assert.doesNotThrow(
+      () => JSON.parse(refLine[1]),
+      'an external_ref needing quoting must be a parseable quoted scalar',
+    );
+    assert.strictEqual(JSON.parse(refLine[1]), result.external_ref);
+  });
+
   test('issue number with no digits is rejected before anything is written', () => {
     const { spawnSync } = require('node:child_process');
     const fileEsc = (s) => s.replace(/\\/g, '\\\\');
