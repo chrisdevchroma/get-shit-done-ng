@@ -426,6 +426,13 @@ describe('security gate: the pinned SHA is mandatory', () => {
     );
 
     assert.equal(result.status, 'rejected');
+    assert.match(
+      result.message,
+      /must name the commit/i,
+      'the refusal must be the missing-pin one, not the mismatch branch ' +
+        'reporting a commit named "null"',
+    );
+    assert.doesNotMatch(result.message, /names commit/i);
     assert.equal(
       github.calls.statuses.length,
       0,
@@ -456,6 +463,7 @@ describe('security gate: the pinned SHA is mandatory', () => {
     const result = await override(github, '/security-override: aaaaaa reviewed');
 
     assert.equal(result.status, 'rejected');
+    assert.match(result.message, /must name the commit/i);
     assert.match(result.message, /\/security-override: <sha> <reason>/);
     assert.equal(github.calls.statuses.length, 0);
   });
