@@ -35,10 +35,12 @@ function resolveTimeoutMs() {
 /**
  * Run one test command, distinguishing "exited non-zero" from "never exited".
  *
- * execSync signals a timeout by killing the child, which surfaces as an error
- * carrying `killed`/`ETIMEDOUT` and NO `status`. The old `err.status || 1`
- * collapsed that into a plain 1, which is why a timed-out capture was
- * indistinguishable from a genuinely failing suite.
+ * execSync signals a timeout by killing the child. Observed error shape is
+ * `code: 'ETIMEDOUT'`, `signal: 'SIGTERM'`, `status: null` — note `killed` is
+ * undefined rather than true, so it is not a reliable discriminator and is not
+ * tested for here. The old `err.status || 1` collapsed all of this into a plain
+ * 1, which is why a timed-out capture was indistinguishable from a genuinely
+ * failing suite.
  *
  * @returns {{exitCode: number, output: string, timedOut: boolean}}
  */
@@ -53,7 +55,6 @@ function runTestCommand(command, runDir) {
     return { exitCode: 0, output, timedOut: false };
   } catch (err) {
     const timedOut =
-      err.killed === true ||
       err.code === 'ETIMEDOUT' ||
       (err.signal === 'SIGTERM' && err.status == null);
     return {
@@ -91,7 +92,7 @@ function captureBaseline(entriesJson, outputFile) {
       fail: failMatch ? parseInt(failMatch[1]) : null,
     };
     const status = timedOut
-      ? 'unknown (timed out — no baseline recorded)'
+      ? 'unknown (timed out — recorded as unknown, not as failing)'
       : exitCode === 0
         ? 'passing'
         : 'failing (pre-existing)';
