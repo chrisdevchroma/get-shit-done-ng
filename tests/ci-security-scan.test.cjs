@@ -553,6 +553,15 @@ function readWorkflow(p) {
 
 const GATE_SHA = 'b'.repeat(40);
 
+// A gate verdict predating the override comment: the ordering an override
+// requires, so that these tests exercise their own subject and not the clock.
+const GATE_CREATED_AT = '2026-01-01T11:00:00Z';
+const OVERRIDE_COMMENT = {
+  body: '/security-override: reviewed',
+  user: { login: 'zoe' },
+  created_at: '2026-01-01T12:00:00Z',
+};
+
 /**
  * Octokit-shaped stub for the gate module. Records every call.
  *
@@ -580,7 +589,11 @@ function makeGateStub(options = {}) {
         async getCombinedStatusForRef(args) {
           calls.combined.push(args);
           const page = args.page || 1;
-          return { data: { statuses: statusPages[page - 1] || [] } };
+          const statuses = (statusPages[page - 1] || []).map((s) => ({
+            created_at: GATE_CREATED_AT,
+            ...s,
+          }));
+          return { data: { statuses } };
         },
         async createCommitStatus(args) {
           calls.statuses.push(args);
@@ -681,7 +694,7 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       owner: 'acme',
       repo: 'widgets',
       prNumber: 42,
-      comment: { body: '/security-override: reviewed', user: { login: 'zoe' } },
+      comment: OVERRIDE_COMMENT,
     });
 
     assert.equal(result.status, 'applied');
@@ -711,7 +724,7 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       owner: 'acme',
       repo: 'widgets',
       prNumber: 42,
-      comment: { body: '/security-override: reviewed', user: { login: 'zoe' } },
+      comment: OVERRIDE_COMMENT,
     });
 
     for (const stub of [publisher, overrider]) {
@@ -886,7 +899,7 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       owner: 'acme',
       repo: 'widgets',
       prNumber: 42,
-      comment: { body: '/security-override: reviewed', user: { login: 'zoe' } },
+      comment: OVERRIDE_COMMENT,
     });
 
     assert.equal(result.status, 'applied');

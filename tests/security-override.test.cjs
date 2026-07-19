@@ -36,6 +36,10 @@ const WORKFLOW_DIR = path.join(REPO_ROOT, '.github', 'workflows');
 const GATE_CONTEXT = gate.GATE_CONTEXT;
 const HEAD_SHA = 'a'.repeat(40);
 
+// The verdict predates the comment, so the maintainer could have seen it.
+const VERDICT_AT = '2026-01-01T11:00:00Z';
+const COMMENTED_AT = '2026-01-01T12:00:00Z';
+
 /**
  * Minimal Octokit-shaped stub. Records every call so tests can assert on the
  * request that was made, not merely on the returned value.
@@ -45,15 +49,25 @@ const HEAD_SHA = 'a'.repeat(40);
  * lookup that ignores the context filter picks up the wrong state.
  */
 function makeGitHubStub(options = {}) {
-  const { gateState = 'failure' } = options;
+  const {
+    gateState = 'failure',
+    gateCreatedAt = VERDICT_AT,
+    headSha = HEAD_SHA,
+  } = options;
   const permission =
     'permission' in options ? options.permission : 'admin';
 
   const calls = { permission: [], pulls: [], combined: [], statuses: [] };
 
-  const statuses = [{ context: 'ci/build', state: 'success' }];
+  const statuses = [
+    { context: 'ci/build', state: 'success', created_at: gateCreatedAt },
+  ];
   if (gateState !== null) {
-    statuses.push({ context: GATE_CONTEXT, state: gateState });
+    statuses.push({
+      context: GATE_CONTEXT,
+      state: gateState,
+      created_at: gateCreatedAt,
+    });
   }
 
   return {
@@ -76,24 +90,24 @@ function makeGitHubStub(options = {}) {
       pulls: {
         async get(args) {
           calls.pulls.push(args);
-          return { data: { head: { sha: HEAD_SHA } } };
+          return { data: { head: { sha: headSha } } };
         },
       },
     },
   };
 }
 
-function comment(body, login = 'maintainer') {
-  return { body, user: { login } };
+function comment(body, login = 'maintainer', createdAt = COMMENTED_AT) {
+  return { body, user: { login }, created_at: createdAt };
 }
 
-function override(github, body, login) {
+function override(github, body, login, createdAt) {
   return gate.processOverride({
     github,
     owner: 'acme',
     repo: 'widgets',
     prNumber: 42,
-    comment: comment(body, login),
+    comment: comment(body, login, createdAt),
   });
 }
 
@@ -200,6 +214,167 @@ describe('security gate: maintainer override', () => {
     assert.equal(github.calls.combined.length, 1);
     assert.equal(github.calls.combined[0].ref, HEAD_SHA);
     assert.equal(result.status, 'applied');
+  });
+});
+
+describe('security gate: override command parsing', () => {
+  test('the command is only recognised at the start of the comment body', () => {
+    const bodies = [
+      'Looks good to me.\n/security-override: reviewed',
+      'line one\nline two\n/security-override: reviewed',
+      '> /security-override: reviewed',
+      'Quoting a maintainer:\n\n> /security-override: reviewed',
+      '```\n/security-override: reviewed\n```',
+      'x /security-override: reviewed',
+    ];
+
+    for (const body of bodies) {
+      assert.equal(
+        gate.parseOverrideCommand(body),
+        null,
+        `body ${JSON.stringify(body)} must not parse as an override`,
+      );
+      assert.equal(gate.parseOverrideReason(body), null);
+    }
+  });
+
+  test('leading whitespace does not parse, matching the workflow trigger', () => {
+    // The workflow gates on startsWith() against the UNTRIMMED body, so a body
+    // opening with whitespace never starts a run. Trimming here would make the
+    // module strictly more permissive than the only caller that reaches it.
+    const yaml = readWorkflow('security-override.yml');
+    assert.match(
+      yaml,
+      /startsWith\(github\.event\.comment\.body, '\/security-override:'\)/,
+      'the trigger this test pins its direction to has moved',
+    );
+
+    for (const body of [
+      ' /security-override: reviewed',
+      '\t/security-override: reviewed',
+      '\n/security-override: reviewed',
+    ]) {
+      assert.equal(gate.parseOverrideCommand(body), null);
+    }
+  });
+
+  test('a command on the first line parses even with prose beneath it', () => {
+    const parsed = gate.parseOverrideCommand(
+      '/security-override: vendored fixture\n\nFull rationale below.\n',
+    );
+    assert.deepEqual(parsed, { sha: null, reason: 'vendored fixture' });
+  });
+
+  test('a pinned SHA is captured and not swallowed into the reason', () => {
+    const parsed = gate.parseOverrideCommand(
+      `/security-override: ${HEAD_SHA} reviewed by hand`,
+    );
+    assert.deepEqual(parsed, { sha: HEAD_SHA, reason: 'reviewed by hand' });
+    assert.doesNotMatch(parsed.reason, /a{7}/);
+
+    const abbreviated = gate.parseOverrideCommand(
+      '/security-override: AAAAAAA reviewed by hand',
+    );
+    assert.deepEqual(abbreviated, {
+      sha: 'aaaaaaa',
+      reason: 'reviewed by hand',
+    });
+  });
+
+  test('a pinned SHA with no reason after it is rejected', () => {
+    assert.equal(gate.parseOverrideCommand(`/security-override: ${HEAD_SHA}`), null);
+  });
+
+  test('an ordinary reason is not mistaken for a pinned SHA', () => {
+    const parsed = gate.parseOverrideCommand('/security-override: decaf is fine');
+    assert.deepEqual(parsed, { sha: null, reason: 'decaf is fine' });
+  });
+});
+
+describe('security gate: override cannot clear an unseen verdict', () => {
+  test('a verdict created after the comment is refused', async () => {
+    // Maintainer reviews commit A and comments; the contributor pushes B; B is
+    // scanned and fails. The comment predates that verdict, so it cannot be an
+    // approval of it.
+    const github = makeGitHubStub({
+      gateCreatedAt: '2026-01-01T12:00:01Z',
+    });
+
+    const result = await override(github, '/security-override: reviewed');
+
+    assert.equal(result.status, 'rejected');
+    assert.match(result.message, /after|newer/i);
+    assert.equal(
+      github.calls.statuses.length,
+      0,
+      'a refused override must post nothing',
+    );
+  });
+
+  test('a verdict created before the comment is applied', async () => {
+    const github = makeGitHubStub({ gateCreatedAt: '2026-01-01T11:59:59Z' });
+    const result = await override(github, '/security-override: reviewed');
+
+    assert.equal(result.status, 'applied');
+    assert.equal(github.calls.statuses.length, 1);
+    assert.equal(github.calls.statuses[0].state, 'success');
+  });
+
+  test('a missing timestamp on either side is refused, not assumed fresh', async () => {
+    const noStatusTime = makeGitHubStub({ gateCreatedAt: null });
+    const a = await override(noStatusTime, '/security-override: reviewed');
+    assert.equal(a.status, 'rejected');
+    assert.equal(noStatusTime.calls.statuses.length, 0);
+
+    const noCommentTime = makeGitHubStub();
+    const b = await override(
+      noCommentTime,
+      '/security-override: reviewed',
+      'maintainer',
+      null,
+    );
+    assert.equal(b.status, 'rejected');
+    assert.equal(noCommentTime.calls.statuses.length, 0);
+  });
+
+  test('a pinned SHA matching the head commit applies regardless of verdict age', async () => {
+    // Naming the commit is a stronger statement than any timestamp inference:
+    // the maintainer said which code they approved.
+    const github = makeGitHubStub({ gateCreatedAt: '2026-06-01T00:00:00Z' });
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed by hand`,
+    );
+
+    assert.equal(result.status, 'applied');
+    assert.equal(result.reason, 'reviewed by hand');
+    assert.equal(github.calls.statuses.length, 1);
+    assert.equal(github.calls.statuses[0].sha, HEAD_SHA);
+  });
+
+  test('an abbreviated pinned SHA matches by prefix', async () => {
+    const github = makeGitHubStub();
+    const result = await override(
+      github,
+      '/security-override: aaaaaaa reviewed by hand',
+    );
+    assert.equal(result.status, 'applied');
+  });
+
+  test('a pinned SHA naming a superseded commit is refused', async () => {
+    const github = makeGitHubStub({ headSha: 'b'.repeat(40) });
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed by hand`,
+    );
+
+    assert.equal(result.status, 'rejected');
+    assert.match(result.message, /b{7}/);
+    assert.equal(
+      github.calls.statuses.length,
+      0,
+      'a mismatched pin must post nothing',
+    );
   });
 });
 
@@ -385,5 +560,26 @@ describe('security gate: workflow invariants', () => {
     );
     assert.match(reference, /`security-gate`/);
     assert.match(reference, /required status check/i);
+  });
+
+  test('the reference documents the pinned form and the residual window', () => {
+    const reference = fs.readFileSync(
+      path.join(
+        REPO_ROOT,
+        'gsd-ng',
+        'references',
+        'security-untrusted-content.md',
+      ),
+      'utf8',
+    );
+
+    assert.match(reference, /\/security-override: <sha> <reason>/);
+    assert.match(reference, /start of the comment body/i);
+    assert.match(
+      reference,
+      /window/i,
+      'the residual TOCTOU window must stay written down, not be quietly ' +
+        'implied by the pinned form existing',
+    );
   });
 });

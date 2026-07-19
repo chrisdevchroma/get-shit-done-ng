@@ -84,16 +84,16 @@ async function postGateStatus(opts) {
 }
 
 /**
- * Read the current gate state for a commit.
+ * Read the current gate status object for a commit.
  *
  * The combined-status endpoint reports the latest status per context, which is
  * exactly the value branch protection would evaluate. It is paginated and the
  * gate's position among a commit's contexts is not ours to control, so the
  * pages are walked rather than read once.
  *
- * @returns {Promise<string|null>} the gate state, or null when never posted
+ * @returns {Promise<object|null>} the gate status, or null when never posted
  */
-async function readGateStatus(opts) {
+async function readGateStatusEntry(opts) {
   const { client, owner, repo, sha } = opts;
 
   for (let page = 1; page <= MAX_STATUS_PAGES; page++) {
@@ -107,7 +107,7 @@ async function readGateStatus(opts) {
 
     const statuses = (data && data.statuses) || [];
     const gate = statuses.find((s) => s && s.context === GATE_CONTEXT);
-    if (gate) return gate.state;
+    if (gate) return gate;
     if (statuses.length < STATUS_PAGE_SIZE) return null;
   }
 
@@ -116,23 +116,51 @@ async function readGateStatus(opts) {
   return null;
 }
 
+/**
+ * @returns {Promise<string|null>} the gate state, or null when never posted
+ */
+async function readGateStatus(opts) {
+  const gate = await readGateStatusEntry(opts);
+  return gate ? gate.state : null;
+}
+
 function truncate(text, limit) {
   const value = String(text == null ? '' : text);
   return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
 
 /**
- * Extract the justification from an override comment body.
+ * Parse an override command out of a comment body.
  *
+ * Anchored to the start of the string with no `m` flag and no prior trim, so
+ * the command is recognised in exactly the position the workflow's
+ * `startsWith` trigger tests for and nowhere else. A quoted, indented or
+ * mid-body occurrence is prose, not a command.
+ *
+ * @param {string} body
+ * @returns {{sha: string|null, reason: string}|null}
+ */
+function parseOverrideCommand(body) {
+  if (typeof body !== 'string') return null;
+
+  const match = /^\/security-override:[ \t]*([^\n]*)/.exec(body);
+  if (!match) return null;
+
+  const rest = match[1].trim();
+  const pinned = /^([0-9a-f]{7,40})(?:[ \t]|$)/i.exec(rest);
+  const sha = pinned ? pinned[1].toLowerCase() : null;
+  const reason = (pinned ? rest.slice(pinned[1].length) : rest).trim();
+
+  return reason.length > 0 ? { sha, reason } : null;
+}
+
+/**
  * @param {string} body
  * @returns {string|null} trimmed reason, or null when absent or empty
  */
 function parseOverrideReason(body) {
-  if (typeof body !== 'string') return null;
-  const match = /^\/security-override:[ \t]*(.+)$/m.exec(body.trim());
-  if (!match) return null;
-  const reason = match[1].trim();
-  return reason.length > 0 ? reason : null;
+  const parsed = parseOverrideCommand(body);
+  return parsed ? parsed.reason : null;
 }
 
 /**
@@ -198,6 +226,43 @@ async function publishGateVerdict(opts) {
 }
 
 /**
+ * Refuse an override whose target verdict did not exist when it was written.
+ *
+ * Both timestamps are set by the platform: the status by the API when our own
+ * workflow posted it, the comment by the API when it was created. Neither is
+ * the commit metadata a contributor supplies, which is forgeable and is
+ * deliberately not consulted here.
+ *
+ * @returns {{status: 'rejected', message: string}|null} null when the ordering
+ *   is sound
+ */
+function checkVerdictPrecedesComment(status, comment) {
+  const verdictAt = Date.parse(status && status.created_at);
+  const commentedAt = Date.parse(comment && comment.created_at);
+
+  if (!Number.isFinite(verdictAt) || !Number.isFinite(commentedAt)) {
+    return {
+      status: 'rejected',
+      message:
+        `Cannot establish that the ${GATE_CONTEXT} verdict predates the ` +
+        'override comment: a platform timestamp is missing.',
+    };
+  }
+
+  if (verdictAt > commentedAt) {
+    return {
+      status: 'rejected',
+      message:
+        `The ${GATE_CONTEXT} verdict was posted after this comment, so it is ` +
+        'not the verdict that was reviewed. Re-review the current head and ' +
+        `comment again, or name the commit: ${OVERRIDE_PREFIX} <sha> <reason>`,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Apply a maintainer override by superseding a failing gate status.
  *
  * Returns a structured result rather than calling into the Actions core
@@ -221,13 +286,14 @@ async function processOverride(opts) {
     return { status: 'rejected', message: 'Override comment has no author.' };
   }
 
-  const reason = parseOverrideReason(comment.body);
-  if (!reason) {
+  const parsed = parseOverrideCommand(comment.body);
+  if (!parsed) {
     return {
       status: 'rejected',
-      message: `Override requires a reason. Format: ${OVERRIDE_PREFIX} <reason>`,
+      message: `Override requires a reason. Format: ${OVERRIDE_PREFIX} [<sha>] <reason>`,
     };
   }
+  const { sha: pinnedSha, reason } = parsed;
 
   // Authorization. A read-only or unaffiliated commenter must not be able to
   // clear the gate, so this precedes every write.
@@ -260,23 +326,38 @@ async function processOverride(opts) {
     };
   }
 
+  if (pinnedSha && !headSha.toLowerCase().startsWith(pinnedSha)) {
+    return {
+      status: 'rejected',
+      message:
+        `Override names commit ${pinnedSha}, but the head of pull request ` +
+        `#${prNumber} is now ${headSha.slice(0, 7)}. Re-review and comment again.`,
+    };
+  }
+
   // Only a failing gate may be superseded. An absent gate means the commit was
   // never scanned, and overriding it would pass unreviewed code.
-  const current = await readGateStatus({
+  const current = await readGateStatusEntry({
     client: github,
     owner,
     repo,
     sha: headSha,
   });
 
-  if (current !== 'failure') {
+  const state = current ? current.state : null;
+  if (state !== 'failure') {
     return {
       status: 'noop',
       message:
-        current === null
+        state === null
           ? `No ${GATE_CONTEXT} status on this commit. Nothing to override.`
-          : `The ${GATE_CONTEXT} status is already "${current}". Nothing to override.`,
+          : `The ${GATE_CONTEXT} status is already "${state}". Nothing to override.`,
     };
+  }
+
+  if (!pinnedSha) {
+    const ordering = checkVerdictPrecedesComment(current, comment);
+    if (ordering) return ordering;
   }
 
   await postGateStatus({
@@ -306,6 +387,8 @@ module.exports = {
   classifyScanOutcome,
   postGateStatus,
   readGateStatus,
+  readGateStatusEntry,
+  parseOverrideCommand,
   parseOverrideReason,
   publishGateVerdict,
   processOverride,

@@ -207,17 +207,37 @@ today.
 
 ```
 /security-override: <reason>
+/security-override: <sha> <reason>
 ```
+
+The command is recognised only at the very start of the comment body, with no leading whitespace —
+the same position `security-override.yml` tests with `startsWith`. A quoted, indented or mid-body
+occurrence is prose. The module enforces this itself rather than relying on the workflow trigger,
+so a second caller inherits the same rule.
 
 `.github/workflows/security-override.yml` then calls `processOverride()`, which:
 
 1. Requires a non-empty reason.
 2. Verifies the commenter has `write`, `maintain` or `admin` permission.
-3. Reads the current `security-gate` status on the pull request head commit.
-4. If and only if that state is `failure`, posts a newer `success` status under the same context,
-   recording the author and reason in the description.
+3. Resolves the pull request head commit. If the comment named a SHA, that SHA must be a prefix of
+   the head; otherwise the approval was written against code that has since been replaced.
+4. Reads the current `security-gate` status on that commit.
+5. If and only if that state is `failure`, and — for an unpinned override — the status was created
+   before the comment, posts a newer `success` status under the same context, recording the author
+   and reason in the description.
 
 The comment is the permanent audit trail and is never deleted.
+
+**Overriding a verdict the maintainer never saw.** `processOverride` runs when the comment is
+processed, not when it was written, so a contributor can push new commits in between. Both
+timestamps compared in step 5 are set by the platform — the status by the API when the scan
+workflow posted it, the comment by the API when it was created. The commit's own author and
+committer dates are supplied by whoever made the commit and are deliberately not consulted.
+
+The unpinned form still leaves a window: if the contributor pushes and the new verdict lands
+*before* the maintainer comments, the ordering check sees a verdict that legitimately predates the
+comment and allows it. Closing that window requires naming the commit, which is what the pinned
+form is for. Pin the SHA when the override matters.
 
 **Fail-closed properties.** The override never *creates* a gate from nothing — it only supersedes
 an existing `failure`. A commit that was never scanned has no gate status and cannot be passed by
