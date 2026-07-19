@@ -117,7 +117,7 @@ describe('security gate: maintainer override', () => {
 
     const result = await override(
       github,
-      '/security-override: vendored fixture, reviewed by hand',
+      `/security-override: ${HEAD_SHA} vendored fixture, reviewed by hand`,
     );
 
     assert.equal(result.status, 'applied');
@@ -135,7 +135,7 @@ describe('security gate: maintainer override', () => {
     // A status posted under a different context leaves the failing gate as the
     // newest value for `security-gate`, so branch protection would still block.
     const github = makeGitHubStub();
-    await override(github, '/security-override: reviewed');
+    await override(github, `/security-override: ${HEAD_SHA} reviewed`);
 
     assert.equal(github.calls.statuses[0].context, GATE_CONTEXT);
     assert.equal(github.calls.statuses[0].context, 'security-gate');
@@ -168,7 +168,10 @@ describe('security gate: maintainer override', () => {
   test('each level at or above write is accepted', async () => {
     for (const permission of gate.OVERRIDE_PERMISSIONS) {
       const github = makeGitHubStub({ permission });
-      const result = await override(github, '/security-override: reviewed');
+      const result = await override(
+        github,
+        `/security-override: ${HEAD_SHA} reviewed`,
+      );
       assert.equal(result.status, 'applied', `${permission} should be allowed`);
       assert.equal(github.calls.statuses[0].state, 'success');
     }
@@ -192,14 +195,20 @@ describe('security gate: maintainer override', () => {
   test('a commit with no failing gate is a no-op', async () => {
     // Gate already green: nothing to override.
     const green = makeGitHubStub({ gateState: 'success' });
-    const passed = await override(green, '/security-override: nothing wrong');
+    const passed = await override(
+      green,
+      `/security-override: ${HEAD_SHA} nothing wrong`,
+    );
     assert.equal(passed.status, 'noop');
     assert.equal(green.calls.statuses.length, 0);
 
     // Never scanned: no gate status exists at all. This is the fail-closed
     // case — an unscanned commit must not become passable by comment.
     const unscanned = makeGitHubStub({ gateState: null });
-    const never = await override(unscanned, '/security-override: skip it');
+    const never = await override(
+      unscanned,
+      `/security-override: ${HEAD_SHA} skip it`,
+    );
     assert.equal(never.status, 'noop');
     assert.equal(unscanned.calls.statuses.length, 0);
     assert.match(never.message, /Nothing to override/);
@@ -209,7 +218,10 @@ describe('security gate: maintainer override', () => {
     // The stub always carries a passing `ci/build` status. Logic that reads
     // the first status rather than the gate's would see success and no-op.
     const github = makeGitHubStub({ gateState: 'failure' });
-    const result = await override(github, '/security-override: reviewed');
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed`,
+    );
 
     assert.equal(github.calls.combined.length, 1);
     assert.equal(github.calls.combined[0].ref, HEAD_SHA);
@@ -300,7 +312,10 @@ describe('security gate: override cannot clear an unseen verdict', () => {
       gateCreatedAt: '2026-01-01T12:00:01Z',
     });
 
-    const result = await override(github, '/security-override: reviewed');
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed`,
+    );
 
     assert.equal(result.status, 'rejected');
     assert.match(result.message, /after|newer/i);
@@ -313,7 +328,10 @@ describe('security gate: override cannot clear an unseen verdict', () => {
 
   test('a verdict created before the comment is applied', async () => {
     const github = makeGitHubStub({ gateCreatedAt: '2026-01-01T11:59:59Z' });
-    const result = await override(github, '/security-override: reviewed');
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed`,
+    );
 
     assert.equal(result.status, 'applied');
     assert.equal(github.calls.statuses.length, 1);
@@ -322,14 +340,17 @@ describe('security gate: override cannot clear an unseen verdict', () => {
 
   test('a missing timestamp on either side is refused, not assumed fresh', async () => {
     const noStatusTime = makeGitHubStub({ gateCreatedAt: null });
-    const a = await override(noStatusTime, '/security-override: reviewed');
+    const a = await override(
+      noStatusTime,
+      `/security-override: ${HEAD_SHA} reviewed`,
+    );
     assert.equal(a.status, 'rejected');
     assert.equal(noStatusTime.calls.statuses.length, 0);
 
     const noCommentTime = makeGitHubStub();
     const b = await override(
       noCommentTime,
-      '/security-override: reviewed',
+      `/security-override: ${HEAD_SHA} reviewed`,
       'maintainer',
       null,
     );
@@ -337,10 +358,24 @@ describe('security gate: override cannot clear an unseen verdict', () => {
     assert.equal(noCommentTime.calls.statuses.length, 0);
   });
 
-  test('a pinned SHA matching the head commit applies regardless of verdict age', async () => {
-    // Naming the commit is a stronger statement than any timestamp inference:
-    // the maintainer said which code they approved.
+  test('a pinned SHA matching the head is still refused when the verdict postdates the comment', async () => {
+    // The pin proves which code was approved; it does not prove which verdict
+    // was read. A verdict posted after the comment reports findings the
+    // maintainer never saw, even on the very commit they named — a re-run under
+    // an updated ruleset produces exactly that. Refusing costs one comment.
     const github = makeGitHubStub({ gateCreatedAt: '2026-06-01T00:00:00Z' });
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} reviewed by hand`,
+    );
+
+    assert.equal(result.status, 'rejected');
+    assert.match(result.message, /after/i);
+    assert.equal(github.calls.statuses.length, 0);
+  });
+
+  test('a pinned SHA matching the head applies and carries the reason through', async () => {
+    const github = makeGitHubStub();
     const result = await override(
       github,
       `/security-override: ${HEAD_SHA} reviewed by hand`,
@@ -350,6 +385,10 @@ describe('security gate: override cannot clear an unseen verdict', () => {
     assert.equal(result.reason, 'reviewed by hand');
     assert.equal(github.calls.statuses.length, 1);
     assert.equal(github.calls.statuses[0].sha, HEAD_SHA);
+    assert.equal(
+      github.calls.statuses[0].description,
+      'Override by @maintainer: reviewed by hand',
+    );
   });
 
   test('an abbreviated pinned SHA matches by prefix', async () => {
@@ -374,6 +413,89 @@ describe('security gate: override cannot clear an unseen verdict', () => {
       github.calls.statuses.length,
       0,
       'a mismatched pin must post nothing',
+    );
+  });
+});
+
+describe('security gate: the pinned SHA is mandatory', () => {
+  test('an override naming no commit is refused and posts nothing', async () => {
+    const github = makeGitHubStub();
+    const result = await override(
+      github,
+      '/security-override: vendored fixture, reviewed by hand',
+    );
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(
+      github.calls.statuses.length,
+      0,
+      'an unpinned override must post nothing',
+    );
+  });
+
+  test('the refusal names the required form and the current head', async () => {
+    const head = 'c'.repeat(40);
+    const github = makeGitHubStub({ headSha: head });
+    const result = await override(github, '/security-override: reviewed');
+
+    assert.match(
+      result.message,
+      /\/security-override: <sha> <reason>/,
+      'the maintainer must be told the form that would work',
+    );
+    assert.ok(
+      result.message.includes(head),
+      'the message must carry the head SHA verbatim so it can be copied',
+    );
+  });
+
+  test('a partial SHA too short to be a pin is refused, not read as a reason', async () => {
+    // Six hex characters fall below the pin threshold. Treating them as prose
+    // would apply an override the maintainer believed was pinned.
+    const github = makeGitHubStub({ headSha: `aaaaaa${'b'.repeat(34)}` });
+    const result = await override(github, '/security-override: aaaaaa reviewed');
+
+    assert.equal(result.status, 'rejected');
+    assert.match(result.message, /\/security-override: <sha> <reason>/);
+    assert.equal(github.calls.statuses.length, 0);
+  });
+
+  test('a reason opening with a hex word is refused as a mismatched pin, with the form spelled out', async () => {
+    // `deadbeef` is indistinguishable from an abbreviated SHA. The refusal has
+    // to make that reading visible, or the maintainer cannot see why a plain
+    // sentence was rejected.
+    const github = makeGitHubStub();
+    const result = await override(
+      github,
+      '/security-override: deadbeef looks fine to me',
+    );
+
+    assert.equal(result.status, 'rejected');
+    assert.match(result.message, /deadbeef/);
+    assert.match(result.message, /\/security-override: <sha> <reason>/);
+    assert.equal(github.calls.statuses.length, 0);
+  });
+
+  test('a multi-word reason survives a pin intact', async () => {
+    const github = makeGitHubStub();
+    const reason = 'vendored fixture: 0xdeadbeef in the diff is test data';
+    const result = await override(
+      github,
+      `/security-override: ${HEAD_SHA} ${reason}`,
+    );
+
+    assert.equal(result.status, 'applied');
+    assert.equal(result.reason, reason);
+    assert.ok(github.calls.statuses[0].description.endsWith(reason));
+  });
+
+  test('the workflow trigger stays prefix-only so an unpinned command still reaches the refusal', () => {
+    // Narrowing `startsWith` to the pinned form would make a malformed command
+    // start no run at all: no refusal, no annotation, silence.
+    const yaml = readWorkflow('security-override.yml');
+    assert.match(
+      yaml,
+      /startsWith\(github\.event\.comment\.body, '\/security-override:'\)/,
     );
   });
 });
@@ -450,7 +572,10 @@ describe('security gate: verdict publication', () => {
 
   test('a long reason is truncated to the platform description limit', async () => {
     const github = makeGitHubStub();
-    await override(github, `/security-override: ${'x'.repeat(500)}`);
+    await override(
+      github,
+      `/security-override: ${HEAD_SHA} ${'x'.repeat(500)}`,
+    );
 
     const description = github.calls.statuses[0].description;
     assert.ok(
@@ -562,7 +687,7 @@ describe('security gate: workflow invariants', () => {
     assert.match(reference, /required status check/i);
   });
 
-  test('the reference documents the pinned form and the residual window', () => {
+  test('the reference documents the pinned form as the only form', () => {
     const reference = fs.readFileSync(
       path.join(
         REPO_ROOT,
@@ -577,9 +702,18 @@ describe('security gate: workflow invariants', () => {
     assert.match(reference, /start of the comment body/i);
     assert.match(
       reference,
-      /window/i,
-      'the residual TOCTOU window must stay written down, not be quietly ' +
-        'implied by the pinned form existing',
+      /required|mandatory/i,
+      'the doc must say the SHA is required, not offer it as an option',
+    );
+    assert.doesNotMatch(
+      reference,
+      /^\/security-override: <reason>$/m,
+      'the unpinned form is refused and must not be documented as usable',
+    );
+    assert.doesNotMatch(
+      reference,
+      /leaves a window/i,
+      'mandatory pinning closed that window; the claim must not survive',
     );
   });
 });

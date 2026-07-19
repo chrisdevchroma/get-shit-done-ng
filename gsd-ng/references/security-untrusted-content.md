@@ -206,9 +206,14 @@ today.
 **Override flow.** A maintainer comments on the pull request:
 
 ```
-/security-override: <reason>
 /security-override: <sha> <reason>
 ```
+
+**The commit SHA is mandatory** — 7 to 40 hex characters, matched as a prefix of the pull request
+head. An override that names no commit is refused, and the refusal reports the current head so it
+can be copied into a corrected comment. The first word after the command is always read as the
+commit, so a reason opening with a hex-shaped word (`deadbeef looks fine`) is refused as a
+mismatched pin rather than silently accepted; the refusal says so.
 
 The command is recognised only at the very start of the comment body, with no leading whitespace —
 the same position `security-override.yml` tests with `startsWith`. A quoted, indented or mid-body
@@ -219,25 +224,32 @@ so a second caller inherits the same rule.
 
 1. Requires a non-empty reason.
 2. Verifies the commenter has `write`, `maintain` or `admin` permission.
-3. Resolves the pull request head commit. If the comment named a SHA, that SHA must be a prefix of
-   the head; otherwise the approval was written against code that has since been replaced.
+3. Resolves the pull request head commit and requires the comment to name it. The named SHA must be
+   a prefix of the head; otherwise the approval was written against code that has since been
+   replaced.
 4. Reads the current `security-gate` status on that commit.
-5. If and only if that state is `failure`, and — for an unpinned override — the status was created
-   before the comment, posts a newer `success` status under the same context, recording the author
-   and reason in the description.
+5. If and only if that state is `failure` and the status was created before the comment, posts a
+   newer `success` status under the same context, recording the author and reason in the
+   description.
 
 The comment is the permanent audit trail and is never deleted.
 
 **Overriding a verdict the maintainer never saw.** `processOverride` runs when the comment is
-processed, not when it was written, so a contributor can push new commits in between. Both
-timestamps compared in step 5 are set by the platform — the status by the API when the scan
-workflow posted it, the comment by the API when it was created. The commit's own author and
-committer dates are supplied by whoever made the commit and are deliberately not consulted.
+processed, not when it was written, so a contributor can push new commits in between. The pin is
+what closes that gap: a timestamp can only establish that a verdict already existed when the
+maintainer wrote, never that it was the verdict for the code they read. Naming the commit states
+which code was approved, and an override that names a superseded commit is refused.
 
-The unpinned form still leaves a window: if the contributor pushes and the new verdict lands
-*before* the maintainer comments, the ordering check sees a verdict that legitimately predates the
-comment and allows it. Closing that window requires naming the commit, which is what the pinned
-form is for. Pin the SHA when the override matters.
+The ordering check in step 5 is kept behind the pin as defence in depth, and refuses rather than
+allows. A pin proves which *code* was approved; it does not prove which *verdict* was read. The same
+commit can be re-scanned — under an updated ruleset, for instance — and produce findings that
+postdate the comment and were never seen. Refusing costs one repeated comment; allowing would clear
+findings nobody read.
+
+Both timestamps compared in step 5 are set by the platform — the status by the API when the scan
+workflow posted it, the comment by the API when it was created. The commit's own author and
+committer dates are supplied by whoever made the commit and are deliberately not consulted. A
+missing timestamp on either side is refused, not assumed fresh.
 
 **Fail-closed properties.** The override never *creates* a gate from nothing — it only supersedes
 an existing `failure`. A commit that was never scanned has no gate status and cannot be passed by

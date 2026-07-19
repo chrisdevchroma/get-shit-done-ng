@@ -32,7 +32,8 @@
  *     comment.
  *   - A scan step that crashes or is skipped publishes `failure`, not
  *     `success`.
- *   - Authorization and the reason requirement both precede any write.
+ *   - Authorization, the reason requirement and the commit pin all precede any
+ *     write.
  */
 
 // Commit-status context. This is the string a maintainer makes required under
@@ -210,9 +211,9 @@ async function publishGateVerdict(opts) {
   if (!blocked) {
     description = 'No blocking findings.';
   } else if (incomplete) {
-    description = `Scan did not complete; no verdict. Maintainers: ${OVERRIDE_PREFIX} <reason>`;
+    description = `Scan did not complete; no verdict. Maintainers: ${OVERRIDE_PREFIX} <sha> <reason>`;
   } else {
-    description = `Injection findings detected. Maintainers: ${OVERRIDE_PREFIX} <reason>`;
+    description = `Injection findings detected. Maintainers: ${OVERRIDE_PREFIX} <sha> <reason>`;
   }
 
   return postGateStatus({
@@ -254,8 +255,8 @@ function checkVerdictPrecedesComment(status, comment) {
       status: 'rejected',
       message:
         `The ${GATE_CONTEXT} verdict was posted after this comment, so it is ` +
-        'not the verdict that was reviewed. Re-review the current head and ' +
-        `comment again, or name the commit: ${OVERRIDE_PREFIX} <sha> <reason>`,
+        'not the verdict that was reviewed, even on the named commit. ' +
+        'Re-read the current findings and comment again.',
     };
   }
 
@@ -290,7 +291,7 @@ async function processOverride(opts) {
   if (!parsed) {
     return {
       status: 'rejected',
-      message: `Override requires a reason. Format: ${OVERRIDE_PREFIX} [<sha>] <reason>`,
+      message: `Override requires a reason. Format: ${OVERRIDE_PREFIX} <sha> <reason>`,
     };
   }
   const { sha: pinnedSha, reason } = parsed;
@@ -326,12 +327,24 @@ async function processOverride(opts) {
     };
   }
 
-  if (pinnedSha && !headSha.toLowerCase().startsWith(pinnedSha)) {
+  if (!pinnedSha) {
+    return {
+      status: 'rejected',
+      message:
+        'Override must name the commit it approves, as 7 to 40 hex characters ' +
+        `immediately after the command. Format: ${OVERRIDE_PREFIX} <sha> ` +
+        `<reason>. The head of pull request #${prNumber} is ${headSha}.`,
+    };
+  }
+
+  if (!headSha.toLowerCase().startsWith(pinnedSha)) {
     return {
       status: 'rejected',
       message:
         `Override names commit ${pinnedSha}, but the head of pull request ` +
-        `#${prNumber} is now ${headSha.slice(0, 7)}. Re-review and comment again.`,
+        `#${prNumber} is ${headSha}. The first word after the command is read ` +
+        `as the commit; if ${pinnedSha} was meant as prose, re-word it. ` +
+        `Format: ${OVERRIDE_PREFIX} <sha> <reason>`,
     };
   }
 
@@ -355,10 +368,8 @@ async function processOverride(opts) {
     };
   }
 
-  if (!pinnedSha) {
-    const ordering = checkVerdictPrecedesComment(current, comment);
-    if (ordering) return ordering;
-  }
+  const ordering = checkVerdictPrecedesComment(current, comment);
+  if (ordering) return ordering;
 
   await postGateStatus({
     client: github,

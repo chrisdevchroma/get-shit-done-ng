@@ -557,7 +557,7 @@ const GATE_SHA = 'b'.repeat(40);
 // requires, so that these tests exercise their own subject and not the clock.
 const GATE_CREATED_AT = '2026-01-01T11:00:00Z';
 const OVERRIDE_COMMENT = {
-  body: '/security-override: reviewed',
+  body: `/security-override: ${GATE_SHA} reviewed`,
   user: { login: 'zoe' },
   created_at: '2026-01-01T12:00:00Z',
 };
