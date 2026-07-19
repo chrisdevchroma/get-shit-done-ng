@@ -133,6 +133,7 @@ describe('SEC40-REFFILE: the untrusted-content reference document', () => {
     const required = [
       '## Tag Semantics',
       '## Agent Handling Rules',
+      '## The `untrusted_title` Frontmatter Marker',
       '## Rule of Two Gate',
       '## Outbound Sanitization',
     ];
@@ -193,6 +194,16 @@ describe('SEC40-REFFILE: the untrusted-content reference document', () => {
     );
     assert.ok(body, 'the sanitization section is missing entirely');
     assert.match(body, /stripUntrustedWrappers\(\)/);
+  });
+
+  test('REFFILE-07: the title marker section forbids stripping the flag', () => {
+    const body = sectionBody(
+      readPayload(REFERENCE_REL),
+      '## The `untrusted_title` Frontmatter Marker',
+    );
+    assert.ok(body, 'the untrusted_title section is missing entirely');
+    assert.match(body, /untrusted_title:\s*true/);
+    assert.match(body, /not strip|preserve/i);
   });
 });
 
