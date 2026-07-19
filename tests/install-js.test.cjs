@@ -2839,7 +2839,6 @@ test('MANIFEST-V2-04: reportLocalPatches skipped after migration run', () => {
 });
 
 // ── --clean discards a corrupted manifest and rebuilds it to match the tree ──
-// The wipe itself, and that it precedes the install, is proven by CLEANEV-01/03/04.
 
 test('CLEAN-01: --clean discards a corrupted manifest and writes a fresh v2 whose every entry exists on disk', () => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-clean-01-'));
