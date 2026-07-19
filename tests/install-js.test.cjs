@@ -20,6 +20,10 @@ const {
 const { resolveTmpDir, cleanup } = require('./helpers.cjs');
 const BASE_TMPDIR = resolveTmpDir();
 
+const HAS_GH = spawnSync('gh', ['--version'], { timeout: 5000 }).status === 0;
+const NO_GH_SKIP =
+  'gh is not on PATH — the installer seeds no gh patterns to assert on';
+
 // ── global install uses tilde paths, not absolute home dir ──────────
 
 test('TILDE-01: install.js global install uses tilde paths in workflow files (no PII leak)', () => {
@@ -360,7 +364,7 @@ test('PERM-09: settings-sandbox.json allow/deny/ask rules use effective forms, n
 
 // ── install seeds granular platform CLI patterns, not blanket wildcards ──
 
-test('PERM-07: local install seeds granular gh subcommand patterns (not blanket Bash(gh *))', () => {
+test('PERM-07: local install seeds granular gh subcommand patterns (not blanket Bash(gh *))', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-js-perm07-'));
   try {
     const result = spawnSync(
@@ -383,45 +387,36 @@ test('PERM-07: local install seeds granular gh subcommand patterns (not blanket 
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     const allow = settings.permissions.allow;
 
-    // gh is typically installed in CI/dev environments
-    // If gh is installed, we should see granular patterns
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      // gh is installed -- verify granular patterns
-      assert.ok(
-        allow.includes('Bash(gh pr *)'),
-        'must include Bash(gh pr *) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh pr)'),
-        'must include Bash(gh pr) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh issue *)'),
-        'must include Bash(gh issue *) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh *)'),
-        'must NOT include blanket Bash(gh *) (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh api *)'),
-        'must NOT include Bash(gh api *) (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh extension *)'),
-        'must NOT include Bash(gh extension *) (PERM-07)',
-      );
-    } catch {
-      // gh not installed -- just verify no blanket pattern leaked
-      assert.ok(
-        !allow.includes('Bash(gh *)'),
-        'must NOT include blanket Bash(gh *) even without gh installed (PERM-07)',
-      );
+    assert.ok(
+      !allow.includes('Bash(gh *)'),
+      'must NOT include blanket Bash(gh *) (PERM-07)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh api *)'),
+      'must NOT include Bash(gh api *) (PERM-07)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh extension *)'),
+      'must NOT include Bash(gh extension *) (PERM-07)',
+    );
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+
+    assert.ok(
+      allow.includes('Bash(gh pr *)'),
+      'must include Bash(gh pr *) when gh is installed (PERM-07)',
+    );
+    assert.ok(
+      allow.includes('Bash(gh pr)'),
+      'must include Bash(gh pr) when gh is installed (PERM-07)',
+    );
+    assert.ok(
+      allow.includes('Bash(gh issue *)'),
+      'must include Bash(gh issue *) when gh is installed (PERM-07)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -1104,7 +1099,6 @@ test('COPILOT-05: --local --copilot does NOT seed permissions or sandbox setting
       'No settings.json must exist in .github/ for Copilot install (COPILOT-05)',
     );
 
-    // Walk .github/ recursively — no file should contain "permissions" key
     function walkDir(dir) {
       if (!fs.existsSync(dir)) return [];
       const results = [];
@@ -1119,17 +1113,86 @@ test('COPILOT-05: --local --copilot does NOT seed permissions or sandbox setting
       return results;
     }
 
-    const jsonFiles = walkDir(githubDir);
-    for (const jsonFile of jsonFiles) {
+    // gsd-ng/ is the engine payload, copied verbatim on every runtime. Its
+    // templates are the installer's own input — the file permissions are seeded
+    // FROM on Claude — not configuration Copilot ever reads. Seeding means
+    // writing permissions into a config the agent consumes, so only the files
+    // outside the payload are in scope here.
+    const payloadDir = path.join(githubDir, 'gsd-ng');
+    const consumed = walkDir(githubDir).filter(
+      (f) => !f.startsWith(payloadDir + path.sep),
+    );
+    assert.ok(
+      consumed.length > 0,
+      'expected at least one consumed .json file under .github/ to inspect (COPILOT-05)',
+    );
+    for (const jsonFile of consumed) {
+      let data;
       try {
-        const data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-        assert.ok(
-          data.permissions === undefined,
-          `${jsonFile} must not contain "permissions" key in Copilot install (COPILOT-05)`,
+        data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+      } catch (err) {
+        assert.fail(
+          `${jsonFile} must be valid JSON in a Copilot install (COPILOT-05): ${err.message}`,
         );
-      } catch {
-        // JSON parse error — skip
       }
+      assert.ok(
+        data.permissions === undefined,
+        `${jsonFile} must not contain "permissions" key in Copilot install (COPILOT-05)`,
+      );
+    }
+
+    // The payload template is passed through untouched, not seeded into.
+    const sandboxTemplate = path.join(
+      payloadDir,
+      'templates',
+      'settings-sandbox.json',
+    );
+    assert.ok(
+      fs.existsSync(sandboxTemplate),
+      'the sandbox template ships as engine payload on Copilot too (COPILOT-05)',
+    );
+    assert.strictEqual(
+      fs.readFileSync(sandboxTemplate, 'utf8'),
+      fs.readFileSync(
+        path.resolve(__dirname, '..', 'gsd-ng', 'templates', 'settings-sandbox.json'),
+        'utf8',
+      ),
+      'the Copilot install must copy the sandbox template byte-for-byte from source, ' +
+        'never merge or seed into it (COPILOT-05)',
+    );
+
+    // The contrast that gives "does not seed" its meaning: the same flags on
+    // Claude do produce a permissions-bearing settings.json.
+    const claudeDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-js-copilot-ref-'));
+    try {
+      const ref = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: claudeDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+      assert.strictEqual(
+        ref.status,
+        0,
+        'reference Claude install must exit 0 (COPILOT-05)\nstderr: ' +
+          (ref.stderr || ''),
+      );
+      const refSettings = JSON.parse(
+        fs.readFileSync(path.join(claudeDir, '.claude', 'settings.json'), 'utf8'),
+      );
+      assert.ok(
+        refSettings.permissions &&
+          Array.isArray(refSettings.permissions.allow) &&
+          refSettings.permissions.allow.length > 0,
+        'the Claude runtime must seed permissions.allow — otherwise the Copilot ' +
+          'assertions above are vacuous (COPILOT-05)',
+      );
+    } finally {
+      cleanup(claudeDir);
     }
   } finally {
     cleanup(tmpDir);
@@ -2012,33 +2075,62 @@ test('RUNTIME-02: install.js --runtime copilot writes .runtime marker containing
 
 // ── env var rename — GSD_TEST_FORCE_PLATFORM is the test seam ────────
 
-test('ALLOW-18: install.js seeding block uses GSD_TEST_FORCE_PLATFORM (not GSD_FORCE_PLATFORM)', () => {
-  // Static code inspection: the source must not reference the old env var name
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  assert.ok(
-    !src.includes('GSD_FORCE_PLATFORM'),
-    'install.js must not reference GSD_FORCE_PLATFORM (old name) — use GSD_TEST_FORCE_PLATFORM (ALLOW-18)',
-  );
-  assert.ok(
-    src.includes('GSD_TEST_FORCE_PLATFORM'),
-    'install.js must reference GSD_TEST_FORCE_PLATFORM at least once (ALLOW-18)',
-  );
-});
+test('ALLOW-18: only GSD_TEST_FORCE_PLATFORM overrides platform detection — the old GSD_FORCE_PLATFORM name is inert', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-18-'));
+  try {
+    const allowFor = (label, extraEnv) => {
+      const dir = path.join(tmpDir, label);
+      fs.mkdirSync(dir, { recursive: true });
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: dir,
+          env: Object.assign(
+            {},
+            process.env,
+            { HOME: os.homedir() },
+            { GSD_TEST_FORCE_PLATFORM: undefined, GSD_FORCE_PLATFORM: undefined },
+            extraEnv,
+          ),
+        },
+      );
+      assert.strictEqual(
+        result.status,
+        0,
+        `install must exit 0 (${label}, ALLOW-18)\nstderr: ` +
+          (result.stderr || ''),
+      );
+      const settings = JSON.parse(
+        fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf8'),
+      );
+      return settings.permissions?.allow ?? [];
+    };
 
-// ── RW_FORMS imported from allowlist.cjs — no inline Set literal ──────
+    const baseline = allowFor('baseline', {});
+    const forcedOldName = allowFor('old-name', {
+      GSD_FORCE_PLATFORM: 'win32',
+    });
+    assert.deepStrictEqual(
+      forcedOldName,
+      baseline,
+      'GSD_FORCE_PLATFORM is the retired name and must have no effect on the seeded ' +
+        'allow list — only GSD_TEST_FORCE_PLATFORM is the test seam (ALLOW-18)',
+    );
 
-test('ALLOW-19: install.js imports RW_FORMS from allowlist.cjs and uses no inline rwForms Set literal', () => {
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  // Must import RW_FORMS in the destructure
-  assert.ok(
-    src.includes('RW_FORMS'),
-    'install.js must import and reference RW_FORMS from allowlist.cjs (ALLOW-19)',
-  );
-  // Must not define an inline Set containing these canonical forms
-  assert.ok(
-    !src.includes("new Set(['Edit', 'Write', 'Read'"),
-    'install.js must not define an inline rwForms Set literal — use imported RW_FORMS (ALLOW-19)',
-  );
+    const forcedNewName = allowFor('new-name', {
+      GSD_TEST_FORCE_PLATFORM: 'win32',
+    });
+    assert.ok(
+      forcedNewName.includes('Edit(*)') && !forcedNewName.includes('Write'),
+      'GSD_TEST_FORCE_PLATFORM=win32 must drive platform detection: canonical glob ' +
+        'forms, no bare Write (ALLOW-18)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });
 
 // ── GSD_TEST_FORCE_PLATFORM seam works at runtime ─────────────────────
@@ -2080,27 +2172,6 @@ test('ALLOW-19: GSD_TEST_FORCE_PLATFORM env var controls platform detection in s
   } finally {
     cleanup(tmpDir);
   }
-});
-
-// ── syncSection uses Set.has() for O(1) membership ─────────────────
-
-test('ALLOW-20: install.js syncSection uses Set.has() — not Array.includes() — for membership check', () => {
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  // New implementation: must use Set.has()
-  assert.ok(
-    src.includes('existingSet.has(e)'),
-    'syncSection must use existingSet.has(e) for membership check (ALLOW-20)',
-  );
-  // Old implementation: must not use Array.includes()
-  assert.ok(
-    !src.includes('existing.includes(e)'),
-    'syncSection must not use existing.includes(e) — replaced by Set.has() (ALLOW-20)',
-  );
-  // Return shape: merged and added fields must still be present
-  assert.ok(
-    src.includes('merged: [...existing, ...toAdd]'),
-    'syncSection must keep merged: [...existing, ...toAdd] return shape (ALLOW-20)',
-  );
 });
 
 test('RUNTIME-03: install.js preserves existing config.json values and writes .runtime marker', () => {
@@ -2767,9 +2838,10 @@ test('MANIFEST-V2-04: reportLocalPatches skipped after migration run', () => {
   }
 });
 
-// ── --clean flag wipes managed dirs before install and produces fresh v2 manifest ──
+// ── --clean discards a corrupted manifest and rebuilds it to match the tree ──
+// The wipe itself, and that it precedes the install, is proven by CLEANEV-01/03/04.
 
-test('CLEAN-01: --clean flag wipes managed dirs before install and produces fresh v2 manifest', () => {
+test('CLEAN-01: --clean discards a corrupted manifest and writes a fresh v2 whose every entry exists on disk', () => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-clean-01-'));
   try {
     const runInstall = (extraArgs = []) =>
@@ -2789,15 +2861,16 @@ test('CLEAN-01: --clean flag wipes managed dirs before install and produces fres
       0,
       'first install must exit 0\nstderr: ' + (r1.stderr || ''),
     );
-    // Corrupt the manifest
     const mPath = path.join(tmpDir, '.claude', 'gsd-file-manifest.json');
     fs.writeFileSync(mPath, '{"corrupted":true}');
+
     const r2 = runInstall(['--clean']);
     assert.strictEqual(
       r2.status,
       0,
       '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
     );
+
     const manifest = JSON.parse(fs.readFileSync(mPath, 'utf8'));
     assert.strictEqual(
       manifest.schema_version,
@@ -2808,6 +2881,14 @@ test('CLEAN-01: --clean flag wipes managed dirs before install and produces fres
       manifest.files && Object.keys(manifest.files).length > 0,
       'manifest.files must be non-empty after --clean install',
     );
+    for (const rel of Object.keys(manifest.files)) {
+      assert.ok(
+        fs.existsSync(path.join(tmpDir, '.claude', rel)),
+        'every file the fresh manifest records must exist on disk after --clean ' +
+          '(a wipe running after the install would leave these recorded but gone): ' +
+          rel,
+      );
+    }
   } finally {
     cleanup(tmpDir);
   }
@@ -3857,7 +3938,7 @@ test('PERM-10: install.js seeds no unmatched Tool(path) rule into allow/deny/ask
 
 // ── install.js writes glob Edit(*)/Read(*) on macOS (no unmatched Write(*)) ──
 
-test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => {
+test('ALLOW-08: install.js --local on macOS writes canonical glob forms', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-08-'));
   try {
     const result = spawnSync(
@@ -3884,31 +3965,27 @@ test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => 
       'macOS must NOT carry Write(*) — unmatched path form; Edit(*) covers the Write tool');
     assert.ok(allow.includes('Read(*)'));
     assert.ok(!allow.includes('Edit'), 'macOS must not carry bare Edit');
-    // Narrowed verbs land — gated on gh presence on host
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      assert.ok(
-        allow.includes('Bash(gh repo view *)'),
-        'narrowed repo view must land',
-      );
-      assert.ok(
-        allow.includes('Bash(gh label create *)'),
-        'narrowed label create must land',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'broad gh repo must NOT land (narrowed)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh label *)'),
-        'broad gh label must NOT land (narrowed)',
-      );
-    } catch {
-      /* gh not installed — skip narrow-verb assertions */
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view must land',
+    );
+    assert.ok(
+      allow.includes('Bash(gh label create *)'),
+      'narrowed label create must land',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'broad gh repo must NOT land (narrowed)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh label *)'),
+      'broad gh label must NOT land (narrowed)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -3916,7 +3993,7 @@ test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => 
 
 // ── install.js writes canonical forms + narrowed CLI verbs on win32 ──
 
-test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narrowed CLI verbs', () => {
+test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narrowed CLI verbs', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-16-'));
   try {
     const result = spawnSync(
@@ -3958,31 +4035,26 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
     assert.ok(!allow.includes('Write'), 'win32 must NOT carry bare Write');
     assert.ok(!allow.includes('Read'), 'win32 must NOT carry bare Read');
 
-    // Narrowed verbs land — gated on gh presence on host
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      assert.ok(
-        allow.includes('Bash(gh repo view *)'),
-        'narrowed repo view must land',
-      );
-      assert.ok(
-        allow.includes('Bash(gh label create *)'),
-        'narrowed label create must land',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'broad gh repo must NOT land (narrowed)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh label *)'),
-        'broad gh label must NOT land (narrowed)',
-      );
-    } catch {
-      /* gh not installed — skip narrow-verb assertions */
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view must land',
+    );
+    assert.ok(
+      allow.includes('Bash(gh label create *)'),
+      'narrowed label create must land',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'broad gh repo must NOT land (narrowed)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh label *)'),
+      'broad gh label must NOT land (narrowed)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -3990,7 +4062,7 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
 
 // ── allow section sync union preserves user entries + logs per-section count ──
 
-test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allow entries"', () => {
+test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allow entries"', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-09-'));
   try {
     const configDir = path.join(tmpDir, '.claude');
@@ -4035,24 +4107,20 @@ test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allo
       /Added \d+ allow entries/,
       'must log per-section allow count',
     );
-    // Narrowed-verb check — gated on gh presence
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      const allow = settings.permissions?.allow ?? [];
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'linux install must not land broad gh repo (narrowed)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh repo view *)') || allow.length === 0,
-        'narrowed repo view lands when gh present',
-      );
-    } catch {
-      /* gh not installed */
+    const allow = settings.permissions?.allow ?? [];
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'linux install must not land broad gh repo (narrowed)',
+    );
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view lands when gh present',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -4137,14 +4205,9 @@ test('ALLOW-11: second install logs "Permissions already up to date" (no per-sec
   }
 });
 
-// ── source seed-memories.md exists (relaxed in 49.1-01) ──
-// History: plan 49-04 added a token assertion on the seed-memories source file.
-// 49.1-01 relaxes this: per CONTEXT.md decision, plan 49.1-02 will rewrite the skill to use
-// skill-time prose detection (no template variable). The original token assertion would then
-// fail. The companion test still asserts the token in new-project.md (kept in unified flow).
-// This test now only asserts source presence — a tombstone preserving the original assertion.
+// ── seed-memories resolves the project rules file per runtime ──
 
-test('F-RULES-01: source seed-memories.md exists (assertion relaxed in 49.1-01 — skill-time detection moved to prose)', () => {
+test('F-RULES-01: seed-memories.md uses {{PROJECT_RULES_FILE}} and installs resolved per runtime', () => {
   const seedMemoriesSrc = path.resolve(
     __dirname,
     '..',
@@ -4156,8 +4219,76 @@ test('F-RULES-01: source seed-memories.md exists (assertion relaxed in 49.1-01 �
     fs.existsSync(seedMemoriesSrc),
     'commands/gsd/seed-memories.md must exist in source (F-RULES-01)',
   );
-  // {{PROJECT_RULES_FILE}} assertion removed — file will use skill-time prose detection
-  // per CONTEXT.md; the companion test covers new-project.md unified flow.
+  assert.ok(
+    fs.readFileSync(seedMemoriesSrc, 'utf8').includes('{{PROJECT_RULES_FILE}}'),
+    'seed-memories.md source must use {{PROJECT_RULES_FILE}} rather than a hardcoded rules ' +
+      'file name, so the same source serves every runtime (F-RULES-01)',
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-f-rules-01-'));
+  try {
+    const install = (runtime) => {
+      const dir = path.join(tmpDir, runtime);
+      fs.mkdirSync(dir, { recursive: true });
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', runtime, '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: dir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+      assert.strictEqual(
+        result.status,
+        0,
+        `${runtime} install must exit 0 (F-RULES-01)\nstderr: ` +
+          (result.stderr || ''),
+      );
+      return dir;
+    };
+
+    const claudeSeed = fs.readFileSync(
+      path.join(
+        install('claude'),
+        '.claude',
+        'commands',
+        'gsd',
+        'seed-memories.md',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      claudeSeed.includes('CLAUDE.md'),
+      'claude install must resolve {{PROJECT_RULES_FILE}} to CLAUDE.md (F-RULES-01)',
+    );
+    assert.ok(
+      !claudeSeed.includes('copilot-instructions.md'),
+      'claude install must not carry the copilot rules file path (F-RULES-01)',
+    );
+
+    const copilotSeed = fs.readFileSync(
+      path.join(
+        install('copilot'),
+        '.github',
+        'skills',
+        'gsd-seed-memories',
+        'SKILL.md',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      copilotSeed.includes('.github/copilot-instructions.md'),
+      'copilot install must resolve {{PROJECT_RULES_FILE}} to .github/copilot-instructions.md (F-RULES-01)',
+    );
+    assert.ok(
+      !copilotSeed.includes('CLAUDE.md'),
+      'copilot install must not carry the claude rules file path (F-RULES-01)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });
 
 test('F-RULES-02: source new-project.md workflow uses {{PROJECT_RULES_FILE}} in Step 9', () => {
