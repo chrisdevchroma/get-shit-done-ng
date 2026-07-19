@@ -149,9 +149,8 @@ describe('BASH-HOOK-09: commandMatchesPattern', () => {
   });
 });
 
-// ── Bug 10 regression — trailing-star patterns match zero-arg commands ──
 
-describe('BASH-HOOK-14: trailing-star patterns match zero-arg commands (Bug 10 fix)', () => {
+describe('BASH-HOOK-14: trailing-star patterns match zero-arg commands', () => {
   test('Bash(echo *) matches bare "echo" (zero args)', () => {
     assert.ok(commandMatchesPattern('echo', 'Bash(echo *)'));
   });
@@ -2087,7 +2086,7 @@ describe('BASH-HOOK-PARITY-06: decomposeCommand filters standalone assignments w
 
 // ── edge case regression tests ──────────────────
 
-describe('BASH-HOOK-PARITY-REGRESSION: edge cases across all 6 fixes', () => {
+describe('BASH-HOOK-PARITY: edge cases across the six parity behaviours', () => {
   test('backslash-newline with operator: collapses then splits on &&', () => {
     const result = splitOnOperators('echo hello \\\n&& echo world');
     assert.equal(
