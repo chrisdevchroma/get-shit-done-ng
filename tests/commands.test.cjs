@@ -14,6 +14,7 @@ const {
   cleanup,
   resolveTmpDir,
 } = require('./helpers.cjs');
+const { extractFrontmatter } = require('../gsd-ng/bin/lib/frontmatter.cjs');
 
 describe('history-digest command', () => {
   let tmpDir;
@@ -1270,7 +1271,12 @@ describe('todo add command', () => {
       pendingPath(tmpDir, `${today()}-phase-linked.md`),
       'utf-8',
     );
-    assert.match(content, /^phase: 42$/m, 'phase written');
+    assert.match(content, /^phase: "42"$/m, 'phase written');
+    assert.strictEqual(
+      extractFrontmatter(content).phase,
+      '42',
+      'phase stays a string under a real YAML parser',
+    );
   });
 
   test('--files writes a YAML list', () => {
@@ -1376,6 +1382,235 @@ describe('todo add command', () => {
     const found = parsed.todos.find((t) => t.title === 'Listed todo');
     assert.ok(found, 'created todo should be listed');
     assert.strictEqual(found.area, 'tooling');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// todo add YAML scalar safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('todo add YAML scalar safety', () => {
+  let tmpDir;
+
+  const today = () => new Date().toISOString().split('T')[0];
+  const pendingPath = (dir, file) =>
+    path.join(dir, '.planning', 'todos', 'pending', file);
+
+  const addTodo = (title, extra = []) =>
+    runGsdTools(['todo', 'add', '--title', title, ...extra], tmpDir);
+
+  const readTodo = (slug) =>
+    fs.readFileSync(pendingPath(tmpDir, `${today()}-${slug}.md`), 'utf-8');
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('contains a control character in the title on disk', () => {
+    const result = addTodo('bell\u0007ring');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('bell-ring');
+    assert.ok(
+      !/[ --]/.test(content),
+      'no raw control character may reach the file',
+    );
+    assert.match(
+      content,
+      /^title: "bell\\u0007ring"$/m,
+      'control character is escaped inside a quoted scalar',
+    );
+  });
+
+  test('cannot inject a frontmatter field via a newline in the title', () => {
+    const result = addTodo('pwned\narea: injected\nstatus: done');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('pwned-area-injected-status-done');
+    const fm = extractFrontmatter(content);
+
+    assert.strictEqual(fm.area, 'general', 'area must not be overridden');
+    assert.strictEqual(fm.status, undefined, 'no field may be injected');
+    assert.ok(
+      !/^area: injected$/m.test(content),
+      'the injected line must not exist on disk',
+    );
+    assert.match(
+      content,
+      /^title: "pwned\\narea: injected\\nstatus: done"$/m,
+      'newlines are escaped inside a quoted scalar',
+    );
+  });
+
+  test('quotes a leading block-sequence indicator', () => {
+    const result = addTodo('- listitem');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('listitem');
+    assert.match(content, /^title: "- listitem"$/m, 'quoted');
+    assert.strictEqual(extractFrontmatter(content).title, '- listitem');
+  });
+
+  test('quotes leading anchor, alias and flow indicators', () => {
+    const cases = [
+      ['&anchor', 'anchor'],
+      ['*alias', 'alias'],
+      ['[x] done', 'x-done'],
+      ['{a} brace', 'a-brace'],
+      ['!bang', 'bang'],
+      ['|pipe', 'pipe'],
+      ['>gt', 'gt'],
+      ['%percent', 'percent'],
+      ['@at', 'at'],
+      ['`tick', 'tick'],
+      [',comma', 'comma'],
+      ['? question', 'question'],
+    ];
+
+    for (const [title, slug] of cases) {
+      const result = addTodo(title);
+      assert.ok(result.success, `Command failed for ${title}: ${result.error}`);
+
+      const content = readTodo(slug);
+      assert.match(
+        content,
+        new RegExp(`^title: ${JSON.stringify(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'),
+        `${title} should be quoted`,
+      );
+      assert.strictEqual(
+        extractFrontmatter(content).title,
+        title,
+        `${title} should round-trip`,
+      );
+    }
+  });
+
+  test('quotes YAML 1.1 boolean-like and null-like words', () => {
+    const cases = [
+      ['yes', 'yes'],
+      ['No', 'no'],
+      ['TRUE', 'true'],
+      ['off', 'off'],
+      ['y', 'y'],
+      ['n', 'n'],
+      ['null', 'null'],
+      ['~', null],
+    ];
+
+    for (const [title, slug] of cases) {
+      const result = addTodo(title);
+      if (slug === null) {
+        assert.ok(!result.success, `${title} has no slug-able characters`);
+        continue;
+      }
+      assert.ok(result.success, `Command failed for ${title}: ${result.error}`);
+      assert.match(
+        readTodo(slug),
+        new RegExp(`^title: "${title}"$`, 'm'),
+        `${title} should be quoted`,
+      );
+    }
+  });
+
+  test('quotes values that would coerce to a number', () => {
+    const cases = [
+      ['42', '42'],
+      ['0x1f', '0x1f'],
+      ['1e3', '1e3'],
+      ['1_000', '1-000'],
+      ['.inf', 'inf'],
+    ];
+
+    for (const [title, slug] of cases) {
+      const result = addTodo(title);
+      assert.ok(result.success, `Command failed for ${title}: ${result.error}`);
+      const content = readTodo(slug);
+      assert.match(
+        content,
+        new RegExp(`^title: "${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm'),
+        `${title} should be quoted`,
+      );
+      assert.strictEqual(extractFrontmatter(content).title, title);
+    }
+  });
+
+  test('quotes a value that would coerce to a timestamp', () => {
+    const result = addTodo('2026-07-19');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('2026-07-19');
+    assert.match(content, /^title: "2026-07-19"$/m, 'quoted');
+    assert.strictEqual(extractFrontmatter(content).title, '2026-07-19');
+  });
+
+  test('escapes unicode line separators', () => {
+    const result = addTodo('split\u2028here');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('split-here');
+    assert.ok(
+      !content.includes('\u2028'),
+      'raw U+2028 must not reach the file',
+    );
+    assert.match(content, /^title: "split\\u2028here"$/m, 'escaped');
+  });
+
+  test('leaves a benign title unquoted and readable', () => {
+    const result = addTodo('Add dark mode toggle to settings');
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('add-dark-mode-toggle-to-settings');
+    assert.match(
+      content,
+      /^title: Add dark mode toggle to settings$/m,
+      'benign title must not be quoted',
+    );
+    assert.strictEqual(
+      extractFrontmatter(content).title,
+      'Add dark mode toggle to settings',
+    );
+  });
+
+  test('leaves hyphenated and dotted plain scalars unquoted', () => {
+    const result = addTodo('-webkit prefix audit', [
+      '--files',
+      'bin/lib/commands.cjs,tests/helpers.cjs',
+    ]);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('webkit-prefix-audit');
+    assert.match(
+      content,
+      /^title: -webkit prefix audit$/m,
+      'an indicator followed by a non-space is a safe plain scalar',
+    );
+    assert.match(
+      content,
+      /^ {2}- bin\/lib\/commands\.cjs$/m,
+      'file paths must stay unquoted',
+    );
+  });
+
+  test('quotes --area and --files entries that are YAML-significant', () => {
+    const result = addTodo('Area and files hardening', [
+      '--area',
+      'no',
+      '--files',
+      '- weird.js',
+    ]);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = readTodo('area-and-files-hardening');
+    assert.match(content, /^area: "no"$/m, 'boolean-like area quoted');
+    assert.match(content, /^ {2}- "- weird\.js"$/m, 'indicator file quoted');
+
+    const fm = extractFrontmatter(content);
+    assert.strictEqual(fm.area, 'no');
+    assert.deepStrictEqual(fm.files, ['- weird.js']);
   });
 });
 

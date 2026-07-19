@@ -679,11 +679,65 @@ function isRecurringDue(todoData) {
 
 const DEFAULT_TODO_BODY = '## Problem\n\n## Solution\n';
 
+const YAML_INDICATORS = new Set([
+  '-',
+  '?',
+  ':',
+  ',',
+  '[',
+  ']',
+  '{',
+  '}',
+  '#',
+  '&',
+  '*',
+  '!',
+  '|',
+  '>',
+  "'",
+  '"',
+  '%',
+  '@',
+  '`',
+]);
+
+const YAML_RESERVED_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
+
+const YAML_NUMERIC =
+  /^[-+]?(?:0b[01_]+|0x[0-9a-f_]+|0o[0-7_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:e[-+]?[0-9]+)?|\.[0-9][0-9_]*(?:e[-+]?[0-9]+)?|\.(?:inf|nan))$/i;
+
+const YAML_TIMESTAMP =
+  /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ][\d:.]+(?:\s*(?:Z|[-+]\d{1,2}(?::?\d{2})?))?)?$/;
+
+const YAML_UNSAFE_CHARS = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/;
+
+function needsYamlQuoting(str) {
+  if (str === '') return true;
+  if (/^\s|\s$/.test(str)) return true;
+  if (YAML_UNSAFE_CHARS.test(str)) return true;
+  if (/[:#]/.test(str)) return true;
+
+  const first = str[0];
+  if (YAML_INDICATORS.has(first)) {
+    const plainSafe =
+      (first === '-' || first === '?') && str.length > 1 && !/\s/.test(str[1]);
+    if (!plainSafe) return true;
+  }
+
+  return (
+    YAML_RESERVED_WORD.test(str) ||
+    YAML_NUMERIC.test(str) ||
+    YAML_TIMESTAMP.test(str)
+  );
+}
+
 function yamlScalar(value) {
   const str = String(value);
-  return /[:#]|[\u0000-\u001f\u007f]|^["'\s]|\s$/.test(str)
-    ? JSON.stringify(str)
-    : str;
+  if (!needsYamlQuoting(str)) return str;
+  return JSON.stringify(str).replace(
+    /[\u0085\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 function splitList(value) {
