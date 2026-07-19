@@ -2297,7 +2297,16 @@ const LABEL_AREA_MAP = {
  * @param {string|null} repo - Optional repo override
  * @returns {{ imported, todo_file, title, external_ref, commented }}
  */
-function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
+function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
+  // Back-compat: callers historically passed _testOverrides as the 5th positional
+  // arg. Distinguish by shape — the options bag never carries a cliInvoker.
+  let opts = options && typeof options === 'object' ? options : {};
+  let overridesArg = _testOverrides;
+  if (opts.cliInvoker) {
+    overridesArg = opts;
+    opts = {};
+  }
+  const forceUnsafe = opts.forceUnsafe === true;
   loadConfig(cwd); // Ensure config is loaded (side-effects: migration)
   // Read issue_tracker config directly from config.json since loadConfig
   // returns a flat structured object and does not expose the raw issue_tracker section.
@@ -2314,7 +2323,7 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const commentOnImport = commentStyle === 'verbose';
 
   // Resolve CLI invoker: explicit injection wins, then GSD_TEST_MODE shim, then real CLI.
-  const overrides = _testOverrides || {};
+  const overrides = overridesArg || {};
   const cli =
     overrides.cliInvoker ||
     (process.env.GSD_TEST_MODE ? _legacyTestModeInvoker : invokeIssueCli);
@@ -2360,6 +2369,12 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const titleScan = scanForInjection(title, { external: true });
   const bodyScan = scanForInjection(body, { external: true });
 
+  const highTier = titleScan.tier === 'high' || bodyScan.tier === 'high';
+  // --force-unsafe bypasses the GATE, never the DETECTION. The scan results below
+  // are logged unmodified; the override only adds a `forced` marker so a forced
+  // import is distinguishable in the audit trail.
+  const forcedOverride = highTier && forceUnsafe;
+
   // Log all findings regardless of tier
   if (!titleScan.clean) {
     logSecurityEvent(cwd, {
@@ -2367,6 +2382,7 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
       tier: titleScan.tier,
       blocked: titleScan.blocked,
       findings: titleScan.findings,
+      ...(forcedOverride ? { forced: true } : {}),
     });
   }
   if (!bodyScan.clean) {
@@ -2375,16 +2391,23 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
       tier: bodyScan.tier,
       blocked: bodyScan.blocked,
       findings: bodyScan.findings,
+      ...(forcedOverride ? { forced: true } : {}),
     });
   }
 
   // Block on high-confidence detection (unambiguous attack indicators in external content)
-  const highTier = titleScan.tier === 'high' || bodyScan.tier === 'high';
   if (highTier) {
     const allBlocked = [...titleScan.blocked, ...bodyScan.blocked];
-    error(
-      `[SECURITY] High-confidence injection detected in issue ${externalRef}. Detected: ${allBlocked.join('; ')}. Re-run with --force-unsafe to override.`,
-    );
+    if (forceUnsafe) {
+      // Documented escape hatch (see workflows/import-issue.md). Loud, never silent.
+      process.stderr.write(
+        `[SECURITY] Proceeding despite high-confidence injection in issue ${externalRef} because --force-unsafe was passed. Detected: ${allBlocked.join('; ')}. Logged to security-events.log with forced: true.\n`,
+      );
+    } else {
+      error(
+        `[SECURITY] High-confidence injection detected in issue ${externalRef}. Detected: ${allBlocked.join('; ')}. Re-run with --force-unsafe to override.`,
+      );
+    }
   }
 
   // Wrap body in untrusted-content tags for all non-blocked writes

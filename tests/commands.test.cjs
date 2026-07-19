@@ -12627,7 +12627,7 @@ describe('CLI probe robustness: fj/forgejo and missing binary (Bug 3)', () => {
   });
 });
 
-// ─── SEC40-SCANWRITE — cmdIssueSync scan-on-write ──────────────────────────
+// ─── scan-on-write: cmdIssueSync ──────────────────────────
 // cmdIssueSync scans already-imported todo content on the way back out to the
 // tracker. Unlike cmdIssueImport, it is scan-and-WARN: a detection must log and
 // warn but must never abort the batch. Each assertion below is paired with a

@@ -482,7 +482,7 @@ describe('scanForInjection tiered API', () => {
     );
   });
 
-  // SEC40-UNICODE — the opts.strict opt-out branch (security.cjs:884).
+  // The opts.strict opt-out branch in security.cjs.
   // Negative-control pairs: each adversarial input that MUST be caught by default is
   // paired with the assertion that the documented opt-out actually suppresses it,
   // and that the opt-out narrows ONLY the Unicode check.
@@ -1543,8 +1543,8 @@ describe('scan-on-write integration', () => {
   });
 });
 
-// ─── SEC40-RULETWO-CODE / SEC64-FORCEUNSAFE — the --force-unsafe escape hatch ───
-// cmdIssueImport is the only path that HARD-BLOCKS on a high-tier detection, and
+// ─── the --force-unsafe escape hatch ───
+// cmdIssueImport is the only path that hard blocks on a high-tier detection, and
 // its error message advertises `--force-unsafe` as the way through. These tests
 // pin both sides of that gate: it must still block by default, and the advertised
 // escape hatch must actually work, must stay audited, and must not weaken the scan.
@@ -1589,8 +1589,8 @@ describe('SEC64-FORCEUNSAFE — cmdIssueImport --force-unsafe override', () => {
   test('--force-unsafe is a parsed flag, not an unknown one', () => {
     const result = importWithFlag('--force-unsafe');
     assert.ok(
-      !/Unknown flag/.test(`${result.output}${result.error}`),
-      `--force-unsafe must be accepted by the arg validator, got: ${result.error}`,
+      !/Unknown flag/.test(`${result.output}${result.stderr}`),
+      `--force-unsafe must be accepted by the arg validator, got: ${result.stderr}`,
     );
   });
 
@@ -1629,9 +1629,9 @@ describe('SEC64-FORCEUNSAFE — cmdIssueImport --force-unsafe override', () => {
     // that actually succeeded.
     assert.strictEqual(result.success, true, result.error);
     assert.match(
-      result.error || '',
+      result.stderr || '',
       /\[SECURITY\] Proceeding despite high-confidence injection/,
-      `expected the override warning on stderr, got: ${result.error}`,
+      `expected the override warning on stderr, got: ${result.stderr}`,
     );
   });
 
@@ -1766,7 +1766,7 @@ describe('scan-on-read integration', () => {
   });
 });
 
-// ─── SEC40-SCANREAD — cmdStateGet ─────────────────────────────
+// ─── scan-on-read: cmdStateGet ─────────────────────────────
 // cmdStateGet calls sanitizeForPrompt at three distinct extraction sites:
 // the bold-field match, the plain-field match, and the ## section match.
 // The design contract is warn-NEVER-strip and never-block, so every attack

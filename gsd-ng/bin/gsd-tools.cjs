@@ -530,7 +530,10 @@ const ARG_SCHEMAS = {
     _self: { positional: { min: 1, max: 1 }, flags: ['--date'] },
   },
   'issue-import': {
-    _self: { positional: { min: 2, max: 2 }, flags: ['--repo'] },
+    _self: {
+      positional: { min: 2, max: 2 },
+      flags: ['--repo', '--force-unsafe'],
+    },
   },
   'issue-sync': {
     _self: { positional: { min: 0, max: 1 }, flags: ['--auto'] },
@@ -2137,7 +2140,8 @@ async function main() {
       const number = args[2];
       const repoIdx = args.indexOf('--repo');
       const repo = repoIdx >= 0 ? args[repoIdx + 1] : null;
-      commands.cmdIssueImport(cwd, platform, number, repo);
+      const forceUnsafe = args.includes('--force-unsafe');
+      commands.cmdIssueImport(cwd, platform, number, repo, { forceUnsafe });
       break;
     }
 
