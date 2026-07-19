@@ -3048,6 +3048,296 @@ test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', (
   }
 });
 
+// ── uninstall leaves nothing GSD installed ─────────────────────────
+
+// Recursively list files under `dir`, relative to it. Absent dir -> [].
+function listFilesRelative(dir, base) {
+  base = base || dir;
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFilesRelative(full, base));
+    else out.push(path.relative(base, full).replace(/\\/g, '/'));
+  }
+  return out.sort();
+}
+
+// settings.json is the runtime's own config file, not a GSD artifact: GSD merges
+// entries into whatever is already there and strips them again on uninstall, so
+// the file surviving is the documented contract rather than a leak.
+const UNINSTALL_SURVIVORS = new Set(['settings.json']);
+
+test('UNINST-CLEAN-01: uninstall leaves no GSD-installed file behind on the Claude runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-01-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = run();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // Positive control. The install ran into an empty directory, so every file
+    // now present was written by GSD — the leftover set below is measured
+    // against that, not against a guessed inventory. Naming two of them
+    // explicitly keeps the test honest if the install stops producing them:
+    // an absent file would otherwise make the removal assertion vacuous.
+    const installed = listFilesRelative(claudeDir);
+    assert.ok(installed.length > 0, 'install must write files into .claude');
+    for (const expected of [
+      'hooks/bash-safety-hook.cjs',
+      'gsd-file-manifest.json',
+    ]) {
+      assert.ok(
+        installed.includes(expected),
+        'install must write ' +
+          expected +
+          ' for its removal to be meaningful. Installed:\n' +
+          installed.join('\n'),
+      );
+    }
+
+    const r2 = run(['--uninstall']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const leftover = listFilesRelative(claudeDir).filter(
+      (f) => !UNINSTALL_SURVIVORS.has(f),
+    );
+    assert.deepStrictEqual(
+      leftover,
+      [],
+      'uninstall must remove every file GSD installed. Left behind:\n' +
+        leftover.join('\n'),
+    );
+
+    // A hook file removed from disk must not keep a settings.json entry
+    // pointing at it, or the runtime fails on every matching tool call.
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const settingsText = fs.readFileSync(settingsPath, 'utf8');
+      for (const hook of [
+        'bash-safety-hook.cjs',
+        'gsd-guardrail.js',
+        'gsd-sandbox-detect.js',
+        'gsd-statusline.js',
+        'gsd-check-update.js',
+        'gsd-context-monitor.js',
+      ]) {
+        assert.ok(
+          !settingsText.includes(hook),
+          'settings.json must not reference removed hook ' +
+            hook +
+            ' after uninstall. settings.json:\n' +
+            settingsText,
+        );
+      }
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('UNINST-CLEAN-02: uninstall leaves no GSD-installed file behind on the Copilot runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-02-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = run();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const githubDir = path.join(tmpDir, '.github');
+    const installed = listFilesRelative(githubDir);
+    assert.ok(
+      installed.includes('gsd-file-manifest.json'),
+      'install must write the manifest for its removal to be meaningful',
+    );
+    assert.ok(
+      installed.includes('hooks/gsd-hooks.json'),
+      'install must write the hook descriptor for its removal to be meaningful',
+    );
+
+    const r2 = run(['--uninstall']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const leftover = listFilesRelative(githubDir);
+    assert.deepStrictEqual(
+      leftover,
+      [],
+      'uninstall must remove every file GSD installed. Left behind:\n' +
+        leftover.join('\n'),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── retired hooks are removed, not stranded ────────────────────────
+
+test('UNINST-CLEAN-03: a hook installed by an earlier release but no longer shipped is removed by --clean', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-03-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    assert.strictEqual(run().status, 0, 'baseline install must exit 0');
+
+    const claudeDir = path.join(tmpDir, '.claude');
+    const manifestPath = path.join(claudeDir, 'gsd-file-manifest.json');
+    const retiredHook = path.join(claudeDir, 'hooks', 'gsd-legacy-probe.js');
+
+    // Fixture for a hook some earlier release shipped and this one does not.
+    // Its name is deliberately absent from the package's hooks/ dir, so the only
+    // thing that can identify it as GSD-owned is the install's own record of
+    // what it wrote.
+    const plantRetiredHook = () => {
+      fs.writeFileSync(retiredHook, 'retired-gsd-hook-body');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      manifest.installed_hooks = [
+        ...(manifest.installed_hooks || []),
+        'gsd-legacy-probe.js',
+      ];
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    };
+
+    plantRetiredHook();
+
+    // Positive control: the ordinary install copies hooks in and never deletes,
+    // so a plain reinstall must leave the fixture alone. Without this, the
+    // fixture's absence after --clean would not distinguish the wipe from any
+    // other step in the install.
+    assert.strictEqual(run().status, 0, 'control reinstall must exit 0');
+    assert.ok(
+      fs.existsSync(retiredHook),
+      'ordinary install must not delete the retired hook — otherwise its ' +
+        'absence after --clean proves nothing about the wipe',
+    );
+
+    // The control reinstall rewrote the manifest from the shipped hook set,
+    // dropping the fixture's record. Re-plant so --clean sees the state a real
+    // upgrade from the earlier release would present.
+    plantRetiredHook();
+
+    const r = run(['--clean']);
+    assert.strictEqual(
+      r.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    assert.ok(
+      !fs.existsSync(retiredHook),
+      'a hook recorded as installed but no longer shipped must be removed by ' +
+        '--clean, not stranded: ' + retiredHook,
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── user hooks are never deletion candidates ───────────────────────
+
+test('UNINST-CLEAN-04: uninstall preserves user hooks, including gsd-prefixed ones GSD never installed', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-04-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    assert.strictEqual(run().status, 0, 'install must exit 0');
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // The second name is the load-bearing one: it guards against widening the
+    // removal set to a gsd-* glob over hooks/, which would satisfy every other
+    // assertion here while quietly deleting a user's file.
+    const userHooks = [
+      [path.join(claudeDir, 'hooks', 'zz-user-hook.js'), 'zz-user-hook-body'],
+      [
+        path.join(claudeDir, 'hooks', 'gsd-user-owned-hook.js'),
+        'gsd-prefixed-but-user-owned-body',
+      ],
+    ];
+    for (const [filePath, body] of userHooks) {
+      fs.writeFileSync(filePath, body);
+    }
+
+    const r = run(['--uninstall']);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    for (const [filePath, body] of userHooks) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user hook must survive uninstall: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user hook must be byte-identical after uninstall: ' + filePath,
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── --clean on the Copilot runtime ─────────────────────────────────
 
 test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and preserves user content', () => {

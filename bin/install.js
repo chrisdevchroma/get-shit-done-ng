@@ -52,6 +52,34 @@ const REQUIRED_HOOKS = [
   'bash-safety-hook.cjs',
 ];
 
+// Hook filenames GSD shipped under an earlier name and no longer ships.
+//
+// The removal set is normally derived from what an install actually wrote (the
+// manifest's `installed_hooks`) plus what the running package ships, so a hook
+// renamed or retired in a later release still cleans itself up. This list is the
+// backstop for names retired *before* the manifest recorded hooks: nothing on
+// disk references them any more, so without an explicit entry they match neither
+// a removal source nor a shipped filename and would persist forever.
+//
+// Entries are only needed for retirements predating the manifest hook record.
+// A hook retired from here on is covered automatically and needs no entry.
+const RETIRED_GSD_HOOKS = ['gsd-check-update.sh'];
+
+/**
+ * Hook filenames the running package installs for a runtime.
+ * The Claude runtime copies every file in the package's hooks/ dir; Copilot
+ * takes nothing from it and writes a single hook descriptor instead.
+ */
+function shippedHookNames(rt) {
+  if (rt !== 'claude') return ['gsd-hooks.json'];
+  const hooksSrc = path.join(__dirname, '..', 'hooks');
+  if (!fs.existsSync(hooksSrc)) return [];
+  return fs
+    .readdirSync(hooksSrc, { withFileTypes: true })
+    .filter(e => e.isFile())
+    .map(e => e.name);
+}
+
 /**
  * Convert a pathPrefix (which uses absolute paths for global installs) to a
  * $HOME-relative form for replacing $HOME/.claude/ references in bash code blocks.
@@ -406,11 +434,14 @@ function uninstall(isGlobal) {
       agentCount = fs.readdirSync(agentsDir).filter(f => f.startsWith('gsd-') && f.endsWith('.md')).length;
     }
 
-    const gsdHooks = ['gsd-statusline.js', 'gsd-check-update.js', 'gsd-check-update.sh', 'gsd-context-monitor.js', 'gsd-sandbox-detect.js', 'gsd-guardrail.js'];
+    // Counted before removal — the removal set is partly sourced from the
+    // manifest, which removeGsdFiles deletes along with everything else.
     let hookCount = 0;
     if (fs.existsSync(hooksDir)) {
-      hookCount = gsdHooks.filter(h => fs.existsSync(path.join(hooksDir, h))).length;
+      hookCount = [...gsdOwnedHookNames(targetDir, runtime)]
+        .filter(h => fs.existsSync(path.join(hooksDir, h))).length;
     }
+    const hadManifest = fs.existsSync(path.join(targetDir, MANIFEST_NAME));
 
     // 1-4. Delegate all GSD file removal to shared helper.
     removeGsdFiles(targetDir, runtime);
@@ -420,6 +451,7 @@ function uninstall(isGlobal) {
     if (hadGsdDir) { removedCount++; console.log(`  ${green}✓${reset} Removed gsd-ng/`); }
     if (agentCount > 0) { removedCount++; console.log(`  ${green}✓${reset} Removed ${agentCount} GSD agents`); }
     if (hookCount > 0) { removedCount++; console.log(`  ${green}✓${reset} Removed ${hookCount} GSD hooks`); }
+    if (hadManifest) { removedCount++; console.log(`  ${green}✓${reset} Removed ${MANIFEST_NAME}`); }
 
     // 5. Remove GSD package.json (CommonJS mode marker)
     const pkgJsonPath = path.join(targetDir, 'package.json');
@@ -497,13 +529,19 @@ function uninstall(isGlobal) {
         }
       }
 
-      // Remove GSD hooks from PreToolUse (gsd-sandbox-detect.js, gsd-guardrail.js)
+      // Remove GSD hooks from PreToolUse. bash-safety-hook.cjs is GSD-installed
+      // despite the unprefixed name; leaving its entry behind would point the
+      // runtime at a script uninstall has just deleted.
       if (settings.hooks && settings.hooks.PreToolUse) {
         const before = settings.hooks.PreToolUse.length;
         settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry => {
           if (entry.hooks && Array.isArray(entry.hooks)) {
             const hasGsdHook = entry.hooks.some(h =>
-              h.command && (h.command.includes('gsd-sandbox-detect') || h.command.includes('gsd-guardrail'))
+              h.command && (
+                h.command.includes('gsd-sandbox-detect') ||
+                h.command.includes('gsd-guardrail') ||
+                h.command.includes('bash-safety-hook.cjs')
+              )
             );
             return !hasGsdHook;
           }
@@ -602,6 +640,7 @@ function uninstall(isGlobal) {
 
     const gsdHooksPath = path.join(targetDir, 'hooks', 'gsd-hooks.json');
     const hadGsdHooks = fs.existsSync(gsdHooksPath);
+    const hadManifest = fs.existsSync(path.join(targetDir, MANIFEST_NAME));
 
     // 1-3 + gsd-hooks.json. Delegate GSD file removal to shared helper.
     removeGsdFiles(targetDir, runtime);
@@ -611,6 +650,7 @@ function uninstall(isGlobal) {
     if (hadGsdDir) { removedCount++; console.log(`  ${green}✓${reset} Removed gsd-ng/`); }
     if (agentCount > 0) { removedCount++; console.log(`  ${green}✓${reset} Removed ${agentCount} GSD agents`); }
     if (hadGsdHooks) { removedCount++; console.log(`  ${green}✓${reset} Removed hooks/gsd-hooks.json`); }
+    if (hadManifest) { removedCount++; console.log(`  ${green}✓${reset} Removed ${MANIFEST_NAME}`); }
 
     // 4. Clean GSD section from copilot-instructions.md
     const instructionsPath = path.join(targetDir, 'copilot-instructions.md');
@@ -680,6 +720,51 @@ function verifyFileInstalled(filePath, description) {
 
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+/**
+ * Filenames under <targetDir>/hooks/ that belong to GSD, and which uninstall and
+ * the --clean wipe must therefore remove.
+ *
+ * Three sources are unioned because none alone is sufficient:
+ *  - the manifest's `installed_hooks`, recording exactly what this install
+ *    wrote. This is what makes the set self-maintaining: a hook the installed
+ *    release shipped is removed by a later release that no longer ships it,
+ *    with no list to remember to update.
+ *  - the filenames the running package ships, covering installs whose manifest
+ *    is absent, unreadable, or written before hooks were recorded.
+ *  - RETIRED_GSD_HOOKS, covering names already retired by the time the manifest
+ *    began recording hooks.
+ *
+ * Membership is by exact filename throughout — never a prefix or glob. A user's
+ * own hook can therefore never become a deletion candidate, whatever it is
+ * named, including a name that happens to start with `gsd-`.
+ */
+function gsdOwnedHookNames(targetDir, rt) {
+  const names = new Set(shippedHookNames(rt));
+  if (rt === 'claude') {
+    for (const name of RETIRED_GSD_HOOKS) names.add(name);
+  }
+
+  const manifestPath = path.join(targetDir, MANIFEST_NAME);
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const recorded = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).installed_hooks;
+      if (Array.isArray(recorded)) {
+        for (const name of recorded) {
+          // Bare filenames only. The manifest is GSD-written but lives in a
+          // user-writable tree, so a hand-edited entry must not be able to steer
+          // deletion out of hooks/ via a separator or a dot segment.
+          if (typeof name !== 'string' || !name) continue;
+          if (name === '.' || name === '..' || name !== path.basename(name)) continue;
+          names.add(name);
+        }
+      }
+    } catch {
+      // Unreadable manifest — the shipped and retired names still apply.
+    }
+  }
+  return names;
+}
 
 /**
  * Compute SHA256 hash of file contents
@@ -781,6 +866,16 @@ function writeManifest(configDir, version) {
       }
     }
   }
+
+  // `installed_hooks` is an additive record of the hook files this install put
+  // in hooks/, kept deliberately outside `files`: it exists so a later release
+  // knows what to remove, not to track content drift, and adding hooks to
+  // `files` would silently enrol them in local-patch backup. Older installers
+  // ignore the key, so no schema bump is needed.
+  const hooksDir = path.join(configDir, 'hooks');
+  manifest.installed_hooks = shippedHookNames(runtime)
+    .filter(name => fs.existsSync(path.join(hooksDir, name)))
+    .sort();
 
   fs.writeFileSync(path.join(configDir, MANIFEST_NAME), JSON.stringify(manifest, null, 2));
   return manifest;
@@ -975,18 +1070,10 @@ function removeGsdFiles(targetDir, runtime) {
       }
     }
 
-    // 4. Remove named GSD hook files only (preserve user hooks)
+    // 4. Remove GSD-owned hook files only (preserve user hooks)
     const hooksDir = path.join(targetDir, 'hooks');
     if (fs.existsSync(hooksDir)) {
-      const gsdHooks = [
-        'gsd-statusline.js',
-        'gsd-check-update.js',
-        'gsd-check-update.sh',
-        'gsd-context-monitor.js',
-        'gsd-sandbox-detect.js',
-        'gsd-guardrail.js',
-      ];
-      for (const hook of gsdHooks) {
+      for (const hook of gsdOwnedHookNames(targetDir, runtime)) {
         const hookPath = path.join(hooksDir, hook);
         if (fs.existsSync(hookPath)) {
           fs.unlinkSync(hookPath);
@@ -1020,7 +1107,8 @@ function removeGsdFiles(targetDir, runtime) {
       }
     }
 
-    // Non-Claude runtime: remove only gsd-hooks.json (preserve user hooks).
+    // Non-Claude runtime: remove only GSD-owned hook files (preserve user hooks).
+    // Today that set is the single gsd-hooks.json descriptor.
     //
     // This deletion is the load-bearing one on this runtime. The three above it
     // are also performed by the ordinary install (skills/gsd-* and
@@ -1030,10 +1118,23 @@ function removeGsdFiles(targetDir, runtime) {
     // only for local installs — global Copilot hooks are unsupported by the CLI
     // — so on a global target nothing else ever deletes this file. Removing
     // this line would silently strand it.
-    const gsdHooksJson = path.join(targetDir, 'hooks', 'gsd-hooks.json');
-    if (fs.existsSync(gsdHooksJson)) {
-      fs.unlinkSync(gsdHooksJson);
+    const copilotHooksDir = path.join(targetDir, 'hooks');
+    if (fs.existsSync(copilotHooksDir)) {
+      for (const hook of gsdOwnedHookNames(targetDir, runtime)) {
+        const hookPath = path.join(copilotHooksDir, hook);
+        if (fs.existsSync(hookPath)) {
+          fs.unlinkSync(hookPath);
+        }
+      }
     }
+  }
+
+  // The manifest is GSD-written and describes GSD's own files, so it goes with
+  // them on both removal paths. Read last: gsdOwnedHookNames() above sources the
+  // hook removal set from it.
+  const manifestPath = path.join(targetDir, MANIFEST_NAME);
+  if (fs.existsSync(manifestPath)) {
+    fs.unlinkSync(manifestPath);
   }
 }
 
@@ -1044,14 +1145,9 @@ function removeGsdFiles(targetDir, runtime) {
  * resets so the user can inspect them.
  */
 function wipeManagedTree(targetDir, runtime) {
-  // Remove all GSD-owned files without touching user content.
+  // Remove all GSD-owned files without touching user content. The manifest goes
+  // with them (both runtimes — manifest path is the same).
   removeGsdFiles(targetDir, runtime);
-
-  // Always wipe the manifest file (both runtimes — manifest path is the same).
-  const manifestPath = path.join(targetDir, MANIFEST_NAME);
-  if (fs.existsSync(manifestPath)) {
-    fs.unlinkSync(manifestPath);
-  }
 
   // Explicitly DO NOT wipe gsd-local-patches/ — preserved per CONTEXT.md decision.
 }
