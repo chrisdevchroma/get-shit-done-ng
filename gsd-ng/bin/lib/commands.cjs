@@ -785,11 +785,24 @@ function cmdTodoComplete(cwd, filename) {
     );
   }
 
-  const sourcePath = path.join(pendingDir, filename);
+  // Accept the id with or without its .md extension — `list-todos` prints
+  // filenames while slugs get passed around bare, and both should resolve.
+  const candidates = filename.endsWith('.md')
+    ? [filename]
+    : [filename, `${filename}.md`];
+  const sourcePath = candidates
+    .map((candidate) => path.join(pendingDir, candidate))
+    .find((candidatePath) => fs.existsSync(candidatePath));
 
-  if (!fs.existsSync(sourcePath)) {
-    error(`Todo not found: ${filename}`);
+  if (!sourcePath) {
+    error(
+      `Todo not found: ${filename} — looked for ${candidates.join(' and ')} ` +
+        `in ${toPosixPath(path.relative(cwd, pendingDir))}/`,
+    );
   }
+
+  // Everything downstream (completed/ filename, output) uses the resolved name.
+  const resolvedName = path.basename(sourcePath);
 
   // Read file content once for both recurring check and non-recurring path
   const content = fs.readFileSync(sourcePath, 'utf-8');
@@ -821,11 +834,11 @@ function cmdTodoComplete(cwd, filename) {
       {
         completed: true,
         recurring: true,
-        file: filename,
+        file: resolvedName,
         date: todayDate,
         next_due: fm.interval || 'unknown',
       },
-      `recurring-reset: ${filename}`,
+      `recurring-reset: ${resolvedName}`,
     );
     return;
   }
@@ -838,7 +851,7 @@ function cmdTodoComplete(cwd, filename) {
   const completedContent = `completed: ${today}\n` + content;
 
   fs.writeFileSync(
-    path.join(completedDir, filename),
+    path.join(completedDir, resolvedName),
     completedContent,
     'utf-8',
   );
@@ -866,7 +879,12 @@ function cmdTodoComplete(cwd, filename) {
           itConfig,
         );
         output(
-          { completed: true, file: filename, date: today, synced: syncResults },
+          {
+            completed: true,
+            file: resolvedName,
+            date: today,
+            synced: syncResults,
+          },
           'completed',
         );
         return;
@@ -876,7 +894,7 @@ function cmdTodoComplete(cwd, filename) {
     }
   }
 
-  output({ completed: true, file: filename, date: today }, 'completed');
+  output({ completed: true, file: resolvedName, date: today }, 'completed');
 }
 
 /**
