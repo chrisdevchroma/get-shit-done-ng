@@ -75,7 +75,7 @@ Beyond the shared schema above, entries carry:
 | `realistic-high-entropy` | 3 | Content classes that plausibly appear in a real repository and are not inside a fenced code block: pinned action SHAs, lockfile integrity digests, a UUID table. Outcome is **measured and recorded**, never presumed. |
 | `ordinary-prose-control` | 10 | Ordinary GSD prose with no security vocabulary. **Must trip zero patterns** — asserted outright, with no budget allowance. |
 
-Measured outcome for the content classes: the base64 digest run trips entropy at H = 5.84,
+Measured outcome for the content classes: the base64 digest run trips entropy at H = 5.83,
 while the SHA pins (H = 4.88) and the UUID table (H = 4.38) do not. Lowercase hex spans a
 16-character alphabet and so cannot reach 5.5 at any length; base64 spans 64 and comfortably can.
 

@@ -148,9 +148,9 @@ function loadGsdProse() {
   });
 }
 
-// A scan result entry is 'RULE-ID: description', optionally suffixed with an
-// evasion marker. Entropy findings and the Unicode advisories carry no rule ID
-// and are handled separately.
+// A scan result entry is a rule identifier, then a colon, then a description,
+// optionally suffixed with an evasion marker. Entropy findings and the Unicode
+// advisories carry no identifier and are handled separately.
 const RULE_ENTRY = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+):\s/;
 
 /**

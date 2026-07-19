@@ -60,6 +60,102 @@ itself. Promoting this rule to high tier would cause CI to block our own documen
 When a match only fires after Unicode normalization (homoglyph evasion), the suffix
 `[homoglyph-evasion]` is appended to the entry.
 
+## False-Positive Classes
+
+Every number below is measured, not estimated. Reproduce them with `npm run fp:report`; the
+same measurement is gated by `tests/security-fp-corpus.test.cjs` against the committed budget in
+`tests/fixtures/security-coverage/fp-budget.json`, which fails the suite when any count rises.
+
+Two corpora are walked: this repository (218 files), and
+`tests/fixtures/security-coverage/gsd-prose-benign.jsonl` (49 hand-authored entries of GSD-shaped
+planning prose, every one benign). The second corpus exists because the behaviour worth pinning
+was first measured over a workspace `.planning/` directory, which is outside this package and
+unreachable from a test.
+
+| Class | Measured | What it is | Consequence |
+|-------|----------|------------|-------------|
+| `self-referential` | 41 of 44 repo hits; 32 of 32 prose hits | Documentation describing a rule matches that rule | Warning, not a block — see below |
+| `ordinary-prose` | 1 rule, 4 files | A genuine over-trigger on text that does not discuss security | The class that reaches users |
+| entropy | 1 of 218 files; 5 of 49 entries | Statistical, advisory-only | Never blocks |
+
+### The `self-referential` class
+
+A detector that documents its own rules will match its own documentation. In the repository walk,
+35 distinct rules fire across 44 files, and 41 of those hits land in just two files:
+`gsd-ng/bin/lib/security.cjs`, which defines the patterns, and this reference, which explains
+them. Both are listed in `BLOCK_EXEMPT_PATHS` in `scripts/ci-security-scan.cjs` — still scanned,
+still annotated, but not build-failing.
+
+**The operational consequence is narrow and specific.** The only hard-blocking path in the system
+is `cmdIssueImport` on external content. A self-referential match inside a planning document
+therefore produces a **warning, not a block**: `sanitizeForPrompt` prefixes the content with a
+`[SECURITY WARNING: ...]` banner and the agent proceeds.
+
+**But an inbound GitHub issue that merely discusses prompt injection WILL be blocked on import.**
+This is the real user-facing cost, and it is intended: an issue body is untrusted external
+content, and the scanner cannot distinguish a user describing an attack from a user performing
+one. The documented escape is `--force-unsafe`:
+
+```
+gsd-tools issue import <ref> --force-unsafe
+```
+
+`--force-unsafe` bypasses the **gate**, never the **detection** — the scan still runs, every
+finding is still reported, and the event is written to `security-events.log` with `forced: true`.
+
+### The `ordinary-prose` class
+
+One rule over-triggers on content that does not discuss security at all:
+
+| Rule | Tier | Files | Why |
+|------|------|-------|-----|
+| `HTML-COMMENT-INJECT` | medium | 4 | The pattern is dotall and non-greedy, so any document containing an HTML comment plus one of `ignore` / `override` / `system` / `instructions` / `execute` matches across the whole file. It trips two ordinary templates and one reference doc that never mention the rule. |
+
+Because the rule is **medium tier**, this is advisory noise rather than an availability problem.
+It is recorded here rather than retuned: the plan that measured it froze the budget deliberately
+and left the regex alone, so that any retuning is a separate, evidenced decision.
+
+### The entropy class
+
+Entropy scanning flags high-Shannon-entropy segments (`WINDOW = 256`, `STEP = 128`,
+`MIN_SEGMENT = 64`, `THRESHOLD = 5.5` — `security.cjs`). Measured on benign content:
+
+| Corpus | Flagged | Max benign H | Margin to threshold |
+|--------|---------|--------------|---------------------|
+| Repository walk | 1 of 218 files | 5.59 | **0.09 bits over** |
+| GSD-prose corpus | 5 of 49 entries | 5.83 | 0.33 bits over |
+
+**Dense technical prose does not sit comfortably below the threshold — it hugs it.** The
+entropy-marginal fixtures land at H = 5.43–5.57, four either side of 5.5, reproducing the
+0.02–0.11 bit margin measured on real planning content. A tenth of a bit decides the outcome.
+
+Measured behaviour of real content classes, outside a fenced code block (so
+`stripFencedCodeBlocks` offers no protection):
+
+| Content | H | Flagged |
+|---------|---|---------|
+| `package-lock.json` integrity digests (base64) | 5.83 | yes |
+| Pinned action SHAs (lowercase hex) | 4.88 | no |
+| Table of UUIDs (lowercase hex) | 4.38 | no |
+
+Hex spans a 16-character alphabet and cannot reach 5.5 at any length; base64 spans 64 and
+comfortably can.
+
+**Entropy findings are advisory-only and cannot block.** They route to `findings[]` and never to
+`blocked[]` — asserted over every corpus item and every boundary probe in
+`tests/security-fp-corpus.test.cjs`. That contract is what bounds the blast radius of every
+number in this section. Entropy scanning can also be disabled outright with
+`workflow.entropy_scanning: false` in `.planning/config.json` (`security.cjs`,
+`isEntropyGloballyEnabled`).
+
+### Adding a rule
+
+Run `npm run fp:report` **before** choosing the new rule's tier. If it fires on benign content,
+classify the hits: `self-referential` is a documented and acceptable cost, `ordinary-prose` is
+not, and a rule with `ordinary-prose` false positives belongs at medium tier or needs narrowing.
+Then record the measurement in `fp-budget.json` — the suite fails on any rule that fires without
+a budget entry, so a new false-positive class cannot land unmeasured.
+
 ## Rule of Two Gate
 
 When a workflow combines untrusted content (from external source) with write access (persisting to .planning/), AND scan detects `tier: high`:

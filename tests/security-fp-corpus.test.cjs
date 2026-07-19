@@ -1,5 +1,5 @@
 'use strict';
-// False-positive corpus regression suite (Plan 64-02)
+// False-positive corpus regression suite
 //
 // Measures how often the injection detector fires on content that is benign by
 // construction, and fails when that count RISES above a committed budget.
