@@ -217,9 +217,9 @@ test('PATH-04: install.js local install must not produce ./.claude/ paths in bas
 //
 //            Template uses glob macOS forms (Edit(*), Read(*)). install.js
 //            down-converts to bare forms on Linux via getReadEditWriteAllowRules().
-//            See 54-CONTEXT.md "Template allow canonicalisation" decision.
+//            The template allow list is canonicalised, not left per-platform.
 //
-//            Write(*) was REMOVED from this contract. It is an unmatched path form:
+//            Write(*) is excluded. It is an unmatched path form:
 //            file permission checks consult only Edit(path)/Read(path), so Write(*)
 //            never matches, and since CC v2.1.210 it emits a startup warning on
 //            every macOS/Windows install. Edit(*) already governs every built-in
@@ -308,13 +308,12 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), glob Edit(*)/Re
 //            One Edit(path) entry governs every file-editing tool, so Edit(path)
 //            is the effective spelling; Read(path) replaces Glob(path).
 //
-//            This covers ALL THREE seeded sections, not just deny — the startup
-//            warning fires for allow, deny and ask alike, and install.js now runs
-//            each of them through normalizePermissionRules(). The assertion keeps
+//            This covers ALL THREE seeded sections — the startup warning fires
+//            for allow, deny and ask alike, and install.js runs each of them
+//            through normalizePermissionRules(). The assertion keeps
 //            the template itself honest so the mistake is caught at source rather
 //            than repaired at install time. It also rejects the Edit/Write *pair*
-//            shape proposed in 36.1-01-PLAN.md:92-97 — the Write half is
-//            decoration, not defence.
+//            shape — the Write half is decoration, not defence.
 //
 //            A BARE tool-name rule (e.g. deny 'Write') is NOT flagged: it matches
 //            the tool everywhere and emits no warning, so it is a valid construct.
@@ -3802,9 +3801,9 @@ test('ALLOW-07: install.js --local on Linux writes bare Edit/Write/Read forms', 
 
 // ── seeded settings.json carries no unmatched Tool(path) rule, on any platform ──
 //
-// The end-to-end guard for the defect the unit tests only approximate: the
-// installer used to seed Write(*) into permissions.allow on every macOS/Windows
-// install, which CC >= 2.1.210 reports as a startup warning. Asserting on the
+// The end-to-end guard for the defect the unit tests only approximate: seeding
+// Write(*) into permissions.allow on a macOS/Windows install, which
+// CC >= 2.1.210 reports as a startup warning. Asserting on the
 // file install.js actually writes — across all three seeded sections and every
 // platform branch — is what keeps a regression from shipping, since the template
 // and the platform allow list are separate sources that both feed this output.
@@ -4391,7 +4390,7 @@ test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash
       'first install must exit 0 (MANIFEST-SYNC-03)\nstderr: ' + (r1.stderr || ''),
     );
 
-    // Simulate a manifest written by a pre-fix installer: raw hashes only.
+    // Simulate a manifest written before files_normalized existed: raw hashes only.
     const manifestPath = path.join(tmpDir, '.claude', 'gsd-file-manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     assert.ok(

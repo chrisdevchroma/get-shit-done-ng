@@ -1797,8 +1797,6 @@ async function main() {
       const subcommand = args[1];
       validateArgs('todo', subcommand, args.slice(2));
       if (subcommand === 'add') {
-        // --files/--related are lists and accumulate across repeats; the rest
-        // are single-valued and reject repeats rather than dropping a value.
         commands.cmdTodoAdd(cwd, {
           title: scalarFlag(args, '--title', 'todo add'),
           area: scalarFlag(args, '--area', 'todo add'),

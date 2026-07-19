@@ -222,8 +222,8 @@ const UNMATCHED_PATH_RULE_TARGET = {
  * This function makes that mistake structurally impossible on every section we
  * seed: each unmatched path form is down-converted to its effective equivalent,
  * and the result is de-duplicated in first-seen order. The de-dup is what
- * neutralises the `Edit(.env)` + `Write(.env)` *pair* pattern (proposed in an
- * earlier plan and the exact shape to avoid) — the redundant half collapses into
+ * neutralises the `Edit(.env)` + `Write(.env)` *pair* pattern — the redundant
+ * half collapses into
  * the real rule rather than surviving as decoration.
  *
  * Two categories pass through untouched:

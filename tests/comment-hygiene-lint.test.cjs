@@ -160,12 +160,41 @@ function findRequirementIdReference(line) {
   return null;
 }
 
+// Detector: planning-document filenames cited in comments.
+// `findPhaseReference` catches the prose form, but not the filename form,
+// which is what people actually write. These rot at the same rate — the cited file gets archived by cleanup
+// or renumbered by an insert — and the citation then points at nothing.
+//
+// Gated on a preceding citation verb so that code legitimately documenting the
+// filename format it parses is not flagged: a bare pattern description is not
+// a citation, `see <file>` is.
+//
+// Same exemption + opt-out rules as findPhaseReference.
+function findPlanningDocCitation(line) {
+  const ctx = commentContext(line);
+  if (!ctx.comment) return null;
+  if (/BACKWARD COMPAT|INVARIANT|LOCKED:/.test(line)) return null;
+  if (/hygiene-allow:\s*phase-ref/.test(line)) return null;
+  const m =
+    /\b(?:see|per|from|in|documented in|proposed in|\u00a7)\s+\S*\b\d+(?:\.\d+)?(?:-\d+)?-(?:PLAN|SUMMARY|VERIFICATION|RESEARCH|CONTEXT|UAT|MILESTONE-AUDIT)\.md\b/i.exec(
+      ctx.comment,
+    );
+  if (m)
+    return (
+      "Planning-document citation '" +
+      m[0].trim() +
+      "' — planning filenames rot as phases are archived or renumbered; cite the reasoning, not the document"
+    );
+  return null;
+}
+
 const DETECTORS = [
   { name: 'PR reference', fn: findPRReference, realCodeScan: true },
   { name: 'Review-round reference', fn: findRoundReference, realCodeScan: true },
   { name: 'Test-name incident marker', fn: findTestNameIncidentMarker, realCodeScan: true },
   { name: 'Phase reference', fn: findPhaseReference, realCodeScan: true },
   { name: 'Requirement ID reference', fn: findRequirementIdReference, realCodeScan: true },
+  { name: 'Planning-document citation', fn: findPlanningDocCitation, realCodeScan: true },
 ];
 
 // Walk a file and extract the portion of each line that falls inside a
@@ -394,6 +423,32 @@ describe('comment-hygiene detectors', () => {
     fs.unlinkSync(tmpPath);
     assert.ok(violations.some(v => v.detector === 'Phase reference'),
       'Expected a Phase reference violation from block comment; got: ' + JSON.stringify(violations));
+  });
+
+  // ── findPlanningDocCitation self-tests ────────────────────────────────
+  test('findPlanningDocCitation catches a cited plan file', () => {
+    assert.ok(findPlanningDocCitation('// the shape proposed in 36.1-01-PLAN.md:92-97'));
+  });
+
+  test('findPlanningDocCitation catches see/per/from citation verbs', () => {
+    assert.ok(findPlanningDocCitation('// see 54-CONTEXT.md for the rationale'));
+    assert.ok(findPlanningDocCitation('// per 62-VERIFICATION.md the gate holds'));
+    assert.ok(findPlanningDocCitation('// carried from 50-RESEARCH.md'));
+  });
+
+  test('findPlanningDocCitation ignores a filename format being documented', () => {
+    // The false-positive class the citation-verb gate exists for: code that
+    // parses these filenames must be able to describe their shape.
+    assert.equal(findPlanningDocCitation('// matches NN-NN-PLAN.md and NN-SUMMARY.md'), null);
+    assert.equal(findPlanningDocCitation('// e.g. 01-01-PLAN.md'), null);
+  });
+
+  test('findPlanningDocCitation ignores code and honors the opt-out', () => {
+    assert.equal(findPlanningDocCitation("const f = '01-01-PLAN.md';"), null);
+    assert.equal(
+      findPlanningDocCitation('// see 54-CONTEXT.md // hygiene-allow: phase-ref load-bearing'),
+      null,
+    );
   });
 
   // ── findRequirementIdReference self-tests ─────────────────────────────

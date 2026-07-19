@@ -51,10 +51,9 @@ function parseRequirementIdList(raw) {
  *   2. The `requirements:` frontmatter of every PLAN.md in the phase directory
  *      — what the plans actually claim to satisfy.
  *
- * Taking the union is what keeps the move to phase-close closure from becoming
- * a never-closes bug: before this, plan-declared IDs were closed by the
- * per-plan hook, so a phase whose roadmap section omits `**Requirements:**`
- * would otherwise leave those IDs Pending forever.
+ * The union is load-bearing, not belt-and-braces: a phase whose roadmap section
+ * omits `**Requirements:**` would otherwise leave every plan-declared ID Pending
+ * forever, since phase-close is the only place closure happens.
  */
 function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   const ids = [];
@@ -1098,9 +1097,9 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
   // ── Requirement closure ───────────────────────────────────────────────────
   // Closing requirements is a phase-close action gated on the verifier's
-  // assessment, never a per-plan side effect. When it fired per-plan, whichever
-  // plan finished first closed every ID it declared — so an ID shared by many
-  // plans in a phase read Complete while most of its work was unstarted, and
+  // assessment, never a per-plan side effect. Firing per-plan would let whichever
+  // plan finished first close every ID it declared — an ID shared by many plans
+  // in a phase would read Complete while most of its work was unstarted, and
   // under wave-based parallel execution two executors could also clobber each
   // other's REQUIREMENTS.md write. VERIFICATION.md is the completion authority
   // everywhere else in GSD (see getPhaseCompletionStatus); it is here too.

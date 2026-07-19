@@ -3368,16 +3368,13 @@ describe('cmdPhaseMerge edge cases (alias for plan acceptance)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // phase complete — requirement closure is a phase-close action
 //
-// Requirements used to be closed per-plan, at the end of execute-plan, from the
-// finishing plan's own `requirements:` frontmatter. When several plans in a
-// phase declare the same ID — which is routine; several of this repo's own
-// phases have one ID declared by two or three sibling plans — the ID was closed
-// by whichever plan finished FIRST, not when it was actually satisfied. Under
-// the wave-based parallel execution execute-phase performs, "first" is just
-// whichever agent won the race.
+// Closing requirements per-plan is wrong: several plans in a phase routinely
+// declare the same ID, so the ID would flip to Complete when the FIRST of them
+// finished rather than when it was satisfied. Under the wave-based parallel
+// execution execute-phase performs, "first" is just whichever agent won the race.
 //
 // Closure now happens once, in `phase complete`, on the verifier's authority.
-// These tests pin the three properties that makes it depend on:
+// These tests pin the three properties that move depends on:
 //   1. IDs are collected from ALL plans in the phase (union with the ROADMAP
 //      line), so moving closure later cannot become a never-closes bug.
 //   2. A failing VERIFICATION.md withholds closure entirely.
@@ -3396,9 +3393,8 @@ describe('phase complete requirement closure', () => {
     cleanup(tmpDir);
   });
 
-  // Models phase 65: three plans, IDs shared across them, and a ROADMAP phase
-  // section with NO `**Requirements:**` line — the shape that made the old
-  // roadmap-only closure miss plan-declared IDs entirely.
+  // Three plans, IDs shared across them, and a ROADMAP phase section with NO
+  // `**Requirements:**` line — the shape roadmap-only closure would miss.
   function seedSharedRequirementPhase(opts = {}) {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
@@ -3451,7 +3447,6 @@ describe('phase complete requirement closure', () => {
     fs.mkdirSync(dir, { recursive: true });
 
     // 65-01 declares all three; 65-02 and 65-03 each re-declare a subset.
-    // Under per-plan closure, 65-01 finishing first closed all three.
     fs.writeFileSync(
       path.join(dir, '65-01-PLAN.md'),
       `---\nrequirements:\n  - PDI-DETECT-TRACE\n  - PDI-DETECT-ROADMAP\n  - PDI-VELOCITY-FIX\n---\n# Plan 65-01\n`,
@@ -3691,7 +3686,7 @@ describe('phase complete requirement closure', () => {
   });
 });
 
-// The per-plan closure this bug came from lived in prose, not code — the
+// Per-plan closure lives in prose, not code — the
 // executor agent and execute-plan workflow instructed the model to run
 // `requirements mark-complete` at the end of every plan. Deleting the code path
 // is not enough if the instruction survives, so guard the docs directly.
