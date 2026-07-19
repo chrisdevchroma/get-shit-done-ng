@@ -811,4 +811,170 @@ test('test-baseline branch coverage', async (t) => {
       }
     },
   );
+
+  // A command killed by the timeout produces no TAP summary. Recording that as
+  // a failing suite makes an unfinished run indistinguishable from a red one,
+  // and a baseline that claims "already failing" suppresses new-failure
+  // detection on the next comparison — silently disabling regression triage.
+  await t.test(
+    'a timed-out capture records unknown, never a failing baseline',
+    () => {
+      const tmpBase = resolveTmpDir();
+      const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-tmo-'));
+      const prev = process.env.GSD_TEST_TIMEOUT_MS;
+      try {
+        process.env.GSD_TEST_TIMEOUT_MS = '50';
+        const outputFile = path.join(tmpDir, 'baseline.json');
+        delete require.cache[
+          require.resolve('../gsd-ng/bin/lib/test-baseline.cjs')
+        ];
+        const {
+          captureBaseline,
+        } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+        const origErr = process.stderr.write.bind(process.stderr);
+        const errChunks = [];
+        process.stderr.write = (c) => {
+          errChunks.push(String(c));
+          return true;
+        };
+        try {
+          captureBaseline(
+            JSON.stringify([{ dir: '.', command: 'sleep 5' }]),
+            outputFile,
+          );
+        } finally {
+          process.stderr.write = origErr;
+        }
+
+        const recorded = JSON.parse(fs.readFileSync(outputFile, 'utf-8'))['.'];
+        assert.equal(
+          recorded.exit_code,
+          -2,
+          `timed-out run must record the timeout sentinel, got ${recorded.exit_code}`,
+        );
+        assert.notEqual(
+          recorded.exit_code,
+          1,
+          'a timeout must not be recorded as a plain failing exit',
+        );
+        assert.match(
+          errChunks.join(''),
+          /unknown \(timed out/,
+          'progress line must say the state is unknown, not "failing"',
+        );
+      } finally {
+        if (prev === undefined) delete process.env.GSD_TEST_TIMEOUT_MS;
+        else process.env.GSD_TEST_TIMEOUT_MS = prev;
+        delete require.cache[
+          require.resolve('../gsd-ng/bin/lib/test-baseline.cjs')
+        ];
+        cleanup(tmpDir);
+      }
+    },
+  );
+
+  // The safety property the sentinel exists for: an unknown baseline must not
+  // be read as "was already failing", because that is what suppresses the
+  // triage prompt and lets a real regression through as pre-existing.
+  await t.test('an unknown baseline does not mask a new failure', () => {
+    const tmpBase = resolveTmpDir();
+    const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-mask-'));
+    try {
+      const baselineFile = path.join(tmpDir, 'baseline.json');
+      fs.writeFileSync(
+        baselineFile,
+        JSON.stringify({
+          '.': {
+            captured: '2026-01-01T00:00:00.000Z',
+            command: 'false',
+            exit_code: -2,
+            tests: null,
+            pass: null,
+            fail: null,
+          },
+        }),
+      );
+      const {
+        compareBaseline,
+      } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+      const chunks = [];
+      const orig = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => {
+        chunks.push(String(c));
+        return true;
+      };
+      try {
+        compareBaseline(
+          JSON.stringify([{ dir: '.', command: 'false' }]),
+          baselineFile,
+        );
+      } finally {
+        process.stdout.write = orig;
+      }
+      const out = chunks.join('');
+      assert.match(
+        out,
+        /NEW_FAILURES=true/,
+        `an unknown baseline must fail safe, got: ${out}`,
+      );
+      assert.match(
+        out,
+        /\? unknown/,
+        `baseline column must show unknown, got: ${out}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  // The pre-fix behaviour, pinned so it cannot return: a baseline that really
+  // did observe a red suite still suppresses the prompt.
+  await t.test('a genuinely failing baseline still suppresses triage', () => {
+    const tmpBase = resolveTmpDir();
+    const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-red-'));
+    try {
+      const baselineFile = path.join(tmpDir, 'baseline.json');
+      fs.writeFileSync(
+        baselineFile,
+        JSON.stringify({
+          '.': {
+            captured: '2026-01-01T00:00:00.000Z',
+            command: 'false',
+            exit_code: 1,
+            tests: 10,
+            pass: 9,
+            fail: 1,
+          },
+        }),
+      );
+      const {
+        compareBaseline,
+      } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+      const chunks = [];
+      const orig = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => {
+        chunks.push(String(c));
+        return true;
+      };
+      try {
+        compareBaseline(
+          JSON.stringify([{ dir: '.', command: 'false' }]),
+          baselineFile,
+        );
+      } finally {
+        process.stdout.write = orig;
+      }
+      const out = chunks.join('');
+      assert.match(
+        out,
+        /NEW_FAILURES=false/,
+        `a real pre-existing failure must stay suppressed, got: ${out}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });
