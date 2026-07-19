@@ -6,7 +6,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const {
   runGsdTools,
   createTempProject,
@@ -4176,5 +4176,250 @@ describe('cmdStateAdvancePlan non-numeric format fallback', () => {
     );
     // Non-numeric format means it falls to plain integer 43
     assert.match(updated, /\*\*Current Plan:\*\* 43/);
+  });
+});
+
+// ─── cmdStateAdvancePlan derives position from disk ────────
+
+/**
+ * Spawn `state advance-plan` without blocking, so several can be in flight at
+ * the same time. runGsdTools is synchronous and cannot express a race.
+ */
+function advancePlanAsync(cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [TOOLS_PATH, 'state', 'advance-plan', '--json'],
+      { cwd, env: process.env },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d;
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    child.on('close', (code) =>
+      resolve({ code, output: stdout.trim(), stderr: stderr.trim() }),
+    );
+  });
+}
+
+describe('cmdStateAdvancePlan derives position from disk', () => {
+  let tmpDir;
+  let statePath;
+  let phaseDir;
+
+  const PLAN_IDS = ['64-01', '64-02', '64-03', '64-04', '64-05'];
+
+  // Mirrors a real multi-plan phase: a phase directory holding one PLAN.md per
+  // plan, and a STATE.md still pointing at the first plan.
+  function seedPhase(currentPlan = '64-01') {
+    phaseDir = path.join(tmpDir, '.planning', 'phases', '64-parallel-waves');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (const id of PLAN_IDS) {
+      fs.writeFileSync(
+        path.join(phaseDir, `${id}-PLAN.md`),
+        `# Plan ${id}\n`,
+        'utf-8',
+      );
+    }
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 64',
+        '**Current Phase Name:** Parallel Waves',
+        `**Current Plan:** ${currentPlan}`,
+        '**Total Plans in Phase:** 5',
+        '**Status:** Executing',
+        '**Last Activity:** 2024-01-10',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
+  }
+
+  function completePlans(ids) {
+    for (const id of ids) {
+      fs.writeFileSync(
+        path.join(phaseDir, `${id}-SUMMARY.md`),
+        `# Summary ${id}\n`,
+        'utf-8',
+      );
+    }
+  }
+
+  function currentPlanInState() {
+    const content = fs.readFileSync(statePath, 'utf-8');
+    const match = content.match(/\*\*Current Plan:\*\*\s*(.+)/);
+    return match ? match[1].trim() : null;
+  }
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('counts completed plans on disk instead of incrementing STATE.md', () => {
+    seedPhase();
+    completePlans(['64-01', '64-02', '64-03']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, true);
+    assert.strictEqual(output.completed_plans, 3);
+    assert.strictEqual(
+      output.current_plan,
+      4,
+      'three plans done means plan 4 is next, regardless of the stored value',
+    );
+    assert.strictEqual(
+      currentPlanInState(),
+      '64-04',
+      'STATE.md should record 64-04, not 64-02',
+    );
+  });
+
+  test('parallel executors all land on the same correct position', async () => {
+    seedPhase();
+    // A wave of three plans finishes; each executor writes its SUMMARY before
+    // calling advance-plan, so all three are on disk when the calls race.
+    completePlans(['64-01', '64-02', '64-03']);
+
+    const results = await Promise.all([
+      advancePlanAsync(tmpDir),
+      advancePlanAsync(tmpDir),
+      advancePlanAsync(tmpDir),
+    ]);
+
+    for (const r of results) {
+      assert.strictEqual(r.code, 0, `advance-plan exited ${r.code}: ${r.stderr}`);
+      const output = JSON.parse(r.output);
+      assert.strictEqual(
+        output.current_plan,
+        4,
+        'every concurrent caller must compute the same position',
+      );
+    }
+
+    assert.strictEqual(
+      currentPlanInState(),
+      '64-04',
+      'three concurrent advances must not collapse to a single +1 (64-02)',
+    );
+  });
+
+  test('re-running advance-plan does not drift the position', () => {
+    seedPhase();
+    completePlans(['64-01', '64-02', '64-03']);
+
+    runGsdTools('state advance-plan --json', tmpDir);
+    assert.strictEqual(currentPlanInState(), '64-04');
+    runGsdTools('state advance-plan --json', tmpDir);
+    assert.strictEqual(
+      currentPlanInState(),
+      '64-04',
+      'a repeat call is a no-op, so a retried executor cannot skip a plan',
+    );
+  });
+
+  test('detects last plan from disk even when STATE.md is stale', () => {
+    seedPhase();
+    completePlans(PLAN_IDS);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'last_plan');
+    assert.strictEqual(output.status, 'ready_for_verification');
+    assert.strictEqual(output.completed_plans, 5);
+
+    const updated = fs.readFileSync(statePath, 'utf-8');
+    assert.ok(
+      updated.includes('Phase complete'),
+      'Status should contain Phase complete',
+    );
+  });
+
+  test('concurrent final-wave executors all report phase complete', async () => {
+    seedPhase();
+    completePlans(PLAN_IDS);
+
+    const results = await Promise.all([
+      advancePlanAsync(tmpDir),
+      advancePlanAsync(tmpDir),
+    ]);
+
+    for (const r of results) {
+      const output = JSON.parse(r.output);
+      assert.strictEqual(output.advanced, false);
+      assert.strictEqual(output.reason, 'last_plan');
+    }
+    assert.ok(
+      fs.readFileSync(statePath, 'utf-8').includes('Phase complete'),
+      'Status should contain Phase complete',
+    );
+  });
+
+  test('mid-phase wave advances past the plans it completed', () => {
+    // STATE.md left at 64-02 by an earlier wave; plans 1-4 are now done.
+    seedPhase('64-02');
+    completePlans(['64-01', '64-02', '64-03', '64-04']);
+
+    runGsdTools('state advance-plan --json', tmpDir);
+    assert.strictEqual(currentPlanInState(), '64-05');
+  });
+
+  test('derives the phase from Current Plan when Current Phase is absent', () => {
+    seedPhase();
+    const withoutPhase = fs
+      .readFileSync(statePath, 'utf-8')
+      .replace('**Current Phase:** 64\n', '');
+    fs.writeFileSync(statePath, withoutPhase, 'utf-8');
+    completePlans(['64-01', '64-02']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, true);
+    assert.strictEqual(currentPlanInState(), '64-03');
+  });
+
+  test('falls back to in-place increment when the phase is not on disk', () => {
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      '# Project State\n\n**Current Phase:** 99\n**Current Plan:** 99-02\n**Total Plans in Phase:** 5\n**Status:** Executing\n**Last Activity:** 2024-01-10\n',
+      'utf-8',
+    );
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, false);
+    assert.strictEqual(output.completed_plans, null);
+    assert.strictEqual(currentPlanInState(), '99-03');
+  });
+
+  test('non-numeric Current Plan still writes a bare number when derived', () => {
+    seedPhase();
+    const withAlpha = fs
+      .readFileSync(statePath, 'utf-8')
+      .replace('**Current Plan:** 64-01', '**Current Plan:** plan1');
+    fs.writeFileSync(statePath, withAlpha, 'utf-8');
+    completePlans(['64-01', '64-02']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, true);
+    assert.strictEqual(currentPlanInState(), '3');
   });
 });

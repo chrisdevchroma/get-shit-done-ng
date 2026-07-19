@@ -387,7 +387,7 @@ Next: more plans → "Ready for {next-plan}" | last → "Phase complete, ready f
 Update STATE.md using gsd-tools:
 
 ```bash
-# Advance plan counter (handles last-plan edge case)
+# Recalculate plan position from disk (handles last-plan edge case)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state advance-plan
 
 # Recalculate progress bar from disk state
