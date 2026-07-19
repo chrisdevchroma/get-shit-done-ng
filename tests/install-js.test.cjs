@@ -2930,6 +2930,343 @@ test('CLEAN-04: --help output documents --clean', () => {
   }
 });
 
+// ── --clean preserves user-owned content ───────────────────────────
+
+test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-01-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // User-owned content the wipe must never touch. Deliberately NOT gsd-prefixed:
+    // gsd-*.md agents and the six named gsd hook files are deleted by design.
+    const planted = [
+      [path.join(claudeDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(claudeDir, 'hooks', 'zz-user-hook.js'), 'zz-user-hook-body'],
+      [path.join(claudeDir, 'commands', 'zz-user-cmd.md'), 'zz-user-cmd-body'],
+      [
+        path.join(claudeDir, 'commands', 'zz-user-dir', 'nested.md'),
+        'zz-user-nested-body',
+      ],
+      [
+        path.join(claudeDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Stale-wipe witness. This is the ONE path on the Claude runtime where the
+    // wipe is observable: it is in the wipe's six-name hook list, but no file of
+    // this name ships in the source hooks/ dir, and the ordinary install's hook
+    // step only copies files in — it never deletes. So a plain reinstall leaves
+    // it alone and only a real wipe removes it. Every other location the wipe
+    // touches (commands/gsd, gsd-ng/, agents/gsd-*.md) is also cleared by the
+    // ordinary install, so absence there would prove nothing.
+    const staleWitness = path.join(claudeDir, 'hooks', 'gsd-check-update.sh');
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    const settingsBefore = fs.existsSync(settingsPath)
+      ? fs.readFileSync(settingsPath, 'utf8')
+      : null;
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after --clean: ' + filePath,
+      );
+    }
+
+    if (settingsBefore !== null) {
+      assert.ok(
+        fs.existsSync(settingsPath),
+        'settings.json must survive --clean',
+      );
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, 'utf8'),
+        settingsBefore,
+        'settings.json content must be unchanged by --clean',
+      );
+    }
+
+    // The wipe actually ran: a stale GSD-owned file the installer never writes
+    // back is gone. This is the assertion a no-op --clean fails; the refresh
+    // checks below only prove that an install ran.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(claudeDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(claudeDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean on the Copilot runtime ─────────────────────────────────
+
+test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-02-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const configDir = path.join(tmpDir, '.github');
+
+    // Copilot-side user content. Non-gsd-prefixed on purpose: the wipe deletes
+    // only gsd-*.agent.md files and skills/gsd-* directories.
+    const planted = [
+      [path.join(configDir, 'agents', 'zz-user.agent.md'), 'zz-user-agent-body'],
+      [
+        path.join(configDir, 'skills', 'zz-user-skill', 'SKILL.md'),
+        'zz-user-skill-body',
+      ],
+      [
+        path.join(configDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Why this test has no stale-wipe witness, unlike the Claude ones: on the
+    // Copilot runtime every location the wipe touches is ALSO cleared by the
+    // ordinary install that follows it — skills/gsd-* and agents/gsd-*.agent.md
+    // use the same predicates, gsd-ng/ is removed before it is re-copied, and
+    // hooks/gsd-hooks.json is overwritten unconditionally. So the wipe leaves no
+    // observable trace here and no absence check can distinguish it from a
+    // no-op. Pin that redundancy rather than claim a guard this test cannot
+    // have: a plain reinstall alone already removes a stale gsd- skill dir.
+    const staleSkill = path.join(configDir, 'skills', 'gsd-zz-stale', 'SKILL.md');
+    fs.mkdirSync(path.dirname(staleSkill), { recursive: true });
+    fs.writeFileSync(staleSkill, 'stale-gsd-owned-file');
+
+    const rPlain = runInstall();
+    assert.strictEqual(
+      rPlain.status,
+      0,
+      'plain copilot reinstall must exit 0\nstderr: ' + (rPlain.stderr || ''),
+    );
+    assert.ok(
+      !fs.existsSync(staleSkill),
+      'a plain copilot reinstall already removes stale gsd- skills, so --clean ' +
+        'has no observable witness on this runtime: ' +
+        staleSkill,
+    );
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive copilot --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after copilot --clean: ' +
+          filePath,
+      );
+    }
+
+    // Proves an install ran and the user content above survived it. It does NOT
+    // prove a wipe ran — see the note above.
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'gsd-ng')),
+      'gsd-ng/ must be re-installed after copilot --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'copilot manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean --global targets CLAUDE_CONFIG_DIR, not the real home ──
+
+test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-03-'));
+  try {
+    const cfgDir = path.join(tmpDir, 'fakehome', '.claude');
+    fs.mkdirSync(cfgDir, { recursive: true });
+
+    // SAFETY: CLAUDE_CONFIG_DIR is set on EVERY invocation below. getGlobalDir
+    // reads it ahead of the home directory, so the global target stays inside
+    // tmpDir. A single call missing it would target the real user config dir.
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--global', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            CLAUDE_CONFIG_DIR: cfgDir,
+          }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline global install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Containment gate — must hold before any --clean run. If the redirect is
+    // not honored the install landed elsewhere and this test must stop here.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'global install must land in the redirected config dir, not the real home',
+    );
+
+    const planted = [
+      [path.join(cfgDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(cfgDir, 'CLAUDE.md'), 'zz-user-memory-body'],
+      [
+        path.join(cfgDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Stale-wipe witness — see the Claude local test for why this specific name
+    // is the only observable one: it is in the wipe's hook list but ships in no
+    // source dir, and the ordinary install never deletes from hooks/.
+    const staleWitness = path.join(cfgDir, 'hooks', 'gsd-check-update.sh');
+    fs.mkdirSync(path.dirname(staleWitness), { recursive: true });
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'global --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      /Wiped managed tree/.test(r2.stdout || ''),
+      'global --clean must report the wipe. stdout:\n' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive global --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after global --clean: ' +
+          filePath,
+      );
+    }
+
+    // The wipe actually ran. The stdout line above is printed by the caller of
+    // removeGsdFiles and is ungated on any deletion, so it is not evidence on
+    // its own; this absence check is.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by global --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after global --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(cfgDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'global manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── effort frontmatter sync integration tests ───────────────────────────────
 
 describe('install.js - Phase 55 effort frontmatter sync', () => {
