@@ -956,6 +956,97 @@ function cmdTodoComplete(cwd, filename) {
   output({ completed: true, file: resolvedName, date: today }, 'completed');
 }
 
+const LEADING_COMPLETED = /^(completed:[^\r\n]*)(\r?\n)(---\r?\n)/;
+
+/**
+ * Repair completed todos written by the historical `todo complete` bug that
+ * prepended `completed: <date>` above the opening `---`, leaving the file
+ * unparseable by extractFrontmatter's ^--- anchor.
+ *
+ * Only the exact known-malformed shape is touched: a leading `completed:`
+ * line, an immediately following opening fence, an intact closing fence, and
+ * no existing `completed:` key inside the fence. Anything else is skipped and
+ * reported rather than guessed at. Dry run unless opts.write is set.
+ */
+function cmdTodoRepair(cwd, opts = {}) {
+  const dryRun = !opts.write;
+  const { todosCompleted } = planningPaths(cwd);
+
+  const repaired = [];
+  const alreadyCorrect = [];
+  const skipped = [];
+
+  let files = [];
+  try {
+    files = fs
+      .readdirSync(todosCompleted)
+      .filter((f) => f.endsWith('.md'))
+      .sort();
+  } catch {
+    files = [];
+  }
+
+  for (const file of files) {
+    const full = path.join(todosCompleted, file);
+    const content = fs.readFileSync(full, 'utf-8');
+
+    if (/^---\r?\n/.test(content)) {
+      alreadyCorrect.push(file);
+      continue;
+    }
+
+    const match = LEADING_COMPLETED.exec(content);
+    if (!match || match.index !== 0) {
+      skipped.push({
+        file,
+        reason: 'no leading completed: line above a fence',
+      });
+      continue;
+    }
+
+    const rest = content.slice(match[1].length + match[2].length);
+    const fence = rest.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!fence) {
+      skipped.push({ file, reason: 'no closing frontmatter fence' });
+      continue;
+    }
+    if (/^completed:/m.test(fence[1])) {
+      skipped.push({ file, reason: 'completed: already present inside fence' });
+      continue;
+    }
+
+    if (!dryRun) {
+      const fixed = content.replace(
+        LEADING_COMPLETED,
+        (_m, line, nl, open) => `${open}${line}${nl}`,
+      );
+      fs.writeFileSync(full, fixed, 'utf-8');
+    }
+    repaired.push(file);
+  }
+
+  const counts = {
+    total: files.length,
+    repaired: repaired.length,
+    already_correct: alreadyCorrect.length,
+    skipped: skipped.length,
+  };
+
+  const summary = dryRun
+    ? `dry-run: would repair ${counts.repaired}, ${counts.already_correct} already correct, ${counts.skipped} skipped (re-run with --write to apply)`
+    : `repaired ${counts.repaired}, ${counts.already_correct} already correct, ${counts.skipped} skipped`;
+
+  const result = {
+    dry_run: dryRun,
+    counts,
+    repaired,
+    already_correct: alreadyCorrect,
+    skipped,
+  };
+  output(result, summary);
+  return result;
+}
+
 /**
  * List pending todo filenames whose frontmatter phase field matches the given phase number.
  *
@@ -5127,6 +5218,7 @@ module.exports = {
   isRecurringDue,
   cmdTodoAdd,
   cmdTodoComplete,
+  cmdTodoRepair,
   cmdTodoListByPhase,
   cmdTodoScanPhaseLinked,
   cmdRecurringDue,

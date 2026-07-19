@@ -12,6 +12,7 @@ const {
   createTempProject,
   createTempGitProject,
   cleanup,
+  cleanupSubdir,
   resolveTmpDir,
 } = require('./helpers.cjs');
 const { extractFrontmatter } = require('../gsd-ng/bin/lib/frontmatter.cjs');
@@ -13425,5 +13426,162 @@ describe('SEC40-SCANWRITE — cmdIssueSync', () => {
       result.synced.length > 0,
       `benign sync must complete, got ${JSON.stringify(result)}`,
     );
+  });
+});
+
+describe('todo repair', () => {
+  let tmpDir;
+  let completedDir;
+
+  const MALFORMED =
+    'completed: 2026-01-15\n---\ncreated: 2026-01-02T10:00:00.000Z\ntitle: Fix the thing\narea: general\n---\n\nBody text here.\n';
+  const CORRECT =
+    '---\ncompleted: 2026-01-15\ncreated: 2026-01-02T10:00:00.000Z\ntitle: Fix the thing\narea: general\n---\n\nBody text here.\n';
+
+  const write = (name, content) =>
+    fs.writeFileSync(path.join(completedDir, name), content, 'utf-8');
+  const read = (name) =>
+    fs.readFileSync(path.join(completedDir, name), 'utf-8');
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    completedDir = path.join(tmpDir, '.planning', 'todos', 'completed');
+    fs.mkdirSync(completedDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('repairs a malformed file so title and completed both parse', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('a.md', MALFORMED);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 1);
+    const fm = extractFrontmatter(read('a.md'));
+    assert.strictEqual(fm.title, 'Fix the thing');
+    assert.strictEqual(fm.completed, '2026-01-15');
+    assert.match(read('a.md'), /Body text here\.\n$/, 'body and trailing newline preserved');
+  });
+
+  test('dry run is the default and writes nothing', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('a.md', MALFORMED);
+    const r = cmdTodoRepair(tmpDir, {});
+    assert.strictEqual(r.dry_run, true);
+    assert.strictEqual(r.repaired.length, 1);
+    assert.strictEqual(read('a.md'), MALFORMED, 'file untouched in dry run');
+  });
+
+  test('an already-correct file is untouched byte-for-byte', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('ok.md', CORRECT);
+    const before = fs.readFileSync(path.join(completedDir, 'ok.md'));
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 0);
+    assert.strictEqual(r.already_correct.length, 1);
+    assert.ok(before.equals(fs.readFileSync(path.join(completedDir, 'ok.md'))));
+  });
+
+  test('an unrecognised shape is skipped and reported, not mangled', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    const weird = 'completed: 2026-01-15\ntitle: no fence at all\n';
+    write('weird.md', weird);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 0);
+    assert.deepStrictEqual(
+      r.skipped.map((s) => s.file),
+      ['weird.md'],
+    );
+    assert.strictEqual(read('weird.md'), weird, 'left byte-for-byte');
+  });
+
+  test('refuses a completed: line that is not the very first line', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    const midFile =
+      'notes: something\ncompleted: 2026-01-15\n---\ntitle: T\n---\n\nBody\n';
+    write('mid.md', midFile);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 0, 'only a leading completed: is known-malformed');
+    assert.deepStrictEqual(r.skipped, [
+      { file: 'mid.md', reason: 'no leading completed: line above a fence' },
+    ]);
+    assert.strictEqual(read('mid.md'), midFile, 'left byte-for-byte');
+  });
+
+  test('refuses a leading completed: line whose fence is never closed', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    const unterminated = 'completed: 2026-01-15\n---\ntitle: T\nno closing fence\n';
+    write('open.md', unterminated);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 0, 'must not rewrite an unterminated fence');
+    assert.strictEqual(r.skipped.length, 1);
+    assert.match(r.skipped[0].reason, /closing/);
+    assert.strictEqual(read('open.md'), unterminated, 'left byte-for-byte');
+  });
+
+  test('refuses a file that already has completed inside the fence', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    const dup = 'completed: 2026-01-15\n---\ncompleted: 2025-09-09\ntitle: T\n---\n\nBody\n';
+    write('dup.md', dup);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.repaired.length, 0);
+    assert.strictEqual(r.skipped.length, 1);
+    assert.strictEqual(read('dup.md'), dup);
+  });
+
+  test('running twice changes nothing the second time', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('a.md', MALFORMED);
+    cmdTodoRepair(tmpDir, { write: true });
+    const afterFirst = fs.readFileSync(path.join(completedDir, 'a.md'));
+    const r2 = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r2.repaired.length, 0, 'second run repairs nothing');
+    assert.strictEqual(r2.already_correct.length, 1);
+    assert.ok(afterFirst.equals(fs.readFileSync(path.join(completedDir, 'a.md'))));
+  });
+
+  test('preserves CRLF line endings when repairing', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('crlf.md', MALFORMED.replace(/\n/g, '\r\n'));
+    cmdTodoRepair(tmpDir, { write: true });
+    const out = read('crlf.md');
+    assert.ok(!/(?<!\r)\n/.test(out), 'no bare LF introduced');
+    assert.strictEqual(extractFrontmatter(out).title, 'Fix the thing');
+  });
+
+  test('reports counts across a mixed directory', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    write('a.md', MALFORMED);
+    write('b.md', MALFORMED);
+    write('ok.md', CORRECT);
+    write('weird.md', 'no frontmatter at all\n');
+    write('notes.txt', MALFORMED);
+    const r = cmdTodoRepair(tmpDir, { write: true });
+    assert.strictEqual(r.counts.repaired, 2);
+    assert.strictEqual(r.counts.already_correct, 1);
+    assert.strictEqual(r.counts.skipped, 1);
+    assert.strictEqual(r.counts.total, 4, 'non-.md files are not considered');
+    assert.strictEqual(read('notes.txt'), MALFORMED, 'non-.md left untouched');
+  });
+
+  test('CLI: todo repair defaults to dry run, --write applies', () => {
+    write('a.md', MALFORMED);
+    const dry = runGsdTools(['todo', 'repair', '--json'], tmpDir);
+    assert.ok(dry.success, dry.error);
+    assert.strictEqual(JSON.parse(dry.output).dry_run, true);
+    assert.strictEqual(read('a.md'), MALFORMED);
+
+    const applied = runGsdTools(['todo', 'repair', '--write', '--json'], tmpDir);
+    assert.ok(applied.success, applied.error);
+    assert.strictEqual(JSON.parse(applied.output).counts.repaired, 1);
+    assert.strictEqual(extractFrontmatter(read('a.md')).title, 'Fix the thing');
+  });
+
+  test('missing completed directory reports zero totals rather than erroring', () => {
+    const { cmdTodoRepair } = require('../gsd-ng/bin/lib/commands.cjs');
+    cleanupSubdir(tmpDir, '.planning', 'todos', 'completed');
+    const r = cmdTodoRepair(tmpDir, {});
+    assert.strictEqual(r.counts.total, 0);
   });
 });

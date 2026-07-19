@@ -93,6 +93,7 @@
  * Todos:
  *   todo add --title T [--area A]      Create a pending todo
  *   todo complete <id>                 Move todo from pending to completed (.md optional)
+ *   todo repair [--write]              Fix completed todos with completed: above the fence (dry run by default)
  *
  * Scaffolding:
  *   scaffold context --phase <N>       Create CONTEXT.md template
@@ -286,7 +287,7 @@ const SUBCOMMANDS = {
   phase: ['next-decimal', 'add', 'insert', 'remove', 'complete'],
   milestone: ['complete'],
   validate: ['consistency', 'health'],
-  todo: ['add', 'complete', 'list-by-phase', 'scan-phase-linked'],
+  todo: ['add', 'complete', 'repair', 'list-by-phase', 'scan-phase-linked'],
   init: [
     'execute-phase',
     'plan-phase',
@@ -433,6 +434,7 @@ const ARG_SCHEMAS = {
       ],
     },
     complete: { positional: { min: 1, max: 1 }, flags: [] },
+    repair: { positional: { min: 0, max: 0 }, flags: ['--write'] },
     'list-by-phase': { positional: { min: 1, max: 1 }, flags: [] },
     'scan-phase-linked': { positional: { min: 1, max: 1 }, flags: [] },
   },
@@ -1813,6 +1815,8 @@ async function main() {
         });
       } else if (subcommand === 'complete') {
         commands.cmdTodoComplete(cwd, args[2]);
+      } else if (subcommand === 'repair') {
+        commands.cmdTodoRepair(cwd, { write: args.includes('--write') });
       } else if (subcommand === 'list-by-phase') {
         commands.cmdTodoListByPhase(cwd, args[2]);
       } else if (subcommand === 'scan-phase-linked') {
