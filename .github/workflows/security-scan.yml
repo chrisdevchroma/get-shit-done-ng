@@ -20,8 +20,9 @@ on:
       - 'CLAUDE.md'
 
 permissions:
-  checks: write
+  contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   security-scan:
@@ -38,8 +39,44 @@ jobs:
           node-version: '22'
 
       - name: Run security scan
+        id: scan
+        # Deferred so the gate status is always published, including on a
+        # blocking verdict. The job is failed again by the final step.
+        continue-on-error: true
         run: node scripts/ci-security-scan.cjs
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # Publishes the `security-gate` commit status. This is the context to
+      # make required under branch protection; the override supersedes it by
+      # posting a newer status — see scripts/security-gate.cjs.
+      - name: Publish security-gate commit status
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { publishGateVerdict } = require(
+              `${process.env.GITHUB_WORKSPACE}/scripts/security-gate.cjs`
+            );
+            // Anything other than a clean exit is a blocking verdict: a scan
+            // that crashed or was skipped has not cleared the pull request.
+            const blocked = process.env.SCAN_OUTCOME !== 'success';
+            const status = await publishGateVerdict({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              headSha: context.payload.pull_request.head.sha,
+              blocked,
+            });
+            core.info(`Published ${status.context} status: ${status.state}`);
+
+      - name: Fail job on blocking verdict
+        if: steps.scan.outcome != 'success'
+        run: |
+          echo "Security scan reported a blocking verdict."
+          exit 1

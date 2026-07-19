@@ -172,6 +172,56 @@ When writing content to external systems (PR descriptions, issue comments):
 - Strip `<untrusted-content>` wrapper tags using `stripUntrustedWrappers()`
 - Tags are for internal agent use — external systems should not see them
 
+## CI Security Gate and Override
+
+Pull requests that touch agent-context paths are scanned by `.github/workflows/security-scan.yml`.
+The scan's verdict is published as a **commit status** under the context **`security-gate`**, posted
+by `scripts/security-gate.cjs`.
+
+The gate is posted on **every** run of the scan workflow, with state `success` or `failure`.
+
+A commit status rather than a check run is a deliberate choice. GitHub only permits the app that
+*created* a check run to update it, so an override that mutates a check run depends on an
+undocumented property of GitHub's authorization model that cannot be verified from inside this
+repository. Commit statuses carry no such restriction: any token with write access may post one,
+and the newest status for a context is the one that counts. The override therefore **supersedes**
+the failing gate by posting a newer status, rather than mutating an existing object.
+
+This also makes the mechanism portable. gsd-ng targets github, gitlab, forgejo and gitea; all four
+expose a commit-status API, and GitHub, Gitea and Forgejo share the route shape
+`POST /repos/{owner}/{repo}/statuses/{sha}`. Every platform call is isolated in `postGateStatus()`
+and `readGateStatus()`, so a port reimplements two functions. Only the GitHub client is implemented
+today.
+
+**Override flow.** A maintainer comments on the pull request:
+
+```
+/security-override: <reason>
+```
+
+`.github/workflows/security-override.yml` then calls `processOverride()`, which:
+
+1. Requires a non-empty reason.
+2. Verifies the commenter has `write`, `maintain` or `admin` permission.
+3. Reads the current `security-gate` status on the pull request head commit.
+4. If and only if that state is `failure`, posts a newer `success` status under the same context,
+   recording the author and reason in the description.
+
+The comment is the permanent audit trail and is never deleted.
+
+**Fail-closed properties.** The override never *creates* a gate from nothing — it only supersedes
+an existing `failure`. A commit that was never scanned has no gate status and cannot be passed by
+comment. A scan step that crashes or is skipped publishes `failure`, not `success`. If the workflow
+never completes, no gate status exists at all and a required context stays pending.
+
+Both workflows request `statuses: write` and no `checks:` scope.
+
+**Required follow-up (manual, repository settings).** None of this gates a merge until
+`security-gate` is added as a **required status check** under branch protection for the default and
+integration branches. No branch protection is configured today, so the gate is currently advisory.
+Add `security-gate` — not `security-scan`, which is the ordinary Actions job status — as the
+required context.
+
 ## Applicable Agents
 
 This reference applies to: import-issue, sync-issues, execute-phase (imported content), create-pr (outbound sanitization).

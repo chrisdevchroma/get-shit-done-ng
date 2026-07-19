@@ -577,7 +577,14 @@ describe('SEC40-CIOVERRIDE static validation', () => {
     );
   });
 
-  test('OVERRIDE-02: grants no write scope beyond the check run', () => {
+  // The override's logic lives in a require-able module so it can be driven
+  // against a stubbed client; the workflow is a thin caller. The assertions
+  // below therefore read the module where they used to read inline workflow
+  // script. Behavioural coverage lives in tests/security-override.test.cjs.
+  const GATE_MODULE = path.join(REPO_ROOT, 'scripts', 'security-gate.cjs');
+  const readGateModule = () => fs.readFileSync(GATE_MODULE, 'utf8');
+
+  test('OVERRIDE-02: grants no write scope beyond the commit status', () => {
     const yaml = readWorkflow(OVERRIDE_WF);
     const block = /^permissions:\n((?:\s{2}\S.*\n)+)/m.exec(yaml);
     assert.ok(block, 'the workflow must declare an explicit permissions block');
@@ -588,30 +595,30 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       .sort();
     assert.deepEqual(
       granted,
-      ['checks: write', 'pull-requests: read'],
-      'the override token must not gain any scope beyond flipping the check',
+      ['contents: read', 'pull-requests: read', 'statuses: write'],
+      'the override token must not gain any scope beyond posting the status',
     );
   });
 
   test('OVERRIDE-03: requires a non-empty reason', () => {
-    const yaml = readWorkflow(OVERRIDE_WF);
-    assert.match(yaml, /comment\.body\.match\(\/\^\\\/security-override:/);
+    const source = readGateModule();
+    assert.match(source, /\/\^\\\/security-override:/);
     assert.match(
-      yaml,
-      /if \(!match \|\| !match\[1\]\.trim\(\)\) \{[\s\S]{0,200}?core\.setFailed/,
-      'an override with a blank reason must fail, not proceed',
+      source,
+      /if \(!reason\) \{[\s\S]{0,200}?status: 'rejected'/,
+      'an override with a blank reason must be rejected, not proceed',
     );
-    // The comment is the audit trail, so the reason has to reach the check.
-    assert.match(yaml, /summary: `Override by @\$\{comment\.user\.login\}/);
+    // The comment is the audit trail, so the reason has to reach the status.
+    assert.match(source, /description: `Override by @\$\{username\}: \$\{reason\}`/);
   });
 
   test('OVERRIDE-04: authorizes the commenter, not an attacker-controlled actor', () => {
-    const yaml = readWorkflow(OVERRIDE_WF);
-    const call = /getCollaboratorPermissionLevel\(\{([\s\S]*?)\}\)/.exec(yaml);
-    assert.ok(call, 'the workflow must look up a permission level');
+    const source = readGateModule();
+    const call = /getCollaboratorPermissionLevel\(\{([\s\S]*?)\}\)/.exec(source);
+    assert.ok(call, 'the module must look up a permission level');
     assert.match(
       call[1],
-      /username:\s*comment\.user\.login/,
+      /\busername\b/,
       'the permission check must name the commenter',
     );
     assert.doesNotMatch(
@@ -619,8 +626,10 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       /github\.actor|context\.actor/,
       'the actor field is not the identity that requested the override',
     );
+    // `username` is derived from the comment author and nothing else.
+    assert.match(source, /comment\.user \? comment\.user\.login : null/);
 
-    const allowed = /const allowed = \[([^\]]*)\]/.exec(yaml);
+    const allowed = /const OVERRIDE_PERMISSIONS = \[([^\]]*)\]/.exec(source);
     assert.ok(allowed, 'the permission allow-list must be explicit');
     assert.deepEqual(
       allowed[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')),
@@ -628,40 +637,39 @@ describe('SEC40-CIOVERRIDE static validation', () => {
       'the allow-list must not silently widen',
     );
     assert.match(
-      yaml,
-      /if \(!allowed\.includes\(permission\.permission\)\) \{[\s\S]{0,200}?core\.setFailed/,
-      'an unauthorized commenter must fail the run',
+      source,
+      /if \(!OVERRIDE_PERMISSIONS\.includes\(level\)\) \{[\s\S]{0,200}?status: 'rejected'/,
+      'an unauthorized commenter must be rejected',
     );
   });
 
-  test('OVERRIDE-05: the check it looks for is the one the scan produces', () => {
-    const overrideYaml = readWorkflow(OVERRIDE_WF);
+  test('OVERRIDE-05: the gate it posts is the one the scan produces', () => {
+    const source = readGateModule();
     const scanYaml = readWorkflow(SCAN_WF);
+    const overrideYaml = readWorkflow(OVERRIDE_WF);
 
-    const wanted = /check_name:\s*'([^']+)'/.exec(overrideYaml);
-    assert.ok(wanted, 'the override must target a named check run');
+    // Both halves resolve the context from one constant, so scan and override
+    // cannot drift onto different contexts — the defect the previous
+    // check-name comparison guarded against.
+    const context = /const GATE_CONTEXT = '([^']+)'/.exec(source);
+    assert.ok(context, 'the gate context must be a single named constant');
+    assert.equal(context[1], 'security-gate');
 
-    const jobs = parseJobs(scanYaml);
     assert.equal(
-      jobs.length,
+      (source.match(/context: GATE_CONTEXT/g) || []).length,
       1,
-      'the scan workflow is expected to have one job',
+      'the context must be applied in exactly one place (postGateStatus)',
     );
-    const [job] = jobs;
+    assert.doesNotMatch(
+      source,
+      /context: '(?!security-gate)/,
+      'no call may post under a literal context other than the constant',
+    );
 
-    // A check run is named after the job's display name. Renaming the job —
-    // or giving it a `name:` — silently stops the override finding anything,
-    // and the workflow reports "nothing to override" rather than failing.
-    assert.equal(
-      job.name,
-      null,
-      `the scan job sets an explicit name (${job.name}); the override must then target that name, not the job id`,
-    );
-    assert.equal(
-      wanted[1],
-      job.id,
-      'the override looks for a check name the scan workflow no longer produces',
-    );
+    // Neither workflow may name a context of its own.
+    for (const yaml of [scanYaml, overrideYaml]) {
+      assert.doesNotMatch(yaml, /context:\s*['"]/);
+    }
   });
 
   test('OVERRIDE-06: both security workflows pass actionlint', (t) => {
