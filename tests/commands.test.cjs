@@ -9853,7 +9853,7 @@ describe('commands.cjs branch coverage residuals (60-11)', () => {
     const f = path.join(phaseDir, '00-CONTEXT.md');
     assert.ok(fs.existsSync(f));
     const c = fs.readFileSync(f, 'utf-8');
-    assert.match(c, /name: "Unnamed"/);
+    assert.match(c, /^name: Unnamed$/m);
     assert.match(c, /Phase 0: Unnamed — Context/);
   });
 
@@ -9864,7 +9864,7 @@ describe('commands.cjs branch coverage residuals (60-11)', () => {
     cmdScaffold(tmpDir, 'uat', { phase: '0' });
     const f = path.join(phaseDir, '00-UAT.md');
     assert.ok(fs.existsSync(f));
-    assert.match(fs.readFileSync(f, 'utf-8'), /name: "Unnamed"/);
+    assert.match(fs.readFileSync(f, 'utf-8'), /^name: Unnamed$/m);
   });
 
   test('cmdScaffold verification: bare-numeric phase dir falls back to "Unnamed"', () => {
@@ -9874,7 +9874,7 @@ describe('commands.cjs branch coverage residuals (60-11)', () => {
     cmdScaffold(tmpDir, 'verification', { phase: '0' });
     const f = path.join(phaseDir, '00-VERIFICATION.md');
     assert.ok(fs.existsSync(f));
-    assert.match(fs.readFileSync(f, 'utf-8'), /name: "Unnamed"/);
+    assert.match(fs.readFileSync(f, 'utf-8'), /^name: Unnamed$/m);
   });
 
   test('cmdScaffold context: phase_name from dir kicks in when no explicit name', () => {
@@ -9885,7 +9885,95 @@ describe('commands.cjs branch coverage residuals (60-11)', () => {
     cmdScaffold(tmpDir, 'context', { phase: '0' });
     const f = path.join(phaseDir, '00-CONTEXT.md');
     assert.ok(fs.existsSync(f));
-    assert.match(fs.readFileSync(f, 'utf-8'), /name: "myslug"/);
+    assert.match(fs.readFileSync(f, 'utf-8'), /^name: myslug$/m);
+  });
+
+  test('cmdScaffold context: name containing a quote cannot break frontmatter', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '00-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'context', { phase: '0', name: 'Ship "it" now' });
+    const c = fs.readFileSync(path.join(phaseDir, '00-CONTEXT.md'), 'utf-8');
+    assert.match(
+      c,
+      /^name: Ship "it" now$/m,
+      'mid-scalar quotes are legal plain YAML — emitted unwrapped, not broken',
+    );
+    assert.strictEqual(extractFrontmatter(c).name, 'Ship "it" now');
+    assert.ok(
+      extractFrontmatter(c).created,
+      'created still parses — fence intact',
+    );
+  });
+
+  test('cmdScaffold context: leading-quote name is quoted and escaped', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '00-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'context', { phase: '0', name: '"quoted" start' });
+    const c = fs.readFileSync(path.join(phaseDir, '00-CONTEXT.md'), 'utf-8');
+    assert.match(c, /^name: "\\"quoted\\" start"$/m);
+    assert.ok(
+      extractFrontmatter(c).created,
+      'created still parses — fence intact',
+    );
+  });
+
+  test('cmdScaffold uat: newline in name cannot inject a frontmatter key', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '00-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'uat', {
+      phase: '0',
+      name: 'Legit"\nstatus: approved\nowner: mallory',
+    });
+    const c = fs.readFileSync(path.join(phaseDir, '00-UAT.md'), 'utf-8');
+    const fm = extractFrontmatter(c);
+    assert.strictEqual(fm.owner, undefined, 'owner not injected');
+    assert.strictEqual(fm.status, 'pending', 'status not overridden');
+    assert.ok(fm.created, 'created key still parses — fence intact');
+  });
+
+  test('cmdScaffold verification: YAML indicator name stays a scalar', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '00-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'verification', { phase: '0', name: '*anchor "x"' });
+    const c = fs.readFileSync(path.join(phaseDir, '00-VERIFICATION.md'), 'utf-8');
+    assert.match(
+      c,
+      /^name: "\*anchor \\"x\\""$/m,
+      'indicator name quoted and escaped',
+    );
+    assert.strictEqual(extractFrontmatter(c).status, 'pending');
+  });
+
+  test('cmdScaffold context: benign name round-trips unquoted and readable', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '00-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'context', { phase: '0', name: 'Auth Hardening' });
+    const c = fs.readFileSync(path.join(phaseDir, '00-CONTEXT.md'), 'utf-8');
+    assert.match(c, /^name: Auth Hardening$/m, 'no gratuitous quoting');
+    assert.strictEqual(extractFrontmatter(c).name, 'Auth Hardening');
+  });
+
+  test('cmdScaffold context: non-numeric phase cannot inject a frontmatter key', () => {
+    const { cmdScaffold } = require('../gsd-ng/bin/lib/commands.cjs');
+    const dirName = 'zz" evil: yes-x';
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    cmdScaffold(tmpDir, 'context', { phase: 'zz" evil: yes', name: 'Ok' });
+    const c = fs.readFileSync(
+      path.join(phaseDir, 'zz" evil: yes-CONTEXT.md'),
+      'utf-8',
+    );
+    assert.match(
+      c,
+      /^phase: "zz\\" evil: yes"$/m,
+      'phase value quoted and escaped',
+    );
+    assert.strictEqual(extractFrontmatter(c).evil, undefined, 'no injected key');
   });
 
   // parseExternalRef: lines 1446/1449/1466. Test the action parsing branches

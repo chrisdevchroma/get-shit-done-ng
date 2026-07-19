@@ -1111,20 +1111,24 @@ function cmdScaffold(cwd, type, options) {
 
   let filePath, content;
 
+  const displayName = name || phaseInfo?.phase_name || 'Unnamed';
+  const fmName = yamlScalar(displayName);
+  const fmPhase = yamlScalar(padded);
+
   switch (type) {
     case 'context': {
       filePath = path.join(phaseDir, `${padded}-CONTEXT.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — Context\n\n## Decisions\n\n_Decisions will be captured during /gsd:discuss-phase ${phase}_\n\n## Discretion Areas\n\n_Areas where the executor can use judgment_\n\n## Deferred Ideas\n\n_Ideas to consider later_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\n---\n\n# Phase ${phase}: ${displayName} — Context\n\n## Decisions\n\n_Decisions will be captured during /gsd:discuss-phase ${phase}_\n\n## Discretion Areas\n\n_Areas where the executor can use judgment_\n\n## Deferred Ideas\n\n_Ideas to consider later_\n`;
       break;
     }
     case 'uat': {
       filePath = path.join(phaseDir, `${padded}-UAT.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — User Acceptance Testing\n\n## Test Results\n\n| # | Test | Status | Notes |\n|---|------|--------|-------|\n\n## Summary\n\n_Pending UAT_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${displayName} — User Acceptance Testing\n\n## Test Results\n\n| # | Test | Status | Notes |\n|---|------|--------|-------|\n\n## Summary\n\n_Pending UAT_\n`;
       break;
     }
     case 'verification': {
       filePath = path.join(phaseDir, `${padded}-VERIFICATION.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${displayName} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
       break;
     }
     case 'phase-dir': {
