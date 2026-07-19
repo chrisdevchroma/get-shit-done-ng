@@ -13,16 +13,10 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-// Exit code recorded when a test command is killed by the timeout rather than
-// exiting on its own. It must be distinct from both 0 (passed) and any real
-// non-zero exit: a killed run produces no TAP summary, so treating it as a
-// failing suite would record a red baseline for a suite whose state is simply
-// unknown — and a baseline that claims "already failing" suppresses new-failure
-// detection on the next comparison.
+// Must stay distinct from 0 and from any real non-zero exit: compareBaseline
+// treats a 'fail' baseline as licence to suppress new-failure detection.
 const TIMEOUT_EXIT_CODE = -2;
 
-// A suite that outgrows this cap is the normal reason for a timeout, so the
-// default is generous and the cap is overridable per project.
 const DEFAULT_TIMEOUT_MS = 600000;
 
 function resolveTimeoutMs() {
@@ -35,12 +29,8 @@ function resolveTimeoutMs() {
 /**
  * Run one test command, distinguishing "exited non-zero" from "never exited".
  *
- * execSync signals a timeout by killing the child. Observed error shape is
- * `code: 'ETIMEDOUT'`, `signal: 'SIGTERM'`, `status: null` — note `killed` is
- * undefined rather than true, so it is not a reliable discriminator and is not
- * tested for here. The old `err.status || 1` collapsed all of this into a plain
- * 1, which is why a timed-out capture was indistinguishable from a genuinely
- * failing suite.
+ * A timed-out execSync throws with `code: 'ETIMEDOUT'`, `signal: 'SIGTERM'`,
+ * `status: null`. `killed` is undefined, not true, so it cannot discriminate.
  *
  * @returns {{exitCode: number, output: string, timedOut: boolean}}
  */
@@ -131,8 +121,8 @@ function compareBaseline(entriesJson, baselineFile) {
     const { exitCode, output, timedOut } = runTestCommand(command, runDir);
 
     const baseline = baselines[dir] || { exit_code: -1 };
-    // A timed-out baseline is 'unknown', never 'fail'. Only a baseline that
-    // genuinely observed a red suite may suppress new-failure detection below.
+    // Only a baseline that genuinely observed a red suite may suppress
+    // new-failure detection below.
     const baselineStatus =
       baseline.exit_code === 0
         ? 'pass'
@@ -142,8 +132,6 @@ function compareBaseline(entriesJson, baselineFile) {
             ? 'unknown'
             : 'fail';
     const postStatus = exitCode === 0 ? 'pass' : 'fail';
-    // Fails safe in both directions: an unknown baseline cannot mask a new
-    // failure, and a post-run that never finished is not evidence of passing.
     const isNew = postStatus === 'fail' && baselineStatus !== 'fail';
     if (isNew) hasNewFailure = true;
 
