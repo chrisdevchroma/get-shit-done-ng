@@ -223,7 +223,16 @@ function extractBlockCommentText(content) {
       } else {
         const starIdx = line.indexOf('/*', pos);
         if (starIdx === -1) break;
-        if (isInsideString(line, starIdx)) { pos = starIdx + 2; continue; }
+        if (isInsideString(line, starIdx)) {
+          pos = starIdx + 2;
+          continue;
+        }
+        // A `/*` that appears after a `//` on the same line is text inside a
+        // line comment, not the start of a block. Treating it as a block start
+        // leaves the tracker unterminated, and every following line in the file
+        // is then handed to the detectors as comment text.
+        const slashIdx = line.indexOf('//', pos);
+        if (slashIdx !== -1 && slashIdx < starIdx && !isInsideString(line, slashIdx)) break;
         pos = starIdx + 2;
         inBlock = true;
       }
@@ -423,6 +432,19 @@ describe('comment-hygiene detectors', () => {
     fs.unlinkSync(tmpPath);
     assert.ok(violations.some(v => v.detector === 'Phase reference'),
       'Expected a Phase reference violation from block comment; got: ' + JSON.stringify(violations));
+  });
+
+  // ── extractBlockCommentText self-tests ────────────────────────────────
+  test('extractBlockCommentText ignores a block opener inside a line comment', () => {
+    const map = extractBlockCommentText(['// strip /** glob suffix', 'const SEC50 = 1;'].join('\n'));
+    // Line 1 must not leak into block state, or line 2 is scanned as comment text.
+    assert.equal(map.has(1), false);
+  });
+
+  test('extractBlockCommentText still tracks real block comments', () => {
+    const map = extractBlockCommentText(['/* start', 'middle', 'end */', 'code();'].join('\n'));
+    assert.ok(map.has(1));
+    assert.equal(map.has(3), false);
   });
 
   // ── findPlanningDocCitation self-tests ────────────────────────────────
