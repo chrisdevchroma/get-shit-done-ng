@@ -24,6 +24,7 @@ try {
   // Silent fail — statusline must never crash; banner simply won't show
 }
 const { execSync } = require('child_process');
+const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
 // ─── Utility: TTL-based file cache ──────────────────────────────────────────
 
@@ -185,15 +186,7 @@ function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
 
 // ─── Main statusline ──────────────────────────────────────────────────────────
 
-// Read JSON from stdin
-let input = '';
-// Timeout guard: if stdin doesn't close within 3s (e.g. pipe issues on
-// Windows/Git Bash), exit silently instead of hanging. See #775.
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => (input += chunk));
-process.stdin.on('end', () => {
-  clearTimeout(stdinTimeout);
+readStdinWithTimeout((input) => {
   try {
     const data = JSON.parse(input);
     const model = data.model?.display_name || 'Claude';
