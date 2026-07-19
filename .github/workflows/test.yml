@@ -15,6 +15,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # Single source for the pinned actionlint version. The dedicated actionlint
+  # job lints every workflow; the test matrix needs the same binary because the
+  # suite asserts the security workflows lint clean and treats an unavailable
+  # binary as a hard failure under CI.
+  ACTIONLINT_VERSION: '1.7.7'
+
 jobs:
   package-files-check:
     runs-on: ubuntu-latest
@@ -86,6 +93,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The suite asserts the security workflows pass actionlint and treats an
+      # absent binary as a hard failure when CI=true. This job runs on Linux and
+      # macOS, so the release asset is chosen from the runner's OS and
+      # architecture rather than hardcoded.
+      - name: Install actionlint
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) AL_OS=linux ;;
+            macOS) AL_OS=darwin ;;
+            *) echo "::error::unsupported runner OS for actionlint: $RUNNER_OS"; exit 1 ;;
+          esac
+          case "$RUNNER_ARCH" in
+            X64) AL_ARCH=amd64 ;;
+            ARM64) AL_ARCH=arm64 ;;
+            *) echo "::error::unsupported runner arch for actionlint: $RUNNER_ARCH"; exit 1 ;;
+          esac
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_${AL_OS}_${AL_ARCH}.tar.gz" -o "$RUNNER_TEMP/actionlint.tar.gz"
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$HOME/.local/bin" actionlint
+          chmod +x "$HOME/.local/bin/actionlint"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          actionlint --version
+
       - name: Run tests with coverage
         shell: bash
         run: npm run test:coverage
@@ -98,7 +129,6 @@ jobs:
       - name: Install actionlint
         shell: bash
         run: |
-          ACTIONLINT_VERSION="1.7.7"
           mkdir -p "$HOME/.local/bin"
           curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
           tar -xzf /tmp/actionlint.tar.gz -C "$HOME/.local/bin" actionlint
