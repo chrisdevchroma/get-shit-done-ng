@@ -840,11 +840,10 @@ function writeManifest(configDir, version) {
   const gsdDir = path.join(configDir, 'gsd-ng');
   const commandsDir = path.join(configDir, 'commands', 'gsd');
   const agentsDir = path.join(configDir, 'agents');
-  // `files_normalized` is an additive, optional companion map to `files`: same
-  // keys, normalised hashes, populated only for entries with GSD-managed
+  // `files_normalized` is an additive, optional companion map to `files`: the
+  // same key space, normalised hashes, populated only for entries with GSD-managed
   // frontmatter. Older installers ignore it; newer ones fall back to raw-hash
-  // comparison when a pre-existing manifest does not carry it. No schema bump
-  // is needed for either direction.
+  // comparison when a pre-existing manifest does not carry it.
   const manifest = { version: version || pkg.version, timestamp: new Date().toISOString(), schema_version: 2, files: {}, files_normalized: {} };
 
   const gsdHashes = generateManifest(gsdDir);
@@ -1776,7 +1775,7 @@ function install(isGlobal) {
           // config.json missing or unparseable — skip
         }
 
-        // All three sections are normalised before seeding, not just deny. Claude
+        // All three sections are normalised before seeding. Claude
         // Code's file permission checks match only Edit(path)/Read(path), so a
         // Write(path), NotebookEdit(path) or Glob(path) rule never fires — and
         // since v2.1.210 it also costs a startup warning, for allow, deny AND ask

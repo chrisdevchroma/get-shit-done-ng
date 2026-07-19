@@ -542,7 +542,7 @@ describe('ALLOW-23: normalizePermissionRules rewrites unmatched Tool(path) forms
   });
 
   test('the Edit/Write pair collapses to the single effective Edit rule', () => {
-    // The exact shape proposed in 36.1-01-PLAN.md:92-97 — Edit/Write pairs.
+    // Edit/Write pairs for the same path.
     // The Write half is decoration; de-dup must remove it, not preserve it.
     assert.deepStrictEqual(
       normalizePermissionRules(['Edit(.env)', 'Write(.env)', 'Edit(.env.*)', 'Write(.env.*)']),

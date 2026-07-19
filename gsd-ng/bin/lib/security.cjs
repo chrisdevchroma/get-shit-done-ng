@@ -297,7 +297,7 @@ const INJECTION_PATTERNS_TIERED = [
   // framings any more than English speakers do. Native-script only; homoglyph
   // normalization (normalizeForScan) handles cross-script evasion.
   // Canonical phrasings cross-checked against Lakera/deepset corpora and
-  // multi-translator references; see 50-RESEARCH.md §"Multi-language Patterns"
+  // multi-translator references, per the multi-language pattern research
   // and §"Pitfall 2" for translation provenance.
 
   // ML-DE-IGNORE-INSTR — German override instruction  // hygiene-allow: phase-ref

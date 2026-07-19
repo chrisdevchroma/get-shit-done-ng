@@ -285,7 +285,7 @@ function stateReplaceFieldWithFallback(content, fieldName, newValue) {
  *
  * Returns null when the phase cannot be located, which lets callers fall back
  * to whatever STATE.md claims — projects without on-disk phase directories
- * still get the old in-place behavior.
+ * still advance by incrementing the stored value.
  */
 function countCompletedPlansOnDisk(cwd, phaseRef) {
   if (!phaseRef) return null;
