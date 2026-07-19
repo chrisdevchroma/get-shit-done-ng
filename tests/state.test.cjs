@@ -4371,6 +4371,39 @@ describe('cmdStateAdvancePlan derives position from disk', () => {
     );
   });
 
+  test('reports a backwards correction as a rewind, not a plain advance', () => {
+    // STATE.md claims progress no SUMMARY on disk supports — deriving from disk
+    // corrects the position downwards. The position is right; calling that an
+    // advance without qualification is not.
+    seedPhase('64-08');
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, true);
+    assert.strictEqual(output.previous_plan, 8);
+    assert.strictEqual(output.current_plan, 1);
+    assert.strictEqual(
+      output.rewound,
+      true,
+      'a counter moving backwards must say so rather than read as forward progress',
+    );
+    assert.strictEqual(currentPlanInState(), '64-01');
+  });
+
+  test('a genuine forward advance is not flagged as a rewind', () => {
+    seedPhase();
+    completePlans(['64-01', '64-02']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.rewound, false);
+    assert.strictEqual(output.current_plan, 3);
+  });
+
   test('mid-phase wave advances past the plans it completed', () => {
     // STATE.md left at 64-02 by an earlier wave; plans 1-4 are now done.
     seedPhase('64-02');

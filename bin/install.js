@@ -63,6 +63,12 @@ const REQUIRED_HOOKS = [
 //
 // Entries are only needed for retirements predating the manifest hook record.
 // A hook retired from here on is covered automatically and needs no entry.
+//
+// INVARIANT: this list must not be emptied. The --clean wipe tests prove a full
+// managed-tree wipe by asserting a retired hook file is gone from the target;
+// that file only disappears because it is named here. With no entries the
+// assertion has nothing left to observe and would stop testing the wipe. Those
+// tests fail loudly if the last entry goes, so read this before "pruning" it.
 const RETIRED_GSD_HOOKS = ['gsd-check-update.sh'];
 
 /**

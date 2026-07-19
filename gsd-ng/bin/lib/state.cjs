@@ -420,9 +420,14 @@ function cmdStateAdvancePlan(cwd) {
     content = replaceField(content, 'Status', null, 'Ready to execute');
     content = replaceField(content, 'Last Activity', 'Last activity', today);
     writeStateMd(statePath, content, cwd);
+    // Deriving from disk can land *behind* the stored value — a STATE.md that
+    // claims more progress than the summaries on disk support gets corrected
+    // downwards. The new position is right, but calling that an advance reads
+    // as forward progress, so say plainly which way the counter moved.
     output(
       {
         advanced: true,
+        rewound: nextPlan < currentPlan,
         previous_plan: currentPlan,
         current_plan: nextPlan,
         total_plans: totalPlans,

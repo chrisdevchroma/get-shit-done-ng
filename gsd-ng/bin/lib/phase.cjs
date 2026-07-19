@@ -102,35 +102,182 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   return ids;
 }
 
-/**
- * Check off the given requirement IDs in REQUIREMENTS.md.
- * Returns true when the file was written. Idempotent: IDs already Complete
- * match neither pattern, so re-running a phase-close is a no-op for them.
- */
-function closePhaseRequirements(cwd, reqIds) {
-  const reqPath = planningPaths(cwd).requirements;
-  if (reqIds.length === 0 || !fs.existsSync(reqPath)) return false;
+// Status values the traceability table uses. Doubles as the signal that a
+// pipe-delimited line IS a traceability row: the third column of a real row is
+// always one of these, which no prose table in REQUIREMENTS.md reproduces.
+const TRACEABILITY_STATUSES = new Set([
+  'pending',
+  'in progress',
+  'complete',
+  'blocked',
+]);
 
-  let reqContent = fs.readFileSync(reqPath, 'utf-8');
+// Statuses a phase-close is allowed to overwrite. 'Complete' is already closed
+// and 'Blocked' is a human decision that closure must not silently revert.
+const CLOSEABLE_STATUSES = /^(?:pending|in progress)$/i;
+
+/**
+ * Parse the traceability table out of REQUIREMENTS.md lines.
+ *
+ * Column order is Requirement | Phase | Status, matching the template. Rows are
+ * identified by their status cell rather than by guessing at requirement-ID
+ * syntax, so a project using any ID convention is read correctly.
+ *
+ * @param {string[]} lines  REQUIREMENTS.md split on newlines
+ * @returns {Array<{lineIndex: number, id: string, phase: string, status: string}>}
+ */
+function parseTraceabilityRows(lines) {
+  const rows = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trimStart().startsWith('|')) continue;
+    // `| a | b | c |` splits to ['', ' a ', ' b ', ' c ', ''] — a three-column
+    // row is the minimum shape, hence at least five parts.
+    const cells = lines[i].split('|');
+    if (cells.length < 5) continue;
+    const id = cells[1].trim();
+    const phase = cells[2].trim();
+    const status = cells[3].trim();
+    if (!id || !TRACEABILITY_STATUSES.has(status.toLowerCase())) continue;
+    rows.push({ lineIndex: i, id, phase, status });
+  }
+  return rows;
+}
+
+/**
+ * Extract the phase identifiers named by a traceability table's phase cell.
+ *
+ * The cell is free text and is written inconsistently across projects: zero-
+ * padded, unpadded, decimal, letter-suffixed, and any of those optionally
+ * prefixed with the word "phase". When the cell does label its numbers that
+ * way, only the labelled ones count — so an incidental number in a
+ * parenthetical cannot be mistaken for a phase reference.
+ *
+ * @param {string} cell  raw phase-column text
+ * @returns {string[]}   phase identifiers, unnormalised
+ */
+function extractPhaseTokens(cell) {
+  const text = String(cell);
+  const labelled = text.match(/phases?\s*\d+[A-Za-z]?(?:\.\d+)*/gi);
+  const source = labelled ? labelled.join(' ') : text;
+  return source.match(/\d+[A-Za-z]?(?:\.\d+)*/g) || [];
+}
+
+/**
+ * Does a traceability row's phase cell name the phase being closed?
+ * Normalised comparison, so padded, unpadded and word-prefixed spellings of
+ * one phase are all recognised as that phase.
+ */
+function phaseCellNamesPhase(cell, phaseNum) {
+  return extractPhaseTokens(cell).some(
+    (token) => comparePhaseNum(token, phaseNum) === 0,
+  );
+}
+
+/**
+ * Check off the requirement IDs this phase is entitled to close in
+ * REQUIREMENTS.md.
+ *
+ * Entitlement is decided by the traceability table, not by the caller's list.
+ * The candidate IDs arrive from collectPhaseRequirementIds, which unions the
+ * roadmap section with plan frontmatter — and a plan may name an ID the table
+ * attributes to a phase that has not run. Closing it there would make the table
+ * assert that unstarted work is done, which is exactly the lie the table exists
+ * to prevent. Each candidate therefore falls into one of three cases:
+ *
+ *   - the table gives it a row for this phase → close the row and tick the box;
+ *   - the table gives it a row for some other phase → change nothing, and
+ *     return it so the caller can report it. Skipping silently would strand the
+ *     requirement: the declaring phase thinks it shipped it, the owning phase
+ *     may never run, and nobody is told;
+ *   - the table has no row for it at all → nothing can contradict the plan, so
+ *     tick the box, and return it as unmapped. This is the case that keeps a
+ *     project with no traceability table working.
+ *
+ * Idempotent: rows already Complete are not re-closed and the checkbox pattern
+ * no longer matches, so a repeated phase-close leaves the file byte-identical.
+ *
+ * @param {string} cwd
+ * @param {string[]} reqIds     candidate IDs collected for the phase
+ * @param {string|number} phaseNum  the phase being closed
+ * @returns {{updated: boolean, closed: string[],
+ *            otherPhase: Array<{id: string, phase: string}>, unmapped: string[]}}
+ */
+function closePhaseRequirements(cwd, reqIds, phaseNum) {
+  const result = { updated: false, closed: [], otherPhase: [], unmapped: [] };
+  const reqPath = planningPaths(cwd).requirements;
+  if (reqIds.length === 0 || !fs.existsSync(reqPath)) return result;
+
+  const lines = fs.readFileSync(reqPath, 'utf-8').split('\n');
+  const rows = parseTraceabilityRows(lines);
+  const hasTable = rows.length > 0;
+
+  const rowsById = new Map();
+  for (const row of rows) {
+    const key = row.id.toLowerCase();
+    if (!rowsById.has(key)) rowsById.set(key, []);
+    rowsById.get(key).push(row);
+  }
+
+  const rowsToClose = [];
+  const idsToCheck = [];
+
   for (const reqId of reqIds) {
-    const reqEscaped = escapeRegex(reqId);
+    const idRows = rowsById.get(reqId.toLowerCase()) || [];
+
+    if (idRows.length === 0) {
+      result.closed.push(reqId);
+      idsToCheck.push(reqId);
+      // Only meaningful as a discrepancy when there is a table to be absent
+      // from — a project without one has nothing to be inconsistent with.
+      if (hasTable) result.unmapped.push(reqId);
+      continue;
+    }
+
+    const ours = idRows.filter((r) => phaseCellNamesPhase(r.phase, phaseNum));
+    if (ours.length === 0) {
+      result.otherPhase.push({
+        id: reqId,
+        phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
+      });
+      continue;
+    }
+
+    result.closed.push(reqId);
+    rowsToClose.push(...ours);
+
+    // An ID split across several phases is only finished when no row still
+    // attributes outstanding work elsewhere — tick the box then, and not before.
+    const outstandingElsewhere = idRows.some(
+      (r) => !ours.includes(r) && r.status.toLowerCase() !== 'complete',
+    );
+    if (!outstandingElsewhere) idsToCheck.push(reqId);
+  }
+
+  if (result.closed.length === 0) return result;
+
+  for (const row of rowsToClose) {
+    if (!CLOSEABLE_STATUSES.test(row.status)) continue;
+    const cells = lines[row.lineIndex].split('|');
+    // Replace the cell's text, preserving its padding so the table stays aligned.
+    cells[3] = cells[3].replace(/\S.*\S|\S/, 'Complete');
+    lines[row.lineIndex] = cells.join('|');
+  }
+
+  let reqContent = lines.join('\n');
+  for (const reqId of idsToCheck) {
     // Checkbox: - [ ] **<id>** → - [x] **<id>**
     reqContent = reqContent.replace(
-      new RegExp(`(-\\s*\\[)[ ](\\]\\s*\\*\\*${reqEscaped}\\*\\*)`, 'gi'),
-      '$1x$2',
-    );
-    // Traceability table: | <id> | phase | Pending/In Progress | → | ... | Complete |
-    reqContent = reqContent.replace(
       new RegExp(
-        `(\\|\\s*${reqEscaped}\\s*\\|[^|]+\\|)\\s*(?:Pending|In Progress)\\s*(\\|)`,
+        `(-\\s*\\[)[ ](\\]\\s*\\*\\*${escapeRegex(reqId)}\\*\\*)`,
         'gi',
       ),
-      '$1 Complete $2',
+      '$1x$2',
     );
   }
 
   fs.writeFileSync(reqPath, reqContent, 'utf-8');
-  return true;
+  result.updated = true;
+  return result;
 }
 
 function cmdPhasesList(cwd, options) {
@@ -1113,6 +1260,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
     : null;
 
   let requirementIds = [];
+  let requirementsOtherPhase = [];
+  let requirementsUnmapped = [];
   if (requirementsBlockedBy) {
     // Verifier says the goal is not met — leave every ID Pending. A later
     // re-run after gap closure will pick them up.
@@ -1121,13 +1270,15 @@ function cmdPhaseComplete(cwd, phaseNum) {
     // obtains before reaching phase-close), or no VERIFICATION.md exists at all
     // because workflow.verifier is off. Verification is a qualifier, not a gate
     // — an absent report must not strand requirements as permanently Pending.
-    requirementIds = collectPhaseRequirementIds(
+    const closure = closePhaseRequirements(
       cwd,
+      collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent),
       phaseNum,
-      phaseInfo,
-      roadmapContent,
     );
-    requirementsUpdated = closePhaseRequirements(cwd, requirementIds);
+    requirementsUpdated = closure.updated;
+    requirementIds = closure.closed;
+    requirementsOtherPhase = closure.otherPhase;
+    requirementsUnmapped = closure.unmapped;
   }
 
   // Find next phase — check both filesystem AND roadmap
@@ -1281,6 +1432,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
     state_updated: fs.existsSync(statePath),
     requirements_updated: requirementsUpdated,
     requirements_closed: requirementIds,
+    requirements_other_phase: requirementsOtherPhase,
+    requirements_unmapped: requirementsUnmapped,
     verification_status: verificationStatus,
     requirements_blocked_by: requirementsBlockedBy,
   };
