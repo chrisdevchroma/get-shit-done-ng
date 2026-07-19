@@ -3092,14 +3092,20 @@ test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and pres
       fs.writeFileSync(filePath, body);
     }
 
-    // Why this test has no stale-wipe witness, unlike the Claude ones: on the
-    // Copilot runtime every location the wipe touches is ALSO cleared by the
-    // ordinary install that follows it — skills/gsd-* and agents/gsd-*.agent.md
-    // use the same predicates, gsd-ng/ is removed before it is re-copied, and
-    // hooks/gsd-hooks.json is overwritten unconditionally. So the wipe leaves no
-    // observable trace here and no absence check can distinguish it from a
-    // no-op. Pin that redundancy rather than claim a guard this test cannot
-    // have: a plain reinstall alone already removes a stale gsd- skill dir.
+    // Why this LOCAL test has no stale-wipe witness: for a local Copilot
+    // install every location the wipe touches is ALSO cleared by the ordinary
+    // install that follows it — skills/gsd-* and agents/gsd-*.agent.md are
+    // deleted by the same wildcard predicates (so even a name from an older
+    // release that no longer ships is removed), gsd-ng/ is removed before it is
+    // re-copied, and hooks/gsd-hooks.json is rewritten unconditionally. The
+    // equivalence is real but scoped to --local: on --global the installer
+    // skips the hooks step entirely, so hooks/gsd-hooks.json is wiped and never
+    // written back. The global Copilot test below witnesses that.
+    //
+    // TRIPWIRE: if the assertion below starts failing, a plain reinstall has
+    // stopped clearing stale gsd- skills and the wipe has become load-bearing
+    // for local installs too. Do not delete the assertion — give this test a
+    // real absence witness instead.
     const staleSkill = path.join(configDir, 'skills', 'gsd-zz-stale', 'SKILL.md');
     fs.mkdirSync(path.dirname(staleSkill), { recursive: true });
     fs.writeFileSync(staleSkill, 'stale-gsd-owned-file');
@@ -3261,6 +3267,96 @@ test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves u
       manifest.schema_version,
       2,
       'global manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean --global on Copilot has an observable wipe witness ─────
+
+test('CLEANEV-04: --clean --global on the Copilot runtime deletes a hook file a plain reinstall leaves behind', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-04-'));
+  try {
+    const cfgDir = path.join(tmpDir, 'fakehome', '.copilot');
+    fs.mkdirSync(cfgDir, { recursive: true });
+
+    // SAFETY: COPILOT_CONFIG_DIR is set on EVERY invocation below. getGlobalDir
+    // reads it ahead of the home directory, so the global target stays inside
+    // tmpDir. A single call missing it would target the real ~/.copilot.
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--global', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            COPILOT_CONFIG_DIR: cfgDir,
+          }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline global copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Containment gate — must hold before any --clean run. If the redirect is
+    // not honored the install landed elsewhere and this test must stop here.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'gsd-ng')),
+      'global copilot install must land in the redirected config dir, not the real home',
+    );
+
+    // Stale-wipe witness. hooks/gsd-hooks.json is GSD-owned and is in the
+    // wipe's delete list for this runtime, but the installer writes it only for
+    // local installs (global Copilot hooks are unsupported by the CLI). So on
+    // --global nothing recreates it and nothing else deletes it — exactly the
+    // shape that makes a wipe observable. This models version drift: a file a
+    // previous release wrote to a location the current release no longer
+    // manages.
+    const staleWitness = path.join(cfgDir, 'hooks', 'gsd-hooks.json');
+    fs.mkdirSync(path.dirname(staleWitness), { recursive: true });
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    // Half of the proof: the ordinary install path cannot remove it.
+    const rPlain = runInstall();
+    assert.strictEqual(
+      rPlain.status,
+      0,
+      'plain global copilot reinstall must exit 0\nstderr: ' + (rPlain.stderr || ''),
+    );
+    assert.ok(
+      fs.existsSync(staleWitness),
+      'a plain global copilot reinstall must NOT remove the stale hook file — ' +
+        'if it does, this witness is no longer wipe-specific and the test is ' +
+        'proving nothing: ' +
+        staleWitness,
+    );
+
+    // Other half: --clean does remove it. Together these show the wipe on the
+    // Copilot runtime is not observationally equivalent to a plain reinstall.
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'global copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned hook file must be deleted by global copilot --clean: ' +
+        staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'gsd-ng')),
+      'gsd-ng/ must be re-installed after global copilot --clean',
     );
   } finally {
     cleanup(tmpDir);

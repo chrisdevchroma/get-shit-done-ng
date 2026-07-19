@@ -1020,7 +1020,16 @@ function removeGsdFiles(targetDir, runtime) {
       }
     }
 
-    // Non-Claude runtime: remove only gsd-hooks.json (preserve user hooks)
+    // Non-Claude runtime: remove only gsd-hooks.json (preserve user hooks).
+    //
+    // This deletion is the load-bearing one on this runtime. The three above it
+    // are also performed by the ordinary install (skills/gsd-* and
+    // agents/gsd-*.agent.md are re-cleared by the same wildcard predicates,
+    // gsd-ng/ is removed before it is re-copied), so for a local install the
+    // wipe leaves no observable trace. But the installer writes gsd-hooks.json
+    // only for local installs — global Copilot hooks are unsupported by the CLI
+    // — so on a global target nothing else ever deletes this file. Removing
+    // this line would silently strand it.
     const gsdHooksJson = path.join(targetDir, 'hooks', 'gsd-hooks.json');
     if (fs.existsSync(gsdHooksJson)) {
       fs.unlinkSync(gsdHooksJson);
