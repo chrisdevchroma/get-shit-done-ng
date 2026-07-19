@@ -54,21 +54,14 @@ const REQUIRED_HOOKS = [
 
 // Hook filenames GSD shipped under an earlier name and no longer ships.
 //
-// The removal set is normally derived from what an install actually wrote (the
-// manifest's `installed_hooks`) plus what the running package ships, so a hook
-// renamed or retired in a later release still cleans itself up. This list is the
-// backstop for names retired *before* the manifest recorded hooks: nothing on
-// disk references them any more, so without an explicit entry they match neither
-// a removal source nor a shipped filename and would persist forever.
+// Removal candidates are normally derived from the manifest's `installed_hooks`
+// plus what the running package ships. Names retired *before* the manifest
+// recorded hooks match neither source and would persist forever, so they need an
+// explicit entry here; a hook retired from here on is covered automatically.
 //
-// Entries are only needed for retirements predating the manifest hook record.
-// A hook retired from here on is covered automatically and needs no entry.
-//
-// INVARIANT: this list must not be emptied. The --clean wipe tests prove a full
-// managed-tree wipe by asserting a retired hook file is gone from the target;
-// that file only disappears because it is named here. With no entries the
-// assertion has nothing left to observe and would stop testing the wipe. Those
-// tests fail loudly if the last entry goes, so read this before "pruning" it.
+// INVARIANT: this list must not be emptied. The --clean wipe tests assert a
+// retired hook file is gone from the target, and it only disappears because it
+// is named here.
 const RETIRED_GSD_HOOKS = ['gsd-check-update.sh'];
 
 /**
@@ -781,23 +774,17 @@ function fileHash(filePath) {
 }
 
 // ─── GSD-managed frontmatter (agent files) ───────────────────────────────────
-// Deployed agents/*.md are rewritten by GSD itself after install, whenever the
-// user makes a supported config change: /gsd:set-profile and
-// `config-set effort_overrides.*` both call syncAgentEffortFrontmatter(), which
-// re-serialises the whole frontmatter block (managed `effort:` value changes,
-// YAML comments drop out, values pick up canonical quoting). A raw sha256 of
-// such a file therefore diverges from the manifest without the user having
-// touched it — so agent entries carry a SECOND, normalised hash taken over the
-// canonicalised frontmatter minus the managed keys, plus the untouched body.
-// Config-driven churn is invisible to that hash; a real edit to the body or to
-// any non-managed frontmatter value still shows up.
+// syncAgentEffortFrontmatter() re-serialises the whole frontmatter block of a
+// deployed agents/*.md on any supported config change, so a raw sha256 diverges
+// from the manifest without the user having touched the file. Agent entries
+// therefore carry a SECOND hash, taken over the canonicalised frontmatter minus
+// the managed keys plus the untouched body: config churn is invisible to it, a
+// real edit still shows up.
 //
-// Known gap: because extractFrontmatter() discards comment lines and
-// spliceFrontmatter() never re-emits them, an edit made *inside* a frontmatter
-// YAML comment is normalised away and is neither reported nor backed up. Agent
-// files ship a commented-out `# hooks:` block that invites exactly that kind of
-// customisation, so this is reachable — though uncommenting the block (the more
-// likely edit) changes real keys and is detected normally.
+// Known gap: extractFrontmatter() discards comment lines and spliceFrontmatter()
+// never re-emits them, so an edit made *inside* a frontmatter YAML comment is
+// normalised away and is neither reported nor backed up. Agent files ship a
+// commented-out `# hooks:` block that invites exactly that edit.
 
 const MANAGED_AGENT_FRONTMATTER_KEYS = ['effort'];
 
@@ -1075,7 +1062,7 @@ function removeGsdFiles(targetDir, runtime) {
       }
     }
 
-    // 4. Remove GSD-owned hook files only (preserve user hooks)
+    // 4. Remove GSD-owned hook files
     const hooksDir = path.join(targetDir, 'hooks');
     if (fs.existsSync(hooksDir)) {
       for (const hook of gsdOwnedHookNames(targetDir, runtime)) {
@@ -1112,7 +1099,7 @@ function removeGsdFiles(targetDir, runtime) {
       }
     }
 
-    // Non-Claude runtime: remove only GSD-owned hook files (preserve user hooks).
+    // Non-Claude runtime: remove only GSD-owned hook files.
     // Today that set is the single gsd-hooks.json descriptor.
     //
     // This deletion is the load-bearing one on this runtime. The three above it
@@ -1781,13 +1768,8 @@ function install(isGlobal) {
           // config.json missing or unparseable — skip
         }
 
-        // All three sections are normalised before seeding. Claude
-        // Code's file permission checks match only Edit(path)/Read(path), so a
-        // Write(path), NotebookEdit(path) or Glob(path) rule never fires — and
-        // since v2.1.210 it also costs a startup warning, for allow, deny AND ask
-        // alike. normalizePermissionRules folds each unmatched form into its
-        // effective spelling and de-dups, so no such rule can reach a user's
-        // settings.json from any section we seed.
+        // All three sections are normalised before seeding — see
+        // normalizePermissionRules in gsd-ng/bin/lib/allowlist.cjs.
         const templateAllow = normalizePermissionRules([...baseTemplateAllow, ...platformRw, ...dynamicEntries]);
         const templateDeny  = normalizePermissionRules(sandboxTemplate.permissions?.deny ?? []);
         const templateAsk   = normalizePermissionRules(sandboxTemplate.permissions?.ask  ?? []);
