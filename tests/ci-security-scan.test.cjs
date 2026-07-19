@@ -514,8 +514,7 @@ test('SCAN-MAIN-03: the real entry point passes a clean pull request payload', a
   );
 
   // Without these the test would pass just as well against a payload that was
-  // filtered out of scope and never scanned at all — which is the failure mode
-  // that let a 6%-coverage gate ship green.
+  // filtered out of scope and never scanned at all.
   assert.ok(
     lines.some((l) => /1 files scanned/.test(l)),
     `the clean file must actually have been scanned, got:\n${lines.join('\n')}`,
@@ -641,7 +640,7 @@ function findActionlintBinary() {
     execFileSync('actionlint', ['--version'], { stdio: 'ignore' });
     return 'actionlint';
   } catch {
-    // not on PATH
+    /* fall through to the vendored copy */
   }
   const vendored = path.join(REPO_ROOT, '.bin', 'actionlint');
   return fs.existsSync(vendored) ? vendored : null;

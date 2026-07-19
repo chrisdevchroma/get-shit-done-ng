@@ -2,23 +2,13 @@
 
 // SIMULATION BOUNDARY — read before trusting these tests.
 //
-// This file simulates the CLI layer of the Rule of Two gate only. It drives the
-// real `issue-import` command as a subprocess against a poisoned fixture issue
-// and asserts on process exit status, emitted text, the filesystem, and the
-// security event log.
+// This file simulates the CLI layer of the Rule of Two gate only, driving the
+// real `issue-import` command as a subprocess against a poisoned fixture issue.
 //
 // It does NOT prove agent behaviour. The gate's user-facing half lives in a
-// markdown workflow that an agent interprets, and nothing here executes that
-// workflow. Specifically, the live-fire check that asks whether the agent
-// presents AskUserQuestion with both options — the "surfaces a choice" half of
-// the gate — remains UNVERIFIED and needs a real interactive agent session.
-//
-// What automation reaches, and what this file therefore covers:
-//   - the [SECURITY] error is emitted and the detected rule is named
-//   - nothing is written to disk while blocked
-//   - the documented override flag both writes and wraps untrusted content
-//   - the override is recorded in the audit log
-// What it does not reach: whether an agent obeys any of that.
+// markdown workflow that an agent interprets, and nothing here executes it —
+// so whether the agent presents AskUserQuestion with both options, the
+// "surfaces a choice" half of the gate, remains UNVERIFIED.
 
 const fs = require('fs');
 const path = require('path');

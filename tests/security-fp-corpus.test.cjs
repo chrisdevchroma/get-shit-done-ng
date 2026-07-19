@@ -10,10 +10,9 @@
 //   planning prose where the false positives were actually measured.
 //
 //   Corpus B — tests/fixtures/security-coverage/gsd-prose-benign.jsonl, a
-//   hand-authored corpus of GSD-shaped planning prose. The measurement that
-//   motivated this suite was taken over a workspace .planning/ directory, which
-//   is not part of this repository and does not exist in a fresh clone. Corpus B
-//   reproduces those patterns somewhere the suite can reach them; without it,
+//   hand-authored corpus of GSD-shaped planning prose. The prose these false
+//   positives occur in lives in a workspace .planning/ directory, which is not
+//   in this repository and does not exist in a fresh clone; without Corpus B
 //   this file would freeze a near-zero number and prove nothing.
 //
 // The measurement helpers live in scripts/fp-report.cjs so that the suite and

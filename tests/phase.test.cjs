@@ -3366,20 +3366,10 @@ describe('cmdPhaseMerge edge cases (alias for plan acceptance)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// phase complete — requirement closure is a phase-close action
+// phase complete — requirement closure
 //
-// Closing requirements per-plan is wrong: several plans in a phase routinely
-// declare the same ID, so the ID would flip to Complete when the FIRST of them
-// finished rather than when it was satisfied. Under the wave-based parallel
-// execution execute-phase performs, "first" is just whichever agent won the race.
-//
-// Closure now happens once, in `phase complete`, on the verifier's authority.
-// These tests pin the three properties that move depends on:
-//   1. IDs are collected from ALL plans in the phase (union with the ROADMAP
-//      line), so moving closure later cannot become a never-closes bug.
-//   2. A failing VERIFICATION.md withholds closure entirely.
-//   3. An absent VERIFICATION.md does not — verification is a qualifier, not a
-//      gate, matching getPhaseCompletionStatus.
+// Verification is a qualifier, not a gate: a FAILING VERIFICATION.md withholds
+// closure, an ABSENT one does not (matching getPhaseCompletionStatus).
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('phase complete requirement closure', () => {
@@ -4384,10 +4374,9 @@ describe('phase complete reports a stale failing verification', () => {
   });
 });
 
-// Per-plan closure lives in prose, not code — the
-// executor agent and execute-plan workflow instructed the model to run
-// `requirements mark-complete` at the end of every plan. Deleting the code path
-// is not enough if the instruction survives, so guard the docs directly.
+// Per-plan closure is instruction-driven, not code-driven: removing the code
+// path does nothing while the agent docs still tell the model to close per plan,
+// so guard the docs directly.
 describe('requirements are not closed per-plan in workflow docs', () => {
   const REPO_ROOT = path.join(__dirname, '..');
   const PLAN_SCOPED_DOCS = [

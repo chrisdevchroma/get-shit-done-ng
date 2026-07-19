@@ -38,11 +38,8 @@
 //      Bare ``` and ```markdown / ```bash / ```text fences ARE linted:
 //      that is exactly where the continuation templates live.
 //
-// Structure mirrors docs-grep-lint.test.cjs: synthetic-input self-tests
-// prove the detector catches what it claims to and spares what it must,
-// then real-doc tests assert zero violations. A regression in the
-// detector would silently let real bugs through, so the self-tests are
-// load-bearing.
+// The synthetic-input self-tests are load-bearing: the real-doc tests
+// assert zero violations, which a silently broken detector also does.
 
 const fs = require('fs');
 const path = require('path');
@@ -101,9 +98,6 @@ function stripInlineCode(line) {
   return line.replace(/``[^`]*``/g, '').replace(/`[^`]*`/g, '');
 }
 
-// Detect a banned rendering-only tag on a line. Returns string reason or
-// null.
-//
 // The tag name must be followed by `>`, `/`, or whitespace, so GSD XML
 // tags that merely START with a banned name (`<sub-agent>`, `<mark-done>`)
 // are NOT flagged.
