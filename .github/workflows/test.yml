@@ -93,10 +93,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The suite asserts the security workflows pass actionlint and treats an
-      # absent binary as a hard failure when CI=true. This job runs on Linux and
-      # macOS, so the release asset is chosen from the runner's OS and
-      # architecture rather than hardcoded.
+      # The suite treats an absent actionlint as a hard failure when CI=true.
       - name: Install actionlint
         shell: bash
         run: |

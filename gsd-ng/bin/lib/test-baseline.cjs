@@ -121,8 +121,6 @@ function compareBaseline(entriesJson, baselineFile) {
     const { exitCode, output, timedOut } = runTestCommand(command, runDir);
 
     const baseline = baselines[dir] || { exit_code: -1 };
-    // Only a baseline that genuinely observed a red suite may suppress
-    // new-failure detection below.
     const baselineStatus =
       baseline.exit_code === 0
         ? 'pass'
