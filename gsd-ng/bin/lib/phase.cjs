@@ -257,9 +257,12 @@ function phaseCellNamesPhase(cell, phaseNum) {
  * roadmap section with plan frontmatter — and a plan may name an ID the table
  * attributes to a phase that has not run. Closing it there would make the table
  * assert that unstarted work is done, which is exactly the lie the table exists
- * to prevent. Each candidate therefore falls into one of three cases:
+ * to prevent. Each candidate therefore falls into one of four cases:
  *
  *   - the table gives it a row for this phase → close the row and tick the box;
+ *   - that row is Blocked → change nothing and return it as blocked. A block is
+ *     a human decision closure must not revert, and that applies to the checkbox
+ *     and to `closed` no less than to the row itself;
  *   - the table gives it a row for some other phase → change nothing, and
  *     return it so the caller can report it. Skipping silently would strand the
  *     requirement: the declaring phase thinks it shipped it, the owning phase
@@ -269,20 +272,29 @@ function phaseCellNamesPhase(cell, phaseNum) {
  *     project with no traceability table working.
  *
  * Idempotent: rows already Complete are not re-closed and the checkbox pattern
- * no longer matches, so a repeated phase-close leaves the file byte-identical.
+ * no longer matches, so a repeated phase-close leaves the file byte-identical and
+ * `updated` is false — it reports the write, not the attempt.
  *
  * @param {string} cwd
  * @param {string[]} reqIds     candidate IDs collected for the phase
  * @param {string|number} phaseNum  the phase being closed
  * @returns {{updated: boolean, closed: string[],
- *            otherPhase: Array<{id: string, phase: string}>, unmapped: string[]}}
+ *            otherPhase: Array<{id: string, phase: string}>, unmapped: string[],
+ *            blocked: Array<{id: string, status: string}>}}
  */
 function closePhaseRequirements(cwd, reqIds, phaseNum) {
-  const result = { updated: false, closed: [], otherPhase: [], unmapped: [] };
+  const result = {
+    updated: false,
+    closed: [],
+    otherPhase: [],
+    unmapped: [],
+    blocked: [],
+  };
   const reqPath = planningPaths(cwd).requirements;
   if (reqIds.length === 0 || !fs.existsSync(reqPath)) return result;
 
-  const lines = fs.readFileSync(reqPath, 'utf-8').split('\n');
+  const originalContent = fs.readFileSync(reqPath, 'utf-8');
+  const lines = originalContent.split('\n');
   const rows = parseTraceabilityRows(lines);
   const hasTable = rows.length > 0;
 
@@ -317,6 +329,21 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
       continue;
     }
 
+    // 'Complete' is not closeable but does mean done, so it must not count as
+    // held — that case is the idempotent re-run.
+    const held = ours.filter(
+      (r) =>
+        !CLOSEABLE_STATUSES.test(r.status) &&
+        r.status.trim().toLowerCase() !== 'complete',
+    );
+    if (held.length > 0) {
+      result.blocked.push({
+        id: reqId,
+        status: [...new Set(held.map((r) => r.status.trim()))].join(', '),
+      });
+      continue;
+    }
+
     result.closed.push(reqId);
     rowsToClose.push(...ours);
 
@@ -327,8 +354,6 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
     );
     if (!outstandingElsewhere) idsToCheck.push(reqId);
   }
-
-  if (result.closed.length === 0) return result;
 
   for (const row of rowsToClose) {
     if (!CLOSEABLE_STATUSES.test(row.status)) continue;
@@ -349,6 +374,8 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
       '$1x$2',
     );
   }
+
+  if (reqContent === originalContent) return result;
 
   fs.writeFileSync(reqPath, reqContent, 'utf-8');
   result.updated = true;
@@ -1386,6 +1413,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
   const verificationStale = staleSummaries.length > 0;
 
   let requirementIds = [];
+  let requirementsBlockedRows = [];
   let requirementsOtherPhase = [];
   let requirementsUnmapped = [];
   let requirementsUndeclared = [];
@@ -1418,6 +1446,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     const closure = closePhaseRequirements(cwd, collected.ids, phaseNum);
     requirementsUpdated = closure.updated;
     requirementIds = closure.closed;
+    requirementsBlockedRows = closure.blocked;
     requirementsOtherPhase = closure.otherPhase;
     requirementsUnmapped = closure.unmapped;
     requirementsUndeclared = collected.undeclared;
@@ -1574,6 +1603,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     state_updated: fs.existsSync(statePath),
     requirements_updated: requirementsUpdated,
     requirements_closed: requirementIds,
+    requirements_blocked_rows: requirementsBlockedRows,
     requirements_other_phase: requirementsOtherPhase,
     requirements_unmapped: requirementsUnmapped,
     requirements_undeclared: requirementsUndeclared,

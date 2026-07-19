@@ -632,7 +632,11 @@ assigns to a *different* phase is never closed here, however the plan frontmatte
 declares it — closing it would make the table assert that unstarted work is done.
 Such IDs come back in `requirements_other_phase`, and IDs missing from the table
 entirely come back in `requirements_unmapped`. An ID a summary claims but its plan
-never declared still closes, and comes back in `requirements_undeclared`.
+never declared still closes, and comes back in `requirements_undeclared`. An ID
+whose row for *this* phase reads `Blocked` does not close at all — the row, the
+checklist box and `requirements_closed` are all left alone, since a block is a
+human decision closure has no business reverting — and it comes back in
+`requirements_blocked_rows`.
 
 Closure is withheld entirely when VERIFICATION.md reports `gaps_found` or `halted`
 (`requirements_blocked_by`), and stays withheld until the gaps are closed and the
@@ -650,8 +654,8 @@ the deliberate override.)
 
 Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
 `requirements_closed`, `requirements_blocked_by`, `requirements_blocked_hint`,
-`requirements_other_phase`, `requirements_unmapped`, `requirements_undeclared`,
-`verification_stale`, `verification_stale_summaries`.
+`requirements_blocked_rows`, `requirements_other_phase`, `requirements_unmapped`,
+`requirements_undeclared`, `verification_stale`, `verification_stale_summaries`.
 
 **Report every non-empty discrepancy list to the user.** `requirements_other_phase`
 means a plan believed it delivered a requirement the roadmap owes to another phase
@@ -660,7 +664,9 @@ decide which. `requirements_unmapped` means the traceability table has a coverag
 gap that roadmap or milestone-gap planning should fill.
 `requirements_undeclared` means a plan delivered a requirement it never planned to —
 scope grew during execution, and the roadmap or the requirement's owning phase may
-now be wrong.
+now be wrong. `requirements_blocked_rows` means the phase shipped work against a
+requirement someone had marked Blocked; the block stands until that person clears
+it, so say which IDs were skipped rather than letting them look delivered.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md

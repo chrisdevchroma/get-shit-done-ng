@@ -3923,10 +3923,31 @@ describe('phase complete requirement closure', () => {
     const result = runGsdTools('phase complete 6 --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
+    const req = readRequirements();
     assert.match(
-      readRequirements(),
+      req,
       /\|\s*REQ-01\s*\|[^|]+\|\s*Blocked\s*\|/,
       'a Blocked row is a human decision, not something closure may overwrite',
+    );
+    assert.ok(
+      req.includes('- [ ] **REQ-01**'),
+      'the checklist box must not claim done while the row says Blocked',
+    );
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.requirements_closed.includes('REQ-01'),
+      'a requirement whose row closure refused to touch was not closed',
+    );
+    assert.deepStrictEqual(
+      output.requirements_blocked_rows,
+      [{ id: 'REQ-01', status: 'Blocked' }],
+      'and it is reported as blocked rather than silently dropped',
+    );
+    assert.strictEqual(
+      output.requirements_updated,
+      false,
+      'nothing was written, so nothing may be reported as updated',
     );
   });
 
@@ -4381,7 +4402,8 @@ describe('requirements are not closed per-plan in workflow docs', () => {
         .split('\n')
         .map((line, i) => ({ line, n: i + 1 }))
         .filter(({ line }) =>
-          /gsd-tools\.cjs["']?\s+requirements\s+mark-complete/.test(line),
+          // `.cjs` is optional: the bare spelling dominates these docs.
+          /gsd-tools(?:\.cjs)?["'`]?\s+requirements\s+mark-complete/.test(line),
         );
 
       assert.deepStrictEqual(
