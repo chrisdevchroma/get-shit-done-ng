@@ -33,18 +33,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// ── SAFE_BUILTINS — removed ───────────────────────────────────────────────────
-// Previously auto-approved shell builtins (cd, echo, printf, etc.) without any
-// allowlist entry. Removed because combining builtins with shell redirection
-// (e.g. `echo "x" > ~/.bashrc`, `read var < /etc/shadow`) introduces filesystem
-// side effects that bypass allow/deny intent. The Python upstream
-// (liberzon/claude-hooks) never had this feature.
-//
-// Builtins are now approved through the same allowlist path as everything else.
-// The settings-sandbox.json template already includes Bash(echo *),
-// Bash(cd *), etc. — so sandbox users see no change. Non-sandbox users must
-// explicitly allowlist builtins they want auto-approved.
-
 // ── Structural shell keywords — filter these out (not real commands) ──────────
 // Control/syntax constructs that are not checkable commands. Includes shell
 // syntax markers (done/fi/esac/then/else/elif/do/{/}), loop-control builtins
