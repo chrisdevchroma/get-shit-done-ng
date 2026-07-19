@@ -388,7 +388,7 @@ describe('swallowed-assertion detector', () => {
   });
 
   test('does not flag a catch containing no assertion in its try (teardown case)', () => {
-    const src = ['try {', '  fs.rmSync(dir, { recursive: true });', '} catch {}'].join('\n');
+    const src = ['try {', '  server.close();', '  fs.unlinkSync(sock);', '} catch {}'].join('\n');
     assert.deepStrictEqual(findSwallowedAssertions(src), []);
   });
 
