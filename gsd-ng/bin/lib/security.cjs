@@ -1097,6 +1097,55 @@ function sanitizeForPrompt(content, opts = {}) {
 // ─── wrapUntrustedContent ────────────────────────────────────────────────────
 
 /**
+ * Neutralise the containment sentinel inside untrusted content.
+ *
+ * The wrapper's whole value is the boundary: an agent is told to treat anything
+ * between the tags as data. Content that carries its own `</untrusted-content>`
+ * closes the boundary early, and every byte after it reads as trusted narration
+ * in a file the agent treats as project state. Nothing in the pattern set
+ * matches a bare sentinel, so such a body scans clean and arrives unannounced.
+ *
+ * Every `<` that begins an `untrusted-content` tag — opening or closing, any
+ * case, terminated or not — becomes `&lt;`. Escaping the lone `<` rather than
+ * the whole tag means a dangling `<untrusted-content` with no `>` is neutralised
+ * too, which matters because such a fragment would otherwise pair with the
+ * wrapper's own closer and swallow it as one long opening tag.
+ *
+ * One-way by design. stripUntrustedWrappers does NOT reverse this, so no
+ * round-trip through the outbound path can reconstitute a live sentinel. The
+ * cost is that an issue body legitimately discussing GSD's own wrapper reads as
+ * `&lt;/untrusted-content>` — visible, unambiguous, and inert.
+ *
+ * @param {string} content - Untrusted content
+ * @returns {string} Content with sentinel-forming '<' escaped
+ */
+function escapeUntrustedSentinels(content) {
+  return String(content).replace(/<(?=\/?untrusted-content)/gi, '&lt;');
+}
+
+/**
+ * Escape a value for use inside a double-quoted XML attribute.
+ *
+ * `source` reaches this function from CLI arguments (`--repo`), so an
+ * unescaped interpolation lets a caller inject further attributes:
+ * `--repo 'x" y="z'` produced `source="x" y="z"`. Newlines are escaped as well
+ * — the wrapper is written into files whose structure is line-oriented.
+ *
+ * @param {string} value - Raw attribute value
+ * @returns {string} Value safe to place between double quotes
+ */
+function escapeXmlAttribute(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    .replace(/\r/g, '&#13;')
+    .replace(/\n/g, '&#10;');
+}
+
+/**
  * Wrap external/untrusted content in XML tags for structural segregation.
  * Wrapped content is clearly delineated so agents can assess its provenance and
  * apply appropriate skepticism.
@@ -1105,12 +1154,23 @@ function sanitizeForPrompt(content, opts = {}) {
  *   {content}
  * </untrusted-content>
  *
+ * The tag name is a fixed, documented contract — references/security-untrusted-content.md
+ * teaches agents to distrust what sits inside it, the create-pr workflow greps
+ * for it, and contract tests assert it. Containment is therefore enforced by
+ * escaping the sentinel out of the content (see escapeUntrustedSentinels)
+ * rather than by randomising the tag name per call: a nonce would be robust
+ * against a body that guesses the tag, but it would also make the boundary
+ * unnameable in the very documentation that tells agents to respect it.
+ *
  * @param {string} content  - Content from external source (e.g., GitHub issue body)
  * @param {string} source   - Source identifier (e.g., 'github:#42', 'gitlab:!123')
- * @returns {string} Content wrapped in <untrusted-content> XML tags
+ * @returns {string} Content wrapped in <untrusted-content> XML tags, with any
+ *                   sentinel inside the content neutralised and `source` escaped
  */
 function wrapUntrustedContent(content, source) {
-  return `<untrusted-content source="${source}">\n${content}\n</untrusted-content>`;
+  const safeSource = escapeXmlAttribute(source);
+  const safeContent = escapeUntrustedSentinels(content);
+  return `<untrusted-content source="${safeSource}">\n${safeContent}\n</untrusted-content>`;
 }
 
 // ─── stripUntrustedWrappers ──────────────────────────────────────────────────
@@ -1120,14 +1180,24 @@ function wrapUntrustedContent(content, source) {
  * Used when building outbound content (PR bodies, issue comments) — wrapper tags
  * are for internal agent use and should not appear in external systems.
  *
+ * The pair match is non-greedy, so before wrapUntrustedContent escaped the
+ * sentinel a body carrying its own closing tag ended the match early: the strip
+ * consumed the wrapper's opener through the ATTACKER's closer and shipped the
+ * injected prose plus an orphan tag onward. Content produced by
+ * wrapUntrustedContent can no longer contain a raw sentinel, so that pairing is
+ * gone by construction. This function is nonetheless hardened for content of
+ * unknown provenance: after pairs are removed, any orphaned wrapper tag left
+ * behind is removed too, so no half-boundary can survive into an external
+ * system and imply a containment that is not there.
+ *
  * @param {string} content  - Content potentially containing <untrusted-content> wrappers
  * @returns {string} Content with wrapper tags removed, inner content preserved
  */
 function stripUntrustedWrappers(content) {
-  return content.replace(
-    /<untrusted-content[^>]*>([\s\S]*?)<\/untrusted-content>/g,
-    '$1',
-  );
+  return String(content)
+    .replace(/<untrusted-content[^>]*>([\s\S]*?)<\/untrusted-content>/g, '$1')
+    .replace(/<untrusted-content[^>]*>/gi, '')
+    .replace(/<\/untrusted-content\s*>/gi, '');
 }
 
 // ─── logSecurityEvent ────────────────────────────────────────────────────────
