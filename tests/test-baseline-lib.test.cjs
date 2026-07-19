@@ -66,7 +66,6 @@ test('test-baseline lib module', async (t) => {
     );
   });
 
-  // F-002: captureBaseline should not pollute stdout with progress messages
   await t.test(
     'F-002: captureBaseline progress output goes to stderr, not stdout',
     () => {
@@ -77,11 +76,16 @@ test('test-baseline lib module', async (t) => {
         const {
           captureBaseline,
         } = require('../gsd-ng/bin/lib/test-baseline.cjs');
-        // Intercept stdout to verify no progress is written there
         const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+        const originalStderrWrite = process.stderr.write.bind(process.stderr);
         const stdoutChunks = [];
+        const stderrChunks = [];
         process.stdout.write = (chunk) => {
           stdoutChunks.push(String(chunk));
+          return true;
+        };
+        process.stderr.write = (chunk) => {
+          stderrChunks.push(String(chunk));
           return true;
         };
         try {
@@ -91,8 +95,14 @@ test('test-baseline lib module', async (t) => {
           );
         } finally {
           process.stdout.write = originalStdoutWrite;
+          process.stderr.write = originalStderrWrite;
         }
         const stdoutOutput = stdoutChunks.join('');
+        const stderrOutput = stderrChunks.join('');
+        assert.ok(
+          stderrOutput.includes('.: passing'),
+          `captureBaseline must report per-entry progress on stderr, got: ${stderrOutput}`,
+        );
         assert.ok(
           !stdoutOutput.includes(': passing') &&
             !stdoutOutput.includes(': failing'),
