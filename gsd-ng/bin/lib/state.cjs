@@ -19,7 +19,11 @@ const {
   extractFrontmatter,
   reconstructFrontmatter,
 } = require('./frontmatter.cjs');
-const { scanForInjection, sanitizeForPrompt } = require('./security.cjs');
+const {
+  scanForInjection,
+  sanitizeForPrompt,
+  securityWarningFor,
+} = require('./security.cjs');
 
 function cmdStateLoad(cwd) {
   const config = loadConfig(cwd);
@@ -140,9 +144,23 @@ function cmdStateGet(cwd, section) {
     );
     const sectionMatch = content.match(sectionPattern);
     if (sectionMatch) {
-      const sectionContent = sanitizeForPrompt(sectionMatch[1].trim());
+      const sectionContent = sectionMatch[1].trim();
+      // Scan the section body, but keep the banner OUT of the string that gets
+      // parsed. Prepending it first and parsing afterwards let
+      // parseSectionContent read the banner's own "key: value" shape and
+      // swallow it into a pseudo-field, which destroyed the canonical
+      // `[SECURITY WARNING:` marker callers are told to look for. Structure the
+      // untrusted body, then attach the banner ahead of it — the same order the
+      // bold-field and plain-field branches already produce.
+      const warning = securityWarningFor(sectionContent);
       const structured = parseSectionContent(sectionContent);
-      output({ [section]: structured }, JSON.stringify(structured));
+      const display = JSON.stringify(structured);
+      output(
+        warning
+          ? { [section]: structured, security_warning: warning }
+          : { [section]: structured },
+        warning ? `${warning}\n\n${display}` : display,
+      );
       return;
     }
 

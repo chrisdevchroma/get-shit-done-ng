@@ -954,6 +954,40 @@ function scanForInjection(content, opts = {}) {
   };
 }
 
+// ─── securityWarningFor ──────────────────────────────────────────────────────
+
+/**
+ * Build the advisory banner for a piece of content, without attaching it.
+ *
+ * Callers that emit structured output (JSON, parsed sections) need the banner
+ * as a standalone value so they can place it themselves — concatenating it onto
+ * the content first and then parsing the result would let the parser consume
+ * the banner as data. `sanitizeForPrompt` is the string-concatenating case of
+ * this function; both share one banner format so the marker never drifts.
+ *
+ * @param {string} content  - Text to scan
+ * @param {object} [opts]   - Passed through to scanForInjection
+ * @returns {string|null} The `[SECURITY WARNING: ...]` banner, or null if clean
+ */
+function securityWarningFor(content, opts = {}) {
+  const result = scanForInjection(content, opts);
+  if (result.clean) {
+    return null;
+  }
+  const allFindings = [...result.blocked, ...result.findings];
+  // Surface "homoglyph evasion" phrase when any finding/blocked entry
+  // carries the [homoglyph-evasion] tag. This gives agents an explicit cue that
+  // a Unicode-substitution attack was attempted (no innocent reason to write
+  // "ignore previous instructions" with a Cyrillic а).
+  const evasionDetected = allFindings.some((f) =>
+    f.includes('[homoglyph-evasion]'),
+  );
+  const evasionPhrase = evasionDetected
+    ? 'Active prompt injection with homoglyph evasion detected. '
+    : '';
+  return `[SECURITY WARNING: ${evasionPhrase}potential injection detected (tier: ${result.tier}) — ${allFindings.join('; ')}]`;
+}
+
 // ─── sanitizeForPrompt ───────────────────────────────────────────────────────
 
 /**
@@ -966,23 +1000,12 @@ function scanForInjection(content, opts = {}) {
  * @returns {string} Content unchanged (if clean) or warning-prepended (if injection found)
  */
 function sanitizeForPrompt(content, opts = {}) {
-  const result = scanForInjection(content, opts);
-  if (result.clean) {
+  const warning = securityWarningFor(content, opts);
+  if (warning === null) {
     return content;
   }
   // Prepend advisory warning with tier — never strip or escape original content
-  const allFindings = [...result.blocked, ...result.findings];
-  // Surface "homoglyph evasion" phrase when any finding/blocked entry
-  // carries the [homoglyph-evasion] tag. This gives agents an explicit cue that
-  // a Unicode-substitution attack was attempted (no innocent reason to write
-  // "ignore previous instructions" with a Cyrillic а).
-  const evasionDetected = allFindings.some((f) =>
-    f.includes('[homoglyph-evasion]'),
-  );
-  const evasionPhrase = evasionDetected
-    ? 'Active prompt injection with homoglyph evasion detected. '
-    : '';
-  return `[SECURITY WARNING: ${evasionPhrase}potential injection detected (tier: ${result.tier}) — ${allFindings.join('; ')}]\n\n${content}`;
+  return `${warning}\n\n${content}`;
 }
 
 // ─── wrapUntrustedContent ────────────────────────────────────────────────────
@@ -1227,6 +1250,7 @@ module.exports = {
   requireSafePath,
   scanForInjection,
   sanitizeForPrompt,
+  securityWarningFor,
   validatePhaseNumber,
   validateFieldName,
   wrapUntrustedContent,

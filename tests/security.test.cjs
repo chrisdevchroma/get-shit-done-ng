@@ -1787,6 +1787,13 @@ describe('SEC40-SCANREAD — cmdStateGet', () => {
     );
   }
 
+  // Split "banner\n\npayload" at the first blank line. The banner is a single
+  // line, so the first blank line is always its terminator.
+  function splitBanner(out) {
+    const at = out.indexOf('\n\n');
+    return [out.slice(0, at), out.slice(at + 2)];
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-sec-stateget-'));
     fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
@@ -1814,13 +1821,10 @@ describe('SEC40-SCANREAD — cmdStateGet', () => {
       label: 'section',
       key: 'Notes',
       render: (value) => `## Notes\n\n${value}`,
-      // The section path re-parses the sanitized string through
-      // parseSectionContent before printing. That reparse splits the warning
-      // banner on its first colon and emits it as a pseudo-field keyed
-      // "[SECURITY WARNING" — see the dedicated test below. The banner text
-      // survives, but not the canonical `[SECURITY WARNING:` marker.
-      warningLeads: false,
-      warningMarker: '[SECURITY WARNING',
+      // The section path structures the body first and attaches the banner
+      // afterwards, so the banner leads the output intact — same as the two
+      // field paths. See the dedicated test below for the structured payload.
+      warningLeads: true,
     },
   ];
 
@@ -1873,32 +1877,61 @@ describe('SEC40-SCANREAD — cmdStateGet', () => {
     });
   }
 
-  // Characterization test for a known defect, NOT an endorsement of it.
-  // In section mode the sanitized string is fed back through
-  // parseSectionContent, which treats the warning banner's leading
-  // "[SECURITY WARNING: ..." line as a `key: value` field and splits it.
-  // The result is a pseudo-field named "[SECURITY WARNING", so the canonical
-  // marker documented in references/security-untrusted-content.md is absent
-  // from the output an agent actually reads. Content preservation and the
-  // never-block guarantee are unaffected. Tracked in deferred-items.md;
-  // fixing it means changing state.cjs, which is outside plan 64-01's scope.
-  test('KNOWN DEFECT: section mode mangles the warning banner into a pseudo-field', () => {
+  // Section mode structures the body and attaches the banner afterwards, so
+  // the banner is never fed back through parseSectionContent. Previously it
+  // was, and the parser read the banner's own "key: value" shape into a
+  // pseudo-field keyed "[SECURITY WARNING", destroying the canonical marker
+  // that references/security-untrusted-content.md tells agents to look for.
+  test('section mode emits the canonical marker intact, ahead of the structured body', () => {
     writeState(`## Notes\n\n${ATTACK}`);
 
     const result = runGsdTools(['state', 'get', 'Notes'], tmpDir);
     assert.strictEqual(result.success, true, result.error);
 
+    assert.ok(
+      result.output.startsWith('[SECURITY WARNING:'),
+      `banner must lead the output intact, got: ${result.output.slice(0, 120)}`,
+    );
+
+    // The banner precedes the payload rather than contaminating it: everything
+    // after the blank line must still be the parsed section, unmangled.
+    const [banner, body] = splitBanner(result.output);
+    assert.match(banner, /tier: high/);
+    const parsed = JSON.parse(body);
+    assert.strictEqual(
+      parsed.fields,
+      undefined,
+      `banner must not be parsed into a field, got: ${body}`,
+    );
+    assert.strictEqual(parsed.text, ATTACK);
+  });
+
+  test('section mode surfaces the marker as a sibling key under --json', () => {
+    writeState(`## Notes\n\n${ATTACK}`);
+
+    const result = runGsdTools(['state', 'get', 'Notes', '--json'], tmpDir);
+    assert.strictEqual(result.success, true, result.error);
+
     const parsed = JSON.parse(result.output);
     assert.ok(
-      Object.prototype.hasOwnProperty.call(parsed.fields, '[SECURITY WARNING'),
-      `expected the mangled pseudo-field, got: ${result.output.slice(0, 200)}`,
+      String(parsed.security_warning).startsWith('[SECURITY WARNING:'),
+      `--json must carry the marker, got: ${result.output.slice(0, 200)}`,
     );
+    assert.strictEqual(parsed.Notes.text, ATTACK);
+  });
+
+  test('section mode adds no security_warning key for benign content', () => {
+    writeState(`## Notes\n\n${BENIGN}`);
+
+    const result = runGsdTools(['state', 'get', 'Notes', '--json'], tmpDir);
+    assert.strictEqual(result.success, true, result.error);
+
+    const parsed = JSON.parse(result.output);
     assert.ok(
-      !result.output.includes('[SECURITY WARNING:'),
-      'if this now passes, the defect is fixed — delete this test and set warningLeads/warningMarker for section mode',
+      !Object.prototype.hasOwnProperty.call(parsed, 'security_warning'),
+      `benign section must carry no warning key, got: ${result.output}`,
     );
-    // The important guarantee still holds regardless of the mangling.
-    assert.strictEqual(parsed.text, ATTACK);
+    assert.strictEqual(parsed.Notes.text, BENIGN);
   });
 });
 
