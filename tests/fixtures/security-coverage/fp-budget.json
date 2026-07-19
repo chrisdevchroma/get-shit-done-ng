@@ -315,7 +315,7 @@
   },
   "gsd_prose": {
     "corpus": {
-      "entries": 46,
+      "entries": 49,
       "generated": "2026-07-19"
     },
     "pattern_fp": {
@@ -391,8 +391,8 @@
       }
     },
     "entropy_fp": {
-      "entries": 4,
-      "max_H": 5.57,
+      "entries": 5,
+      "max_H": 5.83,
       "examples": [
         {
           "ref": "gsdprose-entropy-04",
@@ -420,6 +420,13 @@
           "max_H": 5.57,
           "offsets": [
             "0-156"
+          ]
+        },
+        {
+          "ref": "gsdprose-class-lockfile-hashes",
+          "max_H": 5.83,
+          "offsets": [
+            "0-221"
           ]
         }
       ]

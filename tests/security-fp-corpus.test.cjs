@@ -211,3 +211,222 @@ describe('FP budget: pattern hits on benign content', () => {
     );
   });
 });
+
+// ── Entropy: decision boundary and real content ──────────────────────────────
+//
+// The pre-existing entropy fixtures sit at H~6.0 (a repeating base64 cycle) and
+// H~4.2 (one pangram repeated). Neither is anywhere near the 5.5 threshold, so
+// today a change from '>' to '>=', or a threshold moved by a tenth of a bit,
+// passes the suite untouched. The probes below close that gap.
+
+const THRESHOLD = 5.5; // security.cjs — mirrored here so a drift shows up as a failure
+
+function shannon(s) {
+  const freq = {};
+  for (const ch of s) freq[ch] = (freq[ch] || 0) + 1;
+  let H = 0;
+  for (const count of Object.values(freq)) {
+    const p = count / s.length;
+    H -= p * Math.log2(p);
+  }
+  return H;
+}
+
+// Deterministic input whose entropy is set by alphabet size: cycling n distinct
+// characters over a full window approaches log2(n). The achieved H is asserted
+// rather than assumed, so each fixture verifies itself.
+const POOL =
+  'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/';
+
+function makeEntropy(alphabetSize, len = 256) {
+  let out = '';
+  for (let i = 0; i < len; i++) out += POOL[i % alphabetSize];
+  return out;
+}
+
+function hasEntropyFinding(text) {
+  return fp
+    .entropySegments(scanForInjection(text, { external: true, entropy: true }))
+    .length > 0;
+}
+
+const BOUNDARY_PROBES = [
+  { target: 5.3, alphabet: 40, expectFlagged: false },
+  { target: 5.45, alphabet: 44, expectFlagged: false },
+  { target: 5.55, alphabet: 47, expectFlagged: true },
+  { target: 5.7, alphabet: 52, expectFlagged: true },
+];
+
+describe('Entropy: decision-boundary probe (H = 5.3 - 5.7)', () => {
+  for (const probe of BOUNDARY_PROBES) {
+    test(`H ~ ${probe.target} is ${probe.expectFlagged ? 'flagged' : 'not flagged'}`, () => {
+      const text = makeEntropy(probe.alphabet);
+      const H = shannon(text);
+      assert.ok(
+        Math.abs(H - probe.target) <= 0.05,
+        `fixture drifted: alphabet ${probe.alphabet} gives H=${H.toFixed(3)}, target ${probe.target} +/- 0.05`,
+      );
+      // Self-consistency: the probe's expectation must follow from the threshold,
+      // so moving THRESHOLD alone cannot leave a stale expectation behind.
+      assert.equal(
+        probe.expectFlagged,
+        H > THRESHOLD,
+        `probe expectation disagrees with the threshold it is probing`,
+      );
+      assert.equal(
+        hasEntropyFinding(text),
+        probe.expectFlagged,
+        `H=${H.toFixed(3)} against threshold ${THRESHOLD}: entropy finding should be ${probe.expectFlagged}`,
+      );
+    });
+  }
+
+  test('the probe brackets the threshold from both sides', () => {
+    const below = BOUNDARY_PROBES.filter((p) => !p.expectFlagged);
+    const above = BOUNDARY_PROBES.filter((p) => p.expectFlagged);
+    assert.ok(below.length >= 2 && above.length >= 2, 'threshold not bracketed');
+    const highestClean = Math.max(
+      ...below.map((p) => shannon(makeEntropy(p.alphabet))),
+    );
+    const lowestFlagged = Math.min(
+      ...above.map((p) => shannon(makeEntropy(p.alphabet))),
+    );
+    assert.ok(
+      highestClean < THRESHOLD && lowestFlagged > THRESHOLD,
+      `probe does not straddle the threshold: clean max ${highestClean.toFixed(3)}, flagged min ${lowestFlagged.toFixed(3)}`,
+    );
+    assert.ok(
+      lowestFlagged - highestClean < 0.15,
+      'probe is too coarse to detect a small threshold move',
+    );
+  });
+});
+
+// ── Entropy: measured against both corpora ───────────────────────────────────
+
+describe('Entropy: measured false positives on benign content', () => {
+  test('repository walk stays within the entropy budget', () => {
+    const b = budget.repo_walk.entropy_fp;
+    assert.ok(
+      repoWalk.entropy.count <= b.files,
+      `entropy flagged ${repoWalk.entropy.count} files, budget allows ${b.files}. ` +
+        `Offenders: ${repoWalk.entropy.items.map((i) => i.ref).join(', ')}`,
+    );
+    assert.ok(
+      b.examples.every((e) => 'ref' in e && 'max_H' in e && 'offsets' in e),
+      'entropy budget examples must record ref, max_H and offsets',
+    );
+  });
+
+  test('GSD-prose corpus stays within the entropy budget', () => {
+    const b = budget.gsd_prose.entropy_fp;
+    assert.ok(
+      gsdProse.entropy.count <= b.entries,
+      `entropy flagged ${gsdProse.entropy.count} entries, budget allows ${b.entries}. ` +
+        `Offenders: ${gsdProse.entropy.items.map((i) => i.ref).join(', ')}`,
+    );
+  });
+
+  test('the entropy-marginal entries sit in the band where real hits landed', () => {
+    // Every entropy hit measured over a real .planning/ corpus fell in
+    // H = 5.52 - 5.61, against a threshold of 5.5. That 0.02 - 0.11 bit margin
+    // is the finding; these entries reproduce it.
+    const marginal = fp
+      .loadGsdProse()
+      .filter((e) => e.class === 'entropy-marginal');
+    assert.ok(marginal.length >= 6, `only ${marginal.length} entropy-marginal entries`);
+    for (const e of marginal) {
+      assert.ok(
+        e.measured_H >= 5.4 && e.measured_H <= 5.65,
+        `${e.id}: measured_H ${e.measured_H} outside the 5.40 - 5.65 band`,
+      );
+      assert.equal(
+        hasEntropyFinding(e.text),
+        e.measured_H > THRESHOLD,
+        `${e.id}: recorded H=${e.measured_H} disagrees with the scanner's own verdict`,
+      );
+    }
+    // The band must straddle the threshold, or it is not probing marginality.
+    assert.ok(
+      marginal.some((e) => e.measured_H > THRESHOLD) &&
+        marginal.some((e) => e.measured_H <= THRESHOLD),
+      'entropy-marginal entries all fall on one side of the threshold',
+    );
+  });
+
+  test('realistic high-entropy content classes are measured, not presumed', () => {
+    // Content that plausibly appears in a real repository and is NOT inside a
+    // fenced code block, so stripFencedCodeBlocks offers no protection.
+    // The expectation is recorded from measurement; no outcome is asserted as
+    // desirable here, only as observed.
+    const classes = fp
+      .loadGsdProse()
+      .filter((e) => e.class === 'realistic-high-entropy');
+    assert.ok(classes.length >= 3, `only ${classes.length} content-class entries`);
+    for (const e of classes) {
+      assert.equal(
+        hasEntropyFinding(e.text),
+        e.trips_entropy,
+        `${e.id} (${e.provenance}): recorded trips_entropy=${e.trips_entropy} but the scanner disagrees`,
+      );
+      assert.ok(
+        Math.abs(shannon(e.text) - e.measured_H) < 0.15 ||
+          e.measured_H > 0,
+        `${e.id}: measured_H not recorded`,
+      );
+    }
+    // Recorded outcome: base64 digests trip; lowercase-hex content does not.
+    // Hex spans a 16-character alphabet and cannot reach 5.5 however long it is.
+    const tripping = classes.filter((e) => e.trips_entropy);
+    assert.ok(
+      tripping.length >= 1,
+      'no realistic content class trips entropy — measurement looks wrong',
+    );
+  });
+});
+
+// ── The advisory-tier contract ───────────────────────────────────────────────
+
+describe('Entropy: advisory-tier contract', () => {
+  test('entropy findings never reach blocked[], on any corpus or probe', () => {
+    // This is what bounds the blast radius of every entropy false positive
+    // above: an entropy hit can warn, but it can never hard-block an import or
+    // fail CI. If this assertion ever fails, the FP numbers in fp-budget.json
+    // stop being a noise budget and become an availability risk.
+    const samples = [
+      ...fp.walkRepoFiles().map((f) => ({ ref: f.ref, text: f.content })),
+      ...fp.loadGsdProse().map((e) => ({ ref: e.id, text: e.text })),
+      ...BOUNDARY_PROBES.map((p) => ({
+        ref: `probe-${p.target}`,
+        text: makeEntropy(p.alphabet),
+      })),
+    ];
+    for (const s of samples) {
+      const result = scanForInjection(s.text, { external: true, entropy: true });
+      for (const entry of result.blocked) {
+        assert.ok(
+          !String(entry).startsWith('[entropy]'),
+          `${s.ref}: entropy finding reached blocked[] — entropy must stay advisory`,
+        );
+      }
+    }
+  });
+
+  test('a purely high-entropy input yields tier medium, never high', () => {
+    const text = makeEntropy(62);
+    const result = scanForInjection(text, { external: true, entropy: true });
+    assert.ok(
+      fp.entropySegments(result).length > 0,
+      'fixture failed to trip entropy at all',
+    );
+    assert.equal(result.blocked.length, 0, 'high-entropy input must not block');
+    assert.equal(result.tier, 'medium');
+  });
+
+  test('entropy can be switched off, leaving pattern results untouched', () => {
+    const text = makeEntropy(62);
+    const off = scanForInjection(text, { external: true, entropy: false });
+    assert.equal(fp.entropySegments(off).length, 0);
+    assert.equal(off.tier, 'clean');
+  });
+});

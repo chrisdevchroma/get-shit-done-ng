@@ -61,17 +61,23 @@ Beyond the shared schema above, entries carry:
 ```
 { "rule_family": "string — the rule ID this entry is written to trip (absent on non-family entries)",
   "provenance": "string — the kind of document the prose is modelled on",
-  "class": "self-referential" | "entropy-marginal" | "ordinary-prose-control",
-  "measured_H": "number — max windowed Shannon entropy (entropy-marginal entries only)" }
+  "class": "self-referential" | "entropy-marginal" | "realistic-high-entropy" | "ordinary-prose-control",
+  "measured_H": "number — max windowed Shannon entropy (entropy-bearing entries only)",
+  "trips_entropy": "boolean — measured outcome (realistic-high-entropy entries only)" }
 ```
 
-`class` semantics:
+`class` semantics (49 entries total):
 
 | Class | Count | Meaning |
 |-------|-------|---------|
 | `self-referential` | 28 | Documentation describing a rule, which therefore matches that rule. Seven families × 4 entries. A tolerable FP class in a security tool's own repository. |
 | `entropy-marginal` | 8 | Identifier-dense GSD prose whose entropy lands in H = 5.40–5.65, straddling the 5.5 threshold. Four trip entropy, four do not. |
+| `realistic-high-entropy` | 3 | Content classes that plausibly appear in a real repository and are not inside a fenced code block: pinned action SHAs, lockfile integrity digests, a UUID table. Outcome is **measured and recorded**, never presumed. |
 | `ordinary-prose-control` | 10 | Ordinary GSD prose with no security vocabulary. **Must trip zero patterns** — asserted outright, with no budget allowance. |
+
+Measured outcome for the content classes: the base64 digest run trips entropy at H = 5.84,
+while the SHA pins (H = 4.88) and the UUID table (H = 4.38) do not. Lowercase hex spans a
+16-character alphabet and so cannot reach 5.5 at any length; base64 spans 64 and comfortably can.
 
 `measured_H` is computed with the scanner's own Shannon function and windowing
 (`WINDOW = 256`, `STEP = 128`, `MIN_SEGMENT = 64`), so the value is comparable to what
