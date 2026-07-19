@@ -738,25 +738,74 @@ function isEntropyGloballyEnabled(cwd) {
 // ─── normalizeForScan ─────────────────────────────────────────────────────────
 
 /**
+ * Characters removed from the scan copy before pattern matching.
+ *
+ * These are codepoints that render as nothing, so an LLM reading the text sees
+ * "ignore all previous instructions" whether or not they are present, while a
+ * regex sees a word broken in half. Leaving them in place made every
+ * high-confidence pattern trivially evadable by one invisible character.
+ *
+ * Included:
+ *   - \p{Cf} (format characters). Covers zero-width space/non-joiner/joiner
+ *     (U+200B–U+200D), the bidi marks and embedding/override/isolate controls
+ *     (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), word joiner and the
+ *     invisible math operators (U+2060–U+2064), soft hyphen (U+00AD),
+ *     zero-width no-break space / BOM (U+FEFF), Mongolian vowel separator
+ *     (U+180E), and the deprecated TAG block (U+E0001, U+E0020–U+E007F) used
+ *     by "ASCII smuggling" payloads. Script-specific Cf members (Arabic number
+ *     sign U+0600, Kaithi number sign U+110BD, …) are format marks that are
+ *     themselves invisible, so removing them from the scan copy cannot hide a
+ *     word from the multi-language patterns, whose source codepoints are all
+ *     letters.
+ *   - Variation selectors (U+FE00–U+FE0F and the U+E0100–U+E01EF supplement).
+ *     These are Mn, not Cf, but are equally invisible and equally usable as
+ *     word-breaking filler.
+ *
+ * Deliberately NOT included: general combining marks (\p{Mn} at large). They
+ * carry visible meaning — stripping them would fold "resumé" into "resume" and
+ * mangle every non-English script, a normalization change far beyond hiding.
+ *
+ * Rebuilt per call site via a literal (no shared lastIndex) — the `g` flag on a
+ * module-level regex would make `.replace` results depend on call order.
+ */
+const INVISIBLE_SCAN_CHARS = /[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * Remove invisible/format characters for matching purposes only.
+ *
+ * @param {string} s - Input string
+ * @returns {string} String with invisible codepoints removed
+ */
+function stripInvisibleForScan(s) {
+  return s.replace(new RegExp(INVISIBLE_SCAN_CHARS.source, 'gu'), '');
+}
+
+/**
  * Normalize content for prompt-injection scanning.
  *
- * Two-step pipeline:
+ * Three-step pipeline:
  *   1. NFKC: handles full-width Latin (ＡＢＣ → ABC), ligatures (ﬁ → fi),
  *      super/subscript, and other Unicode compatibility decomposition cases.
- *   2. TR39 confusable substitution: collapses visual homoglyphs (Cyrillic а,
+ *   2. Invisible-character removal: drops zero-width, bidi and other format
+ *      codepoints (see INVISIBLE_SCAN_CHARS) so a keyword split by an
+ *      invisible character still matches as one word.
+ *   3. TR39 confusable substitution: collapses visual homoglyphs (Cyrillic а,
  *      Greek α, Math-Latin 𝐚, Cherokee, etc.) to their Latin a-z/A-Z target.
  *
  * Used internally by scanForInjection. Original content is NEVER mutated;
  * downstream display, audit logs, and outbound prompts must use the original.
+ * The separate zero-width/bidi detector in scanForInjection still runs against
+ * the ORIGINAL content and still reports — stripping here changes what the
+ * patterns match, not what the audit trail records.
  *
  * @param {string} content - Input string
- * @returns {string} Normalized string (only different characters; same length
- *                   in most cases since NFKC of compat-decomposed Latin is 1:1
- *                   and TR39 MA-table mappings we vendor are single-codepoint).
+ * @returns {string} Normalized string. Step 2 shortens the string when
+ *                   invisible characters were present; steps 1 and 3 are 1:1
+ *                   for the mappings we vendor.
  */
 function normalizeForScan(content) {
   if (!content || typeof content !== 'string') return '';
-  const out = content.normalize('NFKC');
+  const out = stripInvisibleForScan(content.normalize('NFKC'));
   // Apply confusable map character-by-character. Codepoint-aware iteration via
   // Array.from handles surrogate pairs correctly for Math-Latin variants.
   //
@@ -781,25 +830,55 @@ function normalizeForScan(content) {
  * Iterates by Unicode codepoint (Array.from) so surrogate pairs (e.g. Math-Latin
  * Bold variants) are handled as single positions.
  *
- * Used by callers to populate `chars_changed` audit-log fields. Only positions
- * where original[i] !== normalized[i] are reported. When NFKC changes string
- * length (rare with single-codepoint mappings), only the overlapping prefix is
- * compared — callers should pass output of normalizeForScan, where length is
- * preserved for the confusable-substitution stage.
+ * Used by callers to populate `chars_changed` audit-log fields.
+ *
+ * normalizeForScan performs two kinds of edit, and this diff models both:
+ *   - substitution (homoglyph folded to its Latin target) → {from, to}
+ *   - removal (invisible/format character dropped)        → {from, to: ''}
+ *
+ * A naive index-by-index comparison would desynchronise permanently at the
+ * first removal and report every subsequent character as changed. So when the
+ * original character at a mismatch is one the normalizer removes, the original
+ * cursor advances alone and the normalized cursor holds — keeping the two
+ * aligned for the remainder of the string and keeping the audit log readable.
+ *
+ * Offsets are positions in the ORIGINAL string's codepoint-array view, which is
+ * what a human reviewing the log needs in order to find the character.
  *
  * @param {string} original   - Pre-normalization string
  * @param {string} normalized - Post-normalization string (output of normalizeForScan)
  * @returns {Array<{offset: number, from: string, to: string}>} Differences in
- *          codepoint order, by offset within the codepoint-array view.
+ *          codepoint order, by offset within the original codepoint-array view.
  */
 function diffConfusables(original, normalized) {
   const origChars = Array.from(original || '');
   const normChars = Array.from(normalized || '');
+  const isInvisible = (ch) =>
+    new RegExp(INVISIBLE_SCAN_CHARS.source, 'u').test(ch);
   const diffs = [];
-  const len = Math.min(origChars.length, normChars.length);
-  for (let i = 0; i < len; i++) {
-    if (origChars[i] !== normChars[i]) {
-      diffs.push({ offset: i, from: origChars[i], to: normChars[i] });
+  let i = 0;
+  let j = 0;
+  while (i < origChars.length && j < normChars.length) {
+    if (origChars[i] === normChars[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (isInvisible(origChars[i])) {
+      // Removed by normalization — record the deletion, hold the normalized
+      // cursor so the two strings stay aligned past this point.
+      diffs.push({ offset: i, from: origChars[i], to: '' });
+      i++;
+      continue;
+    }
+    diffs.push({ offset: i, from: origChars[i], to: normChars[j] });
+    i++;
+    j++;
+  }
+  // Trailing invisibles the loop never reached (normalized exhausted first).
+  for (; i < origChars.length; i++) {
+    if (isInvisible(origChars[i])) {
+      diffs.push({ offset: i, from: origChars[i], to: '' });
     }
   }
   return diffs;
@@ -819,12 +898,19 @@ function diffConfusables(original, normalized) {
  * opts.entropy=false overrides opts.external=true to disable entropy scanning.
  * opts.cwd enables global config toggle reading from .planning/config.json.
  *
- * Patterns run against an NFKC + TR39 confusable-normalized copy of the input
- * (homoglyph evasion mitigation). When a pattern matches the normalized form but
- * NOT the original, the resulting blocked/findings entry carries a
- * "[homoglyph-evasion]" tag. Original content is preserved unchanged in the
- * return value, audit logs, and downstream prompts. Unicode bidi/zero-width and
- * entropy scans continue to run against the original content.
+ * Patterns run against a normalized copy of the input: NFKC, then removal of
+ * invisible/format characters, then TR39 confusable folding. This defeats both
+ * homoglyph evasion (Cyrillic 'а' for Latin 'a') and invisible-character
+ * evasion (a zero-width space inside a keyword). When a pattern matches the
+ * normalized form but NOT the original, the resulting blocked/findings entry
+ * carries a "[homoglyph-evasion]" tag — the tag marks "matched only after
+ * normalization" and so covers both evasion classes.
+ *
+ * Original content is preserved unchanged in the return value, audit logs, and
+ * downstream prompts. The Unicode bidi/zero-width detector and the entropy scan
+ * continue to run against the ORIGINAL content: stripping is for matching only,
+ * and the presence of invisible characters in untrusted content remains an
+ * audit signal in its own right, reported alongside whatever the patterns found.
  *
  * @param {string} content   - Text to scan (e.g., .planning/ file content)
  * @param {object} [opts]
@@ -1256,7 +1342,8 @@ module.exports = {
   wrapUntrustedContent,
   stripUntrustedWrappers,
   logSecurityEvent,
-  normalizeForScan, // NFKC + TR39 confusable normalization (exported for test visibility)
+  normalizeForScan, // NFKC + invisible-strip + TR39 confusable normalization (exported for test visibility)
+  stripInvisibleForScan, // invisible/format-character removal (exported for test visibility)
   diffConfusables, // codepoint diff for homoglyph audit log (exported for test visibility)
   INJECTION_PATTERNS, // backward compat — 11-element array unchanged
   INJECTION_PATTERNS_TIERED, // tiered patterns with confidence classification
