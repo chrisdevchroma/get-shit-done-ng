@@ -105,7 +105,6 @@ function main() {
 
   const stdout = run.stdout || '';
 
-  // --- parse TAP -----------------------------------------------------------
   const results = [];
   const seen = new Map();
   for (const line of stdout.split('\n')) {
@@ -131,7 +130,6 @@ function main() {
     totals[key] = Number(m[1]);
   }
 
-  // --- anti-manufacture guards --------------------------------------------
   const missing = ROSTER.filter((id) => !seen.has(id));
   if (missing.length > 0) {
     for (const id of missing) {
@@ -170,7 +168,6 @@ function main() {
     fail(`the test command exited ${run.status}`);
   }
 
-  // --- provenance ----------------------------------------------------------
   const pkg = JSON.parse(
     fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'),
   );
@@ -185,7 +182,6 @@ function main() {
     command,
   };
 
-  // --- write artifacts -----------------------------------------------------
   fs.mkdirSync(opts.outDir, { recursive: true });
 
   const header = [
