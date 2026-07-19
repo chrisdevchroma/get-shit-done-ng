@@ -79,7 +79,7 @@ test('SCAN-PATHS-01: scan paths cover every tracked agent-context directory', ()
     uncovered,
     [],
     `tracked directories carrying agent context are not scanned: ${uncovered.join(', ')}. ` +
-      'Add them to SCAN_PATHS (and the workflow paths trigger), or declare them non-context here with a justification.',
+      'Add them to SCAN_PATHS, or declare them non-context here with a justification.',
   );
 
   // Directories the codebase actually reads as instructions must be present

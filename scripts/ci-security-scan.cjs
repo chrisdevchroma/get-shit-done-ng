@@ -34,8 +34,8 @@ const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
 // canonical agent-context locations in an installed project; they are listed
 // so a change that introduces them here is covered from the first commit.
 //
-// This list narrows the changed files, not the workflow trigger — see the
-// 'on:' comment in .github/workflows/security-scan.yml.
+// This list narrows the changed files. The workflow runs on every pull request
+// so that a required status is always posted.
 const SCAN_PATHS = [
   '.claude/',
   '.github/',
@@ -322,7 +322,9 @@ async function main(env = process.env) {
 
   if (report.hasBlocking) {
     console.log('\nHigh-confidence injection detected. PR check failed.');
-    console.log('Maintainers can override with: /security-override: <reason>');
+    console.log(
+      'Maintainers can override with: /security-override: <sha> <reason>',
+    );
     return EXIT_BLOCKED;
   }
 
