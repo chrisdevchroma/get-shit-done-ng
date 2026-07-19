@@ -781,6 +781,79 @@ describe('todo complete command', () => {
     assert.ok(result.error.includes('not found'), 'error mentions not found');
   });
 
+  test('accepts a todo id without the .md extension', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pendingDir, '2026-07-18-add-dark-mode.md'),
+      'title: Add dark mode\narea: ui\ncreated: 2026-07-18\n',
+    );
+
+    const result = runGsdTools(
+      'todo complete 2026-07-18-add-dark-mode --json',
+      tmpDir,
+    );
+    assert.ok(result.success, `Bare id should resolve: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.completed, true);
+    assert.strictEqual(
+      output.file,
+      '2026-07-18-add-dark-mode.md',
+      'reports the resolved filename, not the bare id',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(pendingDir, '2026-07-18-add-dark-mode.md')),
+      'should be removed from pending',
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(
+          tmpDir,
+          '.planning',
+          'todos',
+          'completed',
+          '2026-07-18-add-dark-mode.md',
+        ),
+      ),
+      'should be written to completed under the resolved filename',
+    );
+  });
+
+  test('resolves a bare id for recurring todos too', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pendingDir, 'weekly-check.md'),
+      '---\nrecurring: true\ninterval: 7d\n---\n\n# Weekly check\n',
+    );
+
+    const result = runGsdTools('todo complete weekly-check --json', tmpDir);
+    assert.ok(result.success, `Bare id should resolve: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.recurring, true);
+    assert.strictEqual(output.file, 'weekly-check.md');
+    assert.match(
+      fs.readFileSync(path.join(pendingDir, 'weekly-check.md'), 'utf-8'),
+      /last_completed:\s*\d{4}-\d{2}-\d{2}T/,
+      'last_completed timestamp should be added',
+    );
+  });
+
+  test('not-found error names every candidate it looked for', () => {
+    const result = runGsdTools('todo complete never-written', tmpDir);
+    assert.ok(!result.success, 'should fail');
+    assert.ok(
+      result.error.includes('never-written.md'),
+      `error should name the .md candidate it tried, got: ${result.error}`,
+    );
+    assert.ok(
+      result.error.includes('.planning/todos/pending'),
+      `error should name the directory it searched, got: ${result.error}`,
+    );
+  });
+
   test('warns when stray .planning/todos/done/ directory exists (non-recurring path)', () => {
     const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
     const strayDoneDir = path.join(tmpDir, '.planning', 'todos', 'done');
@@ -996,6 +1069,74 @@ describe('todo add command', () => {
     const after = fs.readFileSync(target, 'utf-8');
     assert.strictEqual(after, before, 'existing todo must be untouched');
     assert.ok(after.includes('original body'), 'original body preserved');
+  });
+
+  test('repeated list flags accumulate instead of dropping values', () => {
+    const frontmatterEntries = (content) =>
+      content.split('\n').filter((line) => line.startsWith('  - '));
+
+    const repeated = runGsdTools(
+      'todo add --title "Repeated form" --files "x.js" --files "y.js" --related "a.md" --related "b.md"',
+      tmpDir,
+    );
+    assert.ok(repeated.success, `Command failed: ${repeated.error}`);
+    const repeatedEntries = frontmatterEntries(
+      fs.readFileSync(pendingPath(tmpDir, `${today()}-repeated-form.md`), 'utf-8'),
+    );
+
+    assert.deepStrictEqual(
+      repeatedEntries,
+      ['  - x.js', '  - y.js', '  - a.md', '  - b.md'],
+      'every repeated value must survive',
+    );
+
+    const combined = runGsdTools(
+      'todo add --title "Combined form" --files "x.js,y.js" --related "a.md,b.md"',
+      tmpDir,
+    );
+    assert.ok(combined.success, `Command failed: ${combined.error}`);
+    const combinedEntries = frontmatterEntries(
+      fs.readFileSync(pendingPath(tmpDir, `${today()}-combined-form.md`), 'utf-8'),
+    );
+
+    assert.deepStrictEqual(
+      repeatedEntries,
+      combinedEntries,
+      'repeated and comma-separated forms must produce identical frontmatter',
+    );
+  });
+
+  test('mixes repeated and comma-separated list values', () => {
+    const result = runGsdTools(
+      'todo add --title "Mixed form" --files "x.js,y.js" --files "z.js"',
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-mixed-form.md`),
+      'utf-8',
+    );
+    assert.deepStrictEqual(
+      content.split('\n').filter((line) => line.startsWith('  - ')),
+      ['  - x.js', '  - y.js', '  - z.js'],
+    );
+  });
+
+  test('errors instead of silently dropping a repeated single-value flag', () => {
+    const result = runGsdTools(
+      'todo add --title "First title" --title "Second title"',
+      tmpDir,
+    );
+    assert.ok(!result.success, 'should fail');
+    assert.ok(
+      result.error.includes('--title'),
+      `error should name the conflicting flag, got: ${result.error}`,
+    );
+
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    const written = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : [];
+    assert.deepStrictEqual(written, [], 'no file should be written');
   });
 
   test('--body is written verbatim after the frontmatter', () => {

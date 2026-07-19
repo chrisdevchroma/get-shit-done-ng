@@ -92,7 +92,7 @@
  *
  * Todos:
  *   todo add --title T [--area A]      Create a pending todo
- *   todo complete <filename>           Move todo from pending to completed
+ *   todo complete <id>                 Move todo from pending to completed (.md optional)
  *
  * Scaffolding:
  *   scaffold context --phase <N>       Create CONTEXT.md template
@@ -562,6 +562,68 @@ const ARG_SCHEMAS = {
   },
   cleanup: { _self: { positional: { min: 0, max: 0 }, flags: ['--dry-run'] } },
 };
+
+/**
+ * Collect every value supplied for a flag, in command-line order.
+ *
+ * The prevailing `args.indexOf(flag)` idiom in this dispatcher finds only the
+ * first occurrence, so a repeated flag has its later values silently discarded.
+ * This returns all of them so callers can decide whether repetition means
+ * "append" or "conflict".
+ *
+ * @param {string[]} args
+ * @param {string} flag - Flag name including leading dashes (e.g. '--files')
+ * @returns {string[]} One entry per occurrence; `undefined` for a trailing flag
+ *   with no value, matching what index-based lookup would have produced.
+ */
+function collectFlagValues(args, flag) {
+  const values = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag) values.push(args[i + 1]);
+  }
+  return values;
+}
+
+/**
+ * Read a list-valued flag that may be repeated.
+ *
+ * `--files a --files b` and `--files a,b` are both common CLI idioms; joining
+ * repeats into one comma-separated string makes them equivalent so neither form
+ * loses data.
+ *
+ * @param {string[]} args
+ * @param {string} flag
+ * @returns {string|null} Comma-joined values, or null when the flag is absent.
+ */
+function listFlag(args, flag) {
+  const values = collectFlagValues(args, flag).filter((v) => v !== undefined);
+  return values.length > 0 ? values.join(',') : null;
+}
+
+/**
+ * Read a single-value flag, erroring if it was supplied more than once.
+ *
+ * Keeping the first value and dropping the rest would lose user input without
+ * any signal, so a repeat is reported as a conflict naming both values — the
+ * same "fail loudly rather than discard silently" stance the todo filename
+ * collision check takes.
+ *
+ * @param {string[]} args
+ * @param {string} flag
+ * @param {string} cmdLabel - Command label used in the error message
+ * @returns {string|null} The single value, or null when the flag is absent.
+ */
+function scalarFlag(args, flag, cmdLabel) {
+  const values = collectFlagValues(args, flag);
+  if (values.length > 1) {
+    error(
+      `${flag} was given ${values.length} times for '${cmdLabel}' but takes a single value.\n` +
+        `Conflicting values: ${values.map((v) => `'${v === undefined ? '' : v}'`).join(', ')}\n` +
+        `Pass ${flag} once.`,
+    );
+  }
+  return values.length > 0 && values[0] !== undefined ? values[0] : null;
+}
 
 /**
  * Validate command arguments against ARG_SCHEMAS before dispatch.
@@ -1735,24 +1797,18 @@ async function main() {
       const subcommand = args[1];
       validateArgs('todo', subcommand, args.slice(2));
       if (subcommand === 'add') {
-        const titleIdx = args.indexOf('--title');
-        const areaIdx = args.indexOf('--area');
-        const phaseIdx = args.indexOf('--phase');
-        const filesIdx = args.indexOf('--files');
-        const relatedIdx = args.indexOf('--related');
-        const bodyIdx = args.indexOf('--body');
-        const bodyFileIdx = args.indexOf('--body-file');
-        const intervalIdx = args.indexOf('--interval');
+        // --files/--related are lists and accumulate across repeats; the rest
+        // are single-valued and reject repeats rather than dropping a value.
         commands.cmdTodoAdd(cwd, {
-          title: titleIdx !== -1 ? args[titleIdx + 1] : null,
-          area: areaIdx !== -1 ? args[areaIdx + 1] : null,
-          phase: phaseIdx !== -1 ? args[phaseIdx + 1] : null,
-          files: filesIdx !== -1 ? args[filesIdx + 1] : null,
-          related: relatedIdx !== -1 ? args[relatedIdx + 1] : null,
-          body: bodyIdx !== -1 ? args[bodyIdx + 1] : null,
-          body_file: bodyFileIdx !== -1 ? args[bodyFileIdx + 1] : null,
+          title: scalarFlag(args, '--title', 'todo add'),
+          area: scalarFlag(args, '--area', 'todo add'),
+          phase: scalarFlag(args, '--phase', 'todo add'),
+          files: listFlag(args, '--files'),
+          related: listFlag(args, '--related'),
+          body: scalarFlag(args, '--body', 'todo add'),
+          body_file: scalarFlag(args, '--body-file', 'todo add'),
           recurring: args.includes('--recurring'),
-          interval: intervalIdx !== -1 ? args[intervalIdx + 1] : null,
+          interval: scalarFlag(args, '--interval', 'todo add'),
         });
       } else if (subcommand === 'complete') {
         commands.cmdTodoComplete(cwd, args[2]);
