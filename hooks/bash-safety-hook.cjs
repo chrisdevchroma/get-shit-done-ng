@@ -32,6 +32,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
 // ── Structural shell keywords — filter these out (not real commands) ──────────
 // Control/syntax constructs that are not checkable commands. Includes shell
@@ -1546,15 +1547,7 @@ if (require.main === module) {
 
   const debug = process.env.GSD_HOOK_DEBUG === '1';
 
-  let input = '';
-  // Timeout guard: if stdin doesn't close within 3s, exit silently
-  const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-  });
-  process.stdin.on('end', () => {
-    clearTimeout(stdinTimeout);
+  readStdinWithTimeout((input) => {
     try {
       const data = JSON.parse(input);
 
