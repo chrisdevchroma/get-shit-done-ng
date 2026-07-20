@@ -3607,7 +3607,7 @@ describe('phase complete requirement closure', () => {
     );
   });
 
-  test('still honours the ROADMAP **Requirements:** line, unioned with plan frontmatter', () => {
+  test('still honours the ROADMAP requirements line, unioned with plan frontmatter', () => {
     const dir = seedSharedRequirementPhase({ verificationStatus: 'passed' });
     // Roadmap names an ID that no plan declares — it must still close.
     const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
@@ -3617,7 +3617,7 @@ describe('phase complete requirement closure', () => {
         .readFileSync(roadmapPath, 'utf-8')
         .replace(
           '**Plans:** 3 plans',
-          '**Requirements:** PDI-ROADMAP-ONLY\n**Plans:** 3 plans',
+          '**Requirements**: PDI-ROADMAP-ONLY\n**Plans:** 3 plans',
         ),
     );
     const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
@@ -4309,10 +4309,11 @@ describe('phase complete closes delivered work, not declared intent', () => {
 
   // Two plans in one phase. Each plan and each summary is supplied verbatim by
   // the caller so a test can withhold a summary or make one disagree with its
-  // plan. `roadmapRequirements` adds the phase-section `**Requirements:**` line.
+  // plan. `roadmapRequirements` adds the phase-section requirements line, in
+  // the spelling every producer writes.
   function seedDeliveryPhase(opts = {}) {
     const reqLine = opts.roadmapRequirements
-      ? `**Requirements:** ${opts.roadmapRequirements}\n`
+      ? `**Requirements**: ${opts.roadmapRequirements}\n`
       : '';
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
@@ -4522,6 +4523,64 @@ ${reqLine}**Plans:** 2 plans
     assert.ok(
       JSON.parse(result.output).requirements_closed.includes('DLV-ROADMAP'),
       'a complete phase still closes IDs named only on the roadmap line',
+    );
+  });
+
+  test('the roadmap line closes for a phase whose plans declare no requirements', () => {
+    const dir = seedDeliveryPhase({ roadmapRequirements: 'DLV-ROADMAP' });
+    fs.writeFileSync(path.join(dir, '70-01-PLAN.md'), '---\nplan: 01\n---\n#\n');
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nplan: 01\n---\n#\n',
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(
+      JSON.parse(result.output).requirements_closed,
+      ['DLV-ROADMAP'],
+      'without the roadmap line such a project would close nothing, ever',
+    );
+    assert.ok(readRequirements().includes('- [x] **DLV-ROADMAP**'));
+  });
+
+  // The line is only a safety net if the code reads the spelling the templates
+  // emit. Grepped rather than hardcoded so a template edit breaks this test
+  // instead of silently stranding every project generated from it.
+  test('the roadmap requirements line matches the spelling the templates emit', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'templates', 'roadmap.md'),
+      'utf-8',
+    );
+    const emitted = template.match(/^.*\*\*Requirements\W*?:.*$/im);
+    assert.ok(emitted, 'roadmap template no longer emits a requirements line');
+
+    const label = emitted[0].match(/\*\*Requirements[^\s]*?:/)[0];
+    const dir = seedDeliveryPhase({});
+    fs.writeFileSync(path.join(dir, '70-01-PLAN.md'), '---\nplan: 01\n---\n#\n');
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nplan: 01\n---\n#\n',
+    );
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      fs
+        .readFileSync(roadmapPath, 'utf-8')
+        .replace(
+          '**Plans:** 2 plans',
+          `${label} DLV-ROADMAP\n**Plans:** 2 plans`,
+        ),
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(
+      JSON.parse(result.output).requirements_closed,
+      ['DLV-ROADMAP'],
+      `the template writes ${label} — closure must read that spelling`,
     );
   });
 

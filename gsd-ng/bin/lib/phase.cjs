@@ -58,6 +58,13 @@ function readRequirementIdField(value) {
   return ids;
 }
 
+// The roadmap phase-section requirements line. Every producer — templates,
+// gsd-roadmapper, discuss-phase, `phase add` — writes the colon outside the
+// bold, matching init.cjs. The colon-inside form is accepted too because
+// documents in the wild carry it and rejecting them would silently close
+// nothing for those projects.
+const ROADMAP_REQUIREMENTS_LINE = /\*\*Requirements(?:\*\*:|:\*\*)\s*([^\n]+)/i;
+
 /**
  * The identifier a plan document shares with its execution record, so the two
  * can be paired. Both the numbered and the bare filename forms reduce to the
@@ -99,7 +106,7 @@ function readFrontmatterRequirements(filePath, field) {
  *     addition and its template default is an empty list, so failing closed
  *     here would strand every requirement of every phase written before it.
  *
- * The ROADMAP.md phase section's `**Requirements:**` line is a third source and
+ * The ROADMAP.md phase section's `**Requirements**:` line is a third source and
  * is unioned in, because a phase whose plans carry no `requirements:` would
  * otherwise never close anything — phase-close is the only place closure
  * happens. It is a phase-level declaration, though, not a delivery record, so it
@@ -129,7 +136,7 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
       ),
     );
     const reqMatch = (phaseSectionMatch ? phaseSectionMatch[1] : '').match(
-      /\*\*Requirements:\*\*\s*([^\n]+)/i,
+      ROADMAP_REQUIREMENTS_LINE,
     );
     if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
   }
