@@ -479,6 +479,86 @@ test('SCAN-PAGE-03: fetchPRFiles refuses to scan a partial diff past the page ca
   );
 });
 
+test('SCAN-PAGE-04: a file list short of changed_files is refused, not scanned', async () => {
+  // GitHub caps the files endpoint at 3000 entries however many pages are
+  // requested, so pagination ending is not evidence the list is whole. Only
+  // the pull request's own count establishes that.
+  const fetchImpl = async () =>
+    fakeResponse({ body: [{ filename: 'agents/a.md' }] });
+
+  await assert.rejects(
+    scanner.fetchPRFiles({
+      repository: 'o/r',
+      prNumber: 7,
+      token: 't',
+      fetchImpl,
+      expectedFileCount: 3200,
+    }),
+    /3200 changed files but only 1 could be retrieved/,
+  );
+
+  // A complete list is accepted.
+  const complete = await scanner.fetchPRFiles({
+    repository: 'o/r',
+    prNumber: 7,
+    token: 't',
+    fetchImpl,
+    expectedFileCount: 1,
+  });
+  assert.equal(complete.length, 1);
+
+  // An absent count cannot be compared against, and must not fabricate one.
+  const unknown = await scanner.fetchPRFiles({
+    repository: 'o/r',
+    prNumber: 7,
+    token: 't',
+    fetchImpl,
+  });
+  assert.equal(unknown.length, 1);
+});
+
+test('SCAN-PAGE-05: the page cap alone cannot establish a complete diff', () => {
+  // 30 pages x 100 per page is 3000, which is exactly GitHub's own ceiling on
+  // the endpoint, so the cap is unreachable and proves nothing on its own.
+  assert.ok(
+    scanner.MAX_FILE_PAGES * 100 >= 3000,
+    'the page cap is at or above the API ceiling, so completeness must be ' +
+      'established by comparing against changed_files',
+  );
+});
+
+test('SCAN-PAGE-06: a truncated file list fails the run through the entry point', async () => {
+  const { code, lines } = await runMainWithStubbedApi(
+    [
+      {
+        filename: 'agents/a.md',
+        status: 'modified',
+        patch: hunk(' # Agent', '+A harmless line.'),
+      },
+    ],
+    { changedFiles: 3200 },
+  );
+
+  assert.equal(
+    code,
+    scanner.EXIT_INCOMPLETE,
+    'a pull request whose files cannot all be retrieved must not pass',
+  );
+  assert.notEqual(code, scanner.EXIT_CLEAN);
+  assert.ok(
+    lines.some((l) => /refusing to scan a partial diff/.test(l)),
+    `expected the truncation to be reported, got:\n${lines.join('\n')}`,
+  );
+
+  // The gate turns that exit code into a blocking status, described as an
+  // incomplete scan rather than as a finding.
+  const verdict = gate.classifyScanOutcome({
+    outcome: 'failure',
+    exitCode: String(code),
+  });
+  assert.deepEqual(verdict, { blocked: true, incomplete: true });
+});
+
 test('SCAN-PATCH-01: a file with no patch falls back to full contents and still blocks', async () => {
   const asked = [];
   const report = await scanner.analyzePullRequestFiles(
@@ -628,13 +708,21 @@ test('SCAN-MAIN-01: main reports missing env vars without exiting the process', 
  * returned exit code. Everything is restored in `finally` so a failing
  * assertion cannot leak a patched global into the rest of the suite.
  */
-async function runMainWithStubbedApi(files) {
+async function runMainWithStubbedApi(files, options = {}) {
+  const { changedFiles = files.length } = options;
   const realFetch = globalThis.fetch;
   const realLog = console.log;
+  const realError = console.error;
   const output = [];
 
-  globalThis.fetch = async () => fakeResponse({ body: files });
+  // The pull request itself and its file list are distinct endpoints; the
+  // scan reads changed_files from the former to prove the latter is whole.
+  globalThis.fetch = async (url) =>
+    /\/files(\?|$)/.test(String(url))
+      ? fakeResponse({ body: files })
+      : fakeResponse({ body: { changed_files: changedFiles } });
   console.log = (...args) => output.push(args.join(' '));
+  console.error = (...args) => output.push(args.join(' '));
 
   try {
     const code = await scanner.main({
@@ -646,6 +734,7 @@ async function runMainWithStubbedApi(files) {
   } finally {
     globalThis.fetch = realFetch;
     console.log = realLog;
+    console.error = realError;
   }
 }
 

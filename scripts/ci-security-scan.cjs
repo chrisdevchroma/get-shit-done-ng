@@ -67,8 +67,11 @@ const BLOCK_EXEMPT_PATHS = [
   'gsd-ng/references/security-untrusted-content.md',
 ];
 
-// Upper bound on paginated file-list requests. A pull request larger than
-// this is refused rather than scanned partially.
+// Runaway-pagination guard only. It cannot establish that the whole diff was
+// retrieved: 30 pages of 100 is 3000 entries, which is exactly GitHub's own
+// ceiling on the files endpoint, so the cap can never be reached before the
+// API stops paginating. Completeness is established against the pull
+// request's own changed_files count instead.
 const MAX_FILE_PAGES = 30;
 
 function githubHeaders(token) {
@@ -92,9 +95,33 @@ function parseNextLink(linkHeader) {
 }
 
 /**
+ * Fetch a pull request, for the metadata the files endpoint does not carry.
+ *
+ * @returns {Promise<object>} the pull request object
+ */
+async function fetchPullRequest(opts) {
+  const { repository, prNumber, token, fetchImpl = fetch } = opts;
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${repository}/pulls/${prNumber}`,
+    { headers: githubHeaders(token) },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `GitHub API error: ${response.status} ${response.statusText}`,
+    );
+  }
+  return response.json();
+}
+
+/**
  * Fetch the complete changed-file list for a pull request, following
  * pagination to the last page. A single page caps at 100 entries; stopping
  * there would silently leave every further changed file unscanned.
+ *
+ * The endpoint returns at most 3000 files however many pages are requested, so
+ * pagination ending is not evidence the list is complete. When
+ * `expectedFileCount` is supplied, a short list is refused rather than scanned:
+ * an unscannable remainder must fail the gate, not pass it quietly.
  *
  * @param {object} opts
  * @param {string} opts.repository - owner/name
@@ -102,6 +129,7 @@ function parseNextLink(linkHeader) {
  * @param {string} opts.token
  * @param {Function} [opts.fetchImpl] - injectable fetch (tests)
  * @param {number} [opts.maxPages]
+ * @param {number} [opts.expectedFileCount] - the pull request's changed_files
  * @returns {Promise<object[]>} every changed-file entry
  */
 async function fetchPRFiles(opts) {
@@ -111,7 +139,17 @@ async function fetchPRFiles(opts) {
     token,
     fetchImpl = fetch,
     maxPages = MAX_FILE_PAGES,
+    expectedFileCount,
   } = opts;
+
+  const assertComplete = (all) => {
+    if (Number.isInteger(expectedFileCount) && all.length < expectedFileCount) {
+      throw new Error(
+        `Pull request reports ${expectedFileCount} changed files but only ${all.length} could be retrieved — refusing to scan a partial diff`,
+      );
+    }
+    return all;
+  };
 
   let url = `https://api.github.com/repos/${repository}/pulls/${prNumber}/files?per_page=100`;
   const all = [];
@@ -128,7 +166,7 @@ async function fetchPRFiles(opts) {
 
     const linkHeader = response.headers ? response.headers.get('link') : null;
     const next = parseNextLink(linkHeader);
-    if (!next) return all;
+    if (!next) return assertComplete(all);
     url = next;
   }
 
@@ -323,7 +361,22 @@ async function main(env = process.env) {
     return EXIT_INCOMPLETE;
   }
 
-  const files = await fetchPRFiles({ repository, prNumber, token });
+  // A diff that cannot be retrieved in full is not a clean diff. Reported as
+  // an incomplete scan rather than a detection: both block, and the gate
+  // description distinguishes them.
+  let files;
+  try {
+    const pullRequest = await fetchPullRequest({ repository, prNumber, token });
+    files = await fetchPRFiles({
+      repository,
+      prNumber,
+      token,
+      expectedFileCount: pullRequest.changed_files,
+    });
+  } catch (err) {
+    console.error(`Could not retrieve the pull request diff: ${err.message}`);
+    return EXIT_INCOMPLETE;
+  }
   const report = await analyzePullRequestFiles(files, {
     getContent: (file) => fetchFileContent(file, { token }),
   });
@@ -381,6 +434,7 @@ module.exports = {
   BLOCK_EXEMPT_PATHS,
   MAX_FILE_PAGES,
   parseNextLink,
+  fetchPullRequest,
   fetchPRFiles,
   fetchFileContent,
   shouldScan,
