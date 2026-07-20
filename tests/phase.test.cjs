@@ -4068,6 +4068,47 @@ describe('phase complete requirement closure', () => {
     );
   });
 
+  test('a traceability table with no rows yet is still a table', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [ ] Phase 6: Earlier\n\n### Phase 6: Earlier\n**Goal:** Ship\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements
+
+- [ ] **REQ-01**: Never mapped to a phase
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+`,
+    );
+    const dir = path.join(tmpDir, '.planning', 'phases', '06-earlier');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '06-01-PLAN.md'),
+      `---\nrequirements: [REQ-01]\n---\n# Plan 06-01\n`,
+    );
+    fs.writeFileSync(path.join(dir, '06-01-SUMMARY.md'), '# Summary 06-01');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['REQ-01'],
+      'nothing contradicts the plan, so the ID still closes',
+    );
+    assert.deepStrictEqual(
+      output.requirements_unmapped,
+      ['REQ-01'],
+      'an empty table is a table, so being absent from it is a coverage gap',
+    );
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // Guards that closure depends on but no assertion pinned.
   // ───────────────────────────────────────────────────────────────────────────
