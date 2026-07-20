@@ -3951,6 +3951,227 @@ describe('phase complete requirement closure', () => {
     assert.deepStrictEqual(output.requirements_other_phase, []);
     assert.deepStrictEqual(output.requirements_unmapped, []);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // A status word outside the known vocabulary must fail closed. The status
+  // cell doubles as the signal that a line IS a traceability row, so a row
+  // reading "Deferred" is at risk of being read as no row at all — the one
+  // branch that closes without consulting the phase column.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  function setStatus(id, status) {
+    const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    const before = fs.readFileSync(reqPath, 'utf-8');
+    const after = before.replace(
+      new RegExp(`(\\|\\s*${id}\\s*\\|[^|]+\\|)[^|]+\\|`),
+      `$1 ${status} |`,
+    );
+    assert.notStrictEqual(
+      after,
+      before,
+      `fixture did not apply: no traceability row for ${id}`,
+    );
+    fs.writeFileSync(reqPath, after);
+  }
+
+  test('does not close an ID whose row for this phase has an unrecognised status', () => {
+    seedCrossPhaseDeclaration();
+    setStatus('REQ-01', 'Deferred');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.requirements_closed.includes('REQ-01'),
+      'a row nobody can interpret must not be treated as absent and closed',
+    );
+    assert.deepStrictEqual(
+      output.requirements_unreadable_rows,
+      [{ id: 'REQ-01', status: 'Deferred' }],
+      'and it must be reported so a human can fix the word',
+    );
+
+    const req = readRequirements();
+    assert.ok(
+      req.includes('- [ ] **REQ-01**'),
+      'the checkbox must not claim done while the row says Deferred',
+    );
+    assert.match(
+      req,
+      /\|\s*REQ-01\s*\|[^|]+\|\s*Deferred\s*\|/,
+      'the row itself must be left alone',
+    );
+  });
+
+  test('does not close another phase’s ID because its status is unrecognised', () => {
+    seedCrossPhaseDeclaration();
+    setStatus('REQ-99', 'Deferred');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.requirements_closed.includes('REQ-99'),
+      'phase ownership must be enforced whatever the status word says',
+    );
+    assert.deepStrictEqual(output.requirements_other_phase, [
+      { id: 'REQ-99', phase: 'Phase 07' },
+    ]);
+    assert.ok(
+      readRequirements().includes('- [ ] **REQ-99**'),
+      'phase 6 must not tick a box the table assigns to phase 7',
+    );
+  });
+
+  test('still closes a Pending row for this phase', () => {
+    seedCrossPhaseDeclaration();
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(output.requirements_closed, ['REQ-01']);
+    assert.deepStrictEqual(output.requirements_unreadable_rows, []);
+    assert.ok(readRequirements().includes('- [x] **REQ-01**'));
+  });
+
+  test('a table whose rows all carry unrecognised statuses is still a table', () => {
+    seedCrossPhaseDeclaration();
+    setStatus('REQ-01', 'Deferred');
+    setStatus('REQ-99', 'Deprecated');
+    const dir = path.join(tmpDir, '.planning', 'phases', '06-earlier');
+    fs.writeFileSync(
+      path.join(dir, '06-01-PLAN.md'),
+      `---\nrequirements: [REQ-01, REQ-50]\n---\n# Plan 06-01\n`,
+    );
+    const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    fs.writeFileSync(
+      reqPath,
+      fs
+        .readFileSync(reqPath, 'utf-8')
+        .replace(
+          '- [ ] **REQ-99**',
+          '- [ ] **REQ-50**: In no traceability row\n- [ ] **REQ-99**',
+        ),
+    );
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_unmapped,
+      ['REQ-50'],
+      'the coverage gap is only reportable if the table was recognised at all',
+    );
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Guards that closure depends on but no assertion pinned.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  test('an incidental number in a labelled phase cell is not a phase reference', () => {
+    seedCrossPhaseDeclaration('Phase 07 (supersedes 06)');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['REQ-01'],
+      'only the labelled phase number counts, not one mentioned in an aside',
+    );
+    assert.deepStrictEqual(output.requirements_other_phase, [
+      { id: 'REQ-99', phase: 'Phase 07 (supersedes 06)' },
+    ]);
+    assert.ok(readRequirements().includes('- [ ] **REQ-99**'));
+  });
+
+  test('a row with too few columns to be a traceability row is ignored', () => {
+    seedCrossPhaseDeclaration();
+    const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    fs.writeFileSync(
+      reqPath,
+      fs
+        .readFileSync(reqPath, 'utf-8')
+        .replace(
+          '| REQ-01 | 06 | Pending |',
+          '| REQ-01 | 06 | Pending |\n| REQ-01 | 06 |\n| stray |',
+        ),
+    );
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['REQ-01'],
+      'a truncated line is not a row, and must neither crash nor block closure',
+    );
+    assert.deepStrictEqual(output.requirements_unreadable_rows, []);
+  });
+
+  test('does not tick the box while another phase still owes work on the ID', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 6: Earlier
+- [ ] Phase 7: Later
+
+### Phase 6: Earlier
+**Goal:** Ship the earlier half
+**Plans:** 1 plan
+
+### Phase 7: Later
+**Goal:** Never executed
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements
+
+- [ ] **REQ-SPLIT**: Delivered across two phases
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| REQ-SPLIT | 06 | Pending |
+| REQ-SPLIT | 07 | Pending |
+`,
+    );
+    const dir = path.join(tmpDir, '.planning', 'phases', '06-earlier');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '06-01-PLAN.md'),
+      `---\nrequirements: [REQ-SPLIT]\n---\n# Plan 06-01\n`,
+    );
+    fs.writeFileSync(path.join(dir, '06-01-SUMMARY.md'), '# Summary 06-01');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const req = readRequirements();
+    assert.match(
+      req,
+      /\|\s*REQ-SPLIT\s*\|\s*06\s*\|\s*Complete\s*\|/,
+      'this phase’s own row closes',
+    );
+    assert.match(
+      req,
+      /\|\s*REQ-SPLIT\s*\|\s*07\s*\|\s*Pending\s*\|/,
+      'the other phase’s row is untouched',
+    );
+    assert.ok(
+      req.includes('- [ ] **REQ-SPLIT**'),
+      'the requirement is not done while a row still attributes work elsewhere',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

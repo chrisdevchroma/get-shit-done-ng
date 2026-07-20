@@ -188,31 +188,68 @@ const TRACEABILITY_STATUSES = new Set([
 // and 'Blocked' is a human decision that closure must not silently revert.
 const CLOSEABLE_STATUSES = /^(?:pending|in progress)$/i;
 
+const SEPARATOR_CELL = /^:?-+:?$/;
+
 /**
  * Parse the traceability table out of REQUIREMENTS.md lines.
  *
- * Column order is Requirement | Phase | Status, matching the template. Rows are
- * identified by their status cell rather than by guessing at requirement-ID
- * syntax, so a project using any ID convention is read correctly.
+ * Column order is Requirement | Phase | Status, matching the template. A
+ * project may use any requirement-ID convention, so rows are not identified by
+ * ID syntax. They are identified by the table they sit in: consecutive
+ * pipe-prefixed lines form a block, and a block is a traceability table when it
+ * carries a Status-headed column or at least one row whose status is a known
+ * one. Anchoring on the block rather than on each row's own status is what lets
+ * a row reading something outside the vocabulary still be seen — such a row is
+ * returned with `recognised: false` so callers can refuse to act on it, rather
+ * than being dropped and mistaken for the absence of a row.
  *
  * @param {string[]} lines  REQUIREMENTS.md split on newlines
- * @returns {Array<{lineIndex: number, id: string, phase: string, status: string}>}
+ * @returns {{rows: Array<{lineIndex: number, id: string, phase: string,
+ *            status: string, recognised: boolean}>, tableFound: boolean}}
  */
 function parseTraceabilityRows(lines) {
   const rows = [];
+  let tableFound = false;
+
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trimStart().startsWith('|')) continue;
-    // `| a | b | c |` splits to ['', ' a ', ' b ', ' c ', ''] — a three-column
-    // row is the minimum shape, hence at least five parts.
-    const cells = lines[i].split('|');
-    if (cells.length < 5) continue;
-    const id = cells[1].trim();
-    const phase = cells[2].trim();
-    const status = cells[3].trim();
-    if (!id || !TRACEABILITY_STATUSES.has(status.toLowerCase())) continue;
-    rows.push({ lineIndex: i, id, phase, status });
+
+    let end = i;
+    while (end < lines.length && lines[end].trimStart().startsWith('|')) end++;
+
+    const block = [];
+    for (let j = i; j < end; j++) {
+      // `| a | b | c |` splits to ['', ' a ', ' b ', ' c ', ''] — a three-column
+      // row is the minimum shape, hence at least five parts.
+      const cells = lines[j].split('|');
+      if (cells.length < 5) continue;
+      const id = cells[1].trim();
+      if (!id) continue;
+      if (cells.slice(1, -1).every((c) => SEPARATOR_CELL.test(c.trim())))
+        continue;
+      const status = cells[3].trim();
+      block.push({
+        lineIndex: j,
+        id,
+        phase: cells[2].trim(),
+        status,
+        recognised: TRACEABILITY_STATUSES.has(status.toLowerCase()),
+      });
+    }
+
+    const header =
+      block.length > 0 && block[0].status.toLowerCase() === 'status'
+        ? block[0]
+        : null;
+    if (header || block.some((r) => r.recognised)) {
+      tableFound = true;
+      for (const row of block) if (row !== header) rows.push(row);
+    }
+
+    i = end - 1;
   }
-  return rows;
+
+  return { rows, tableFound };
 }
 
 /**
@@ -260,6 +297,9 @@ function phaseCellNamesPhase(cell, phaseNum) {
  *   - that row is Blocked → change nothing and return it as blocked. A block is
  *     a human decision closure must not revert, and that applies to the checkbox
  *     and to `closed` no less than to the row itself;
+ *   - that row's status is not one this code knows → change nothing and return
+ *     it as unreadable. A word nobody can interpret is not permission to close;
+ *     the safe reading of an unknown state is that it is not done;
  *   - the table gives it a row for some other phase → change nothing, and
  *     return it so the caller can report it. Skipping silently would strand the
  *     requirement: the declaring phase thinks it shipped it, the owning phase
@@ -277,7 +317,8 @@ function phaseCellNamesPhase(cell, phaseNum) {
  * @param {string|number} phaseNum  the phase being closed
  * @returns {{updated: boolean, closed: string[],
  *            otherPhase: Array<{id: string, phase: string}>, unmapped: string[],
- *            blocked: Array<{id: string, status: string}>}}
+ *            blocked: Array<{id: string, status: string}>,
+ *            unreadable: Array<{id: string, status: string}>}}
  */
 function closePhaseRequirements(cwd, reqIds, phaseNum) {
   const result = {
@@ -286,14 +327,14 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
     otherPhase: [],
     unmapped: [],
     blocked: [],
+    unreadable: [],
   };
   const reqPath = planningPaths(cwd).requirements;
   if (reqIds.length === 0 || !fs.existsSync(reqPath)) return result;
 
   const originalContent = fs.readFileSync(reqPath, 'utf-8');
   const lines = originalContent.split('\n');
-  const rows = parseTraceabilityRows(lines);
-  const hasTable = rows.length > 0;
+  const { rows, tableFound: hasTable } = parseTraceabilityRows(lines);
 
   const rowsById = new Map();
   for (const row of rows) {
@@ -322,6 +363,15 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
       result.otherPhase.push({
         id: reqId,
         phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
+      });
+      continue;
+    }
+
+    const unreadable = ours.filter((r) => !r.recognised);
+    if (unreadable.length > 0) {
+      result.unreadable.push({
+        id: reqId,
+        status: [...new Set(unreadable.map((r) => r.status))].join(', '),
       });
       continue;
     }
@@ -1404,6 +1454,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
   const verificationStale = staleSummaries.length > 0;
 
   let requirementIds = [];
+  let requirementsUnreadableRows = [];
   let requirementsBlockedRows = [];
   let requirementsOtherPhase = [];
   let requirementsUnmapped = [];
@@ -1438,6 +1489,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirementsUpdated = closure.updated;
     requirementIds = closure.closed;
     requirementsBlockedRows = closure.blocked;
+    requirementsUnreadableRows = closure.unreadable;
     requirementsOtherPhase = closure.otherPhase;
     requirementsUnmapped = closure.unmapped;
     requirementsUndeclared = collected.undeclared;
@@ -1595,6 +1647,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirements_updated: requirementsUpdated,
     requirements_closed: requirementIds,
     requirements_blocked_rows: requirementsBlockedRows,
+    requirements_unreadable_rows: requirementsUnreadableRows,
     requirements_other_phase: requirementsOtherPhase,
     requirements_unmapped: requirementsUnmapped,
     requirements_undeclared: requirementsUndeclared,
