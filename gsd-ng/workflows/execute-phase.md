@@ -654,7 +654,8 @@ the deliberate override.)
 
 Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
 `requirements_closed`, `requirements_blocked_by`, `requirements_blocked_hint`,
-`requirements_blocked_rows`, `requirements_other_phase`, `requirements_unmapped`,
+`requirements_blocked_rows`, `requirements_unreadable_rows`,
+`requirements_other_phase`, `requirements_unmapped`,
 `requirements_undeclared`, `verification_stale`, `verification_stale_summaries`.
 
 **Report every non-empty discrepancy list to the user.** `requirements_other_phase`
@@ -667,6 +668,10 @@ scope grew during execution, and the roadmap or the requirement's owning phase m
 now be wrong. `requirements_blocked_rows` means the phase shipped work against a
 requirement someone had marked Blocked; the block stands until that person clears
 it, so say which IDs were skipped rather than letting them look delivered.
+`requirements_unreadable_rows` means a traceability row carries a status word this
+code does not recognise, so closure refused to act on it rather than guessing. The
+remedy is to correct the word in `.planning/REQUIREMENTS.md` to one of Pending,
+In Progress, Complete or Blocked.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md
