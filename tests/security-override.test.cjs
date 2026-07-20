@@ -713,3 +713,275 @@ describe('security gate: workflow invariants', () => {
     );
   });
 });
+
+// --- Fallback gate for an unusable workspace --------------------------------
+//
+// The publication step loads the gate module out of GITHUB_WORKSPACE. When
+// checkout fails that directory exists but is empty, so the require throws
+// MODULE_NOT_FOUND, the step fails and no status is ever posted — a required
+// context left pending with no verdict, and no failing gate for an override to
+// supersede. A second step posts the verdict without touching the workspace.
+//
+// The script below is read out of the committed workflow and executed against
+// a stub, so these are simulations of the real step body, not restatements of
+// it. What they cannot prove is that the runner schedules the step at all;
+// `if: always()` and the step-outcome wiring are asserted as text.
+
+function extractBlockBody(block, key) {
+  const lines = block.split('\n');
+  const at = lines.findIndex((l) =>
+    new RegExp(`^\\s*${key}:\\s*(\\|-?)?\\s*$`).test(l),
+  );
+  if (at === -1) return null;
+
+  const body = [];
+  let indent = null;
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') {
+      body.push('');
+      continue;
+    }
+    const lead = line.match(/^\s*/)[0].length;
+    if (indent === null) indent = lead;
+    if (lead < indent) break;
+    body.push(line.slice(indent));
+  }
+  return body.join('\n').trimEnd();
+}
+
+function extractEnv(block) {
+  const body = extractBlockBody(block, 'env');
+  if (body === null) return {};
+  const env = {};
+  for (const line of body.split('\n')) {
+    const m = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
+    if (!m) continue;
+    env[m[1]] = m[2].replace(/^'([\s\S]*)'$/, '$1').replace(/^"([\s\S]*)"$/, '$1');
+  }
+  return env;
+}
+
+function scanSteps() {
+  return listItemBlocks(readWorkflow('security-scan.yml'));
+}
+
+// The publication step is the one that delegates to the gate module; the
+// fallback is the one that posts a status without it. Identified by behaviour
+// rather than by step name, so renaming a step cannot silently pass a test.
+function publishStep() {
+  return scanSteps().find((b) => /\bpublishGateVerdict\b/.test(b));
+}
+
+function fallbackStep() {
+  return scanSteps().find(
+    (b) =>
+      /createCommitStatus/.test(b) && !/security-gate\.cjs|require\(/.test(b),
+  );
+}
+
+/**
+ * Execute a step's `script:` body against stubs, with only the environment the
+ * step itself declares. `process` is shadowed so a script reading an undeclared
+ * variable sees undefined rather than the test runner's environment.
+ */
+async function runStepScript(block, ctx) {
+  const script = extractBlockBody(block, 'script');
+  assert.ok(script, 'expected an inline script body');
+
+  const calls = [];
+  const github = {
+    rest: {
+      repos: {
+        async createCommitStatus(args) {
+          calls.push(args);
+          return { data: { ...args } };
+        },
+      },
+    },
+  };
+  const logged = [];
+  const core = { info: (m) => logged.push(m), setFailed: (m) => logged.push(m) };
+
+  const fn = new Function(
+    'github',
+    'context',
+    'core',
+    'process',
+    `return (async () => {\n${script}\n})();`,
+  );
+  await fn(github, ctx, core, { env: extractEnv(block) });
+
+  return { calls, logged };
+}
+
+const FALLBACK_CONTEXT = {
+  repo: { owner: 'acme', repo: 'widgets' },
+  payload: { pull_request: { head: { sha: HEAD_SHA } } },
+};
+
+describe('security gate: workspace-unavailable fallback', () => {
+  test('FALLBACK-01: a gate verdict is posted without loading the workspace', () => {
+    const block = fallbackStep();
+    assert.ok(
+      block,
+      'the scan workflow needs a step that posts the gate without the module, ' +
+        'or a failed checkout leaves a required context pending forever',
+    );
+
+    assert.doesNotMatch(
+      block,
+      /GITHUB_WORKSPACE/,
+      'the fallback must not read from a workspace that may not exist',
+    );
+    assert.match(block, /if:\s*always\(\)/);
+  });
+
+  test('FALLBACK-02: the fallback posts failure under the gate context', async () => {
+    const { calls } = await runStepScript(fallbackStep(), FALLBACK_CONTEXT);
+
+    assert.equal(calls.length, 1, 'exactly one status must be posted');
+    assert.equal(calls[0].state, 'failure');
+    assert.equal(calls[0].context, gate.GATE_CONTEXT);
+    assert.equal(calls[0].sha, HEAD_SHA, 'the status must attach to the PR head');
+    assert.equal(calls[0].owner, 'acme');
+    assert.equal(calls[0].repo, 'widgets');
+  });
+
+  test('FALLBACK-03: the fallback context cannot drift from the module', async () => {
+    const env = extractEnv(fallbackStep());
+    const literals = Object.values(env).filter((v) => v === gate.GATE_CONTEXT);
+    assert.equal(
+      literals.length,
+      1,
+      `the fallback must pin exactly one copy of ${gate.GATE_CONTEXT}; the ` +
+        `step declares ${JSON.stringify(env)}`,
+    );
+
+    // The pin is only worth something if the posted context comes from it.
+    const { calls } = await runStepScript(fallbackStep(), FALLBACK_CONTEXT);
+    assert.equal(calls[0].context, gate.GATE_CONTEXT);
+  });
+
+  test('FALLBACK-04: infrastructure failure reads as neither finding nor incomplete scan', async () => {
+    const { calls } = await runStepScript(fallbackStep(), FALLBACK_CONTEXT);
+    const description = calls[0].description;
+
+    assert.ok(
+      description.length <= gate.MAX_DESCRIPTION,
+      `description was ${description.length} characters; the platform rejects ` +
+        `more than ${gate.MAX_DESCRIPTION}`,
+    );
+    assert.match(description, /infrastructure/i);
+    assert.doesNotMatch(
+      description,
+      /finding|detect/i,
+      `a workspace failure must not claim a detection, got: ${description}`,
+    );
+    assert.doesNotMatch(
+      description,
+      /did not complete/i,
+      'the module already owns that phrasing for a scan that reached no verdict',
+    );
+
+    // The two descriptions the module posts, so "distinguishable" is measured
+    // against the real strings rather than against these regexes alone.
+    const others = [];
+    for (const incomplete of [true, false]) {
+      const github = makeGitHubStub();
+      await gate.publishGateVerdict({
+        github,
+        owner: 'acme',
+        repo: 'widgets',
+        headSha: HEAD_SHA,
+        blocked: true,
+        incomplete,
+      });
+      others.push(github.calls.statuses[0].description);
+    }
+    for (const other of others) {
+      assert.notEqual(description, other);
+    }
+  });
+
+  test('FALLBACK-05: the fallback fires only when publication itself failed', () => {
+    const block = fallbackStep();
+    const condition = /^\s*if:\s*(.+?)\s*$/m.exec(block);
+    assert.ok(condition, 'the fallback must be conditional');
+
+    const stepRef = /steps\.([A-Za-z0-9_-]+)\.outcome/.exec(condition[1]);
+    assert.ok(
+      stepRef,
+      'the fallback must key off a step outcome, not run unconditionally',
+    );
+
+    const publishId = /^\s*id:\s*(\S+)\s*$/m.exec(publishStep());
+    assert.ok(publishId, 'the publication step needs an id to be referenced');
+    assert.equal(
+      stepRef[1],
+      publishId[1],
+      'the fallback must watch the publication step, not the scan step: a ' +
+        'scan that legitimately failed still publishes its own verdict',
+    );
+
+    // Evaluate the committed expression rather than a paraphrase of it.
+    const evaluate = (outcome) =>
+      new Function(
+        `return (${condition[1]
+          .replace(/always\(\)/g, 'true')
+          .replace(/steps\.[A-Za-z0-9_-]+\.outcome/g, JSON.stringify(outcome))});`,
+      )();
+
+    assert.equal(
+      evaluate('success'),
+      false,
+      'a published verdict — pass or blocking finding — must not be overwritten',
+    );
+    assert.equal(evaluate('failure'), true, 'a failed publication needs a verdict');
+  });
+
+  test('FALLBACK-06: a genuine scan failure still publishes its own verdict', async () => {
+    // A failing scan does not disturb the publication step's outcome, so the
+    // fallback stays out of the way and the finding-specific description is
+    // what reaches the pull request.
+    const github = makeGitHubStub();
+    const verdict = gate.classifyScanOutcome({ outcome: 'failure', exitCode: '1' });
+    await gate.publishGateVerdict({
+      github,
+      owner: 'acme',
+      repo: 'widgets',
+      headSha: HEAD_SHA,
+      blocked: verdict.blocked,
+      incomplete: verdict.incomplete,
+    });
+
+    const posted = github.calls.statuses[0];
+    assert.equal(posted.state, 'failure');
+    assert.match(posted.description, /findings detected/i);
+    assert.doesNotMatch(posted.description, /infrastructure/i);
+  });
+
+  test('FALLBACK-07: a passing scan is untouched by the fallback', async () => {
+    const github = makeGitHubStub();
+    const verdict = gate.classifyScanOutcome({ outcome: 'success', exitCode: '0' });
+    await gate.publishGateVerdict({
+      github,
+      owner: 'acme',
+      repo: 'widgets',
+      headSha: HEAD_SHA,
+      blocked: verdict.blocked,
+      incomplete: verdict.incomplete,
+    });
+
+    const posted = github.calls.statuses[0];
+    assert.equal(posted.state, 'success');
+    assert.doesNotMatch(posted.description, /infrastructure/i);
+
+    const { calls } = await runStepScript(fallbackStep(), FALLBACK_CONTEXT);
+    assert.equal(
+      calls[0].state,
+      'failure',
+      'the fallback only ever posts failure; a pass can only come from the module',
+    );
+  });
+});

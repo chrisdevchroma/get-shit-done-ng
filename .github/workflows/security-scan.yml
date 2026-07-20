@@ -49,6 +49,7 @@ jobs:
       # make required under branch protection; the override supersedes it by
       # posting a newer status — see scripts/security-gate.cjs.
       - name: Publish security-gate commit status
+        id: publish-gate
         if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -73,6 +74,31 @@ jobs:
               incomplete: verdict.incomplete,
             });
             core.info(`Published ${status.context} status: ${status.state}`);
+
+      # The step above loads the gate module out of the checkout, so a failed
+      # checkout leaves it unable to post anything and the required context
+      # pending with no verdict. This step touches no repository content.
+      # GATE_CONTEXT duplicates the module's constant because the module is
+      # precisely what is unreachable here; a test in
+      # tests/security-override.test.cjs pins the two together.
+      - name: Publish fallback gate status
+        if: always() && steps.publish-gate.outcome != 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GATE_CONTEXT: security-gate
+          GATE_DESCRIPTION: 'Scan infrastructure failure; the gate could not run. Maintainers: /security-override: <sha> <reason>'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data } = await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'failure',
+              context: process.env.GATE_CONTEXT,
+              description: process.env.GATE_DESCRIPTION,
+            });
+            core.info(`Published fallback ${data.context} status: ${data.state}`);
 
       - name: Fail job on blocking verdict
         if: steps.scan.outcome != 'success'
