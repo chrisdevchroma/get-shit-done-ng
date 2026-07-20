@@ -4912,3 +4912,52 @@ describe('requirements are not closed per-plan in workflow docs', () => {
     });
   }
 });
+
+// Narrowing closure to what a summary records is inert if the docs tell the
+// executor to copy the plan's declaration verbatim: delivered would always
+// equal declared and the narrowing path would never fire. The code is only
+// half the mechanism, so guard the instructions that feed it.
+describe('executor docs record delivery, not declaration', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+  const DELIVERY_DOCS = [
+    'gsd-ng/templates/summary.md',
+    'gsd-ng/workflows/execute-plan.md',
+  ];
+
+  for (const rel of DELIVERY_DOCS) {
+    test(`${rel} does not instruct a verbatim copy of the declaration`, () => {
+      const content = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+      const offending = content
+        .split('\n')
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(
+          ({ line }) =>
+            /requirements-completed|requirements\s+array|requirements`?\s+frontmatter/i.test(
+              line,
+            ) && /\bverbatim\b|copy\s+ALL\b/i.test(line),
+        );
+
+      assert.deepStrictEqual(
+        offending,
+        [],
+        `${rel} tells the executor to copy the plan's declaration, which makes ` +
+          `delivery-record narrowing inert. Offending lines: ` +
+          `${offending.map((o) => `${o.n}: ${o.line.trim()}`).join(' | ')}`,
+      );
+    });
+
+    test(`${rel} tells the executor to record what was delivered`, () => {
+      const content = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+      const instruction = content
+        .split('\n')
+        .filter((line) => /requirements-completed/i.test(line))
+        .join('\n');
+
+      assert.match(
+        instruction,
+        /deliver/i,
+        `${rel} must frame requirements-completed as a delivery record`,
+      );
+    });
+  }
+});

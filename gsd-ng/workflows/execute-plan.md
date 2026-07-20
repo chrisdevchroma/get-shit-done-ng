@@ -372,7 +372,7 @@ If user_setup exists: create `{phase}-USER-SETUP.md` using template `~/.claude/g
 <step name="create_summary">
 Create `{phase}-{plan}-SUMMARY.md` at `.planning/phases/XX-name/`. Use `~/.claude/gsd-ng/templates/summary.md`.
 
-**Frontmatter:** phase, plan, subsystem, tags | requires/provides/affects | tech-stack.added/patterns | key-files.created/modified | key-decisions | requirements-completed (**MUST** copy `requirements` array from PLAN.md frontmatter verbatim) | duration ($DURATION), completed ($PLAN_END_TIME date).
+**Frontmatter:** phase, plan, subsystem, tags | requires/provides/affects | tech-stack.added/patterns | key-files.created/modified | key-decisions | requirements-completed (**MUST** list the requirement IDs this plan actually DELIVERED — start from PLAN.md's `requirements` array and keep every ID whose work landed and verified. Delivered all of them, the usual case? List all of them. Dropped or deferred one mid-execution? Leave it out. Never trim an ID you did deliver, and never keep one you did not) | duration ($DURATION), completed ($PLAN_END_TIME date).
 
 Title: `# Phase [X] Plan [Y]: [Name] Summary`
 
