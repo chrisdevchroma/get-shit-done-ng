@@ -310,6 +310,40 @@ function stripJsonc(text) {
 const jsoncSettingsPaths = new Set();
 
 /**
+ * Drop GSD's own hooks from one hook event in settings.
+ *
+ * A single entry's `hooks` array can hold GSD's hook and the user's own side by
+ * side — same matcher, one entry. So the GSD commands are filtered out of that
+ * inner array and the entry is discarded only once nothing is left in it.
+ *
+ * @param {(command: string) => boolean} isGsdCommand
+ * @returns {boolean} whether anything was removed
+ */
+function pruneGsdHookEntries(settings, eventName, isGsdCommand) {
+  if (!settings.hooks || !Array.isArray(settings.hooks[eventName])) return false;
+
+  let removed = false;
+  const kept = [];
+  for (const entry of settings.hooks[eventName]) {
+    if (!entry || !Array.isArray(entry.hooks)) {
+      kept.push(entry);
+      continue;
+    }
+    const hooks = entry.hooks.filter(h => !(h && typeof h.command === 'string' && isGsdCommand(h.command)));
+    if (hooks.length !== entry.hooks.length) removed = true;
+    if (hooks.length > 0) {
+      kept.push(Object.assign({}, entry, { hooks }));
+    }
+  }
+
+  settings.hooks[eventName] = kept;
+  if (kept.length === 0) {
+    delete settings.hooks[eventName];
+  }
+  return removed;
+}
+
+/**
  * Read and parse settings.json, returning empty object if it doesn't exist.
  *
  * A file that cannot be parsed at all is the user's content, not ours to
@@ -550,76 +584,31 @@ function uninstall(isGlobal) {
       }
 
       // Remove GSD hooks from SessionStart
-      if (settings.hooks && settings.hooks.SessionStart) {
-        const before = settings.hooks.SessionStart.length;
-        settings.hooks.SessionStart = settings.hooks.SessionStart.filter(entry => {
-          if (entry.hooks && Array.isArray(entry.hooks)) {
-            // Filter out GSD hooks
-            const hasGsdHook = entry.hooks.some(h =>
-              h.command && (h.command.includes('gsd-check-update') || h.command.includes('gsd-statusline'))
-            );
-            return !hasGsdHook;
-          }
-          return true;
-        });
-        if (settings.hooks.SessionStart.length < before) {
-          settingsModified = true;
-          console.log(`  ${green}✓${reset} Removed GSD hooks from settings`);
-        }
-        // Clean up empty array
-        if (settings.hooks.SessionStart.length === 0) {
-          delete settings.hooks.SessionStart;
-        }
+      if (pruneGsdHookEntries(settings, 'SessionStart', c =>
+        c.includes('gsd-check-update') || c.includes('gsd-statusline')
+      )) {
+        settingsModified = true;
+        console.log(`  ${green}✓${reset} Removed GSD hooks from settings`);
       }
 
       // Remove GSD hooks from PostToolUse
-      for (const eventName of ['PostToolUse']) {
-        if (settings.hooks && settings.hooks[eventName]) {
-          const before = settings.hooks[eventName].length;
-          settings.hooks[eventName] = settings.hooks[eventName].filter(entry => {
-            if (entry.hooks && Array.isArray(entry.hooks)) {
-              const hasGsdHook = entry.hooks.some(h =>
-                h.command && h.command.includes('gsd-context-monitor')
-              );
-              return !hasGsdHook;
-            }
-            return true;
-          });
-          if (settings.hooks[eventName].length < before) {
-            settingsModified = true;
-            console.log(`  ${green}✓${reset} Removed context monitor hook from settings`);
-          }
-          if (settings.hooks[eventName].length === 0) {
-            delete settings.hooks[eventName];
-          }
-        }
+      if (pruneGsdHookEntries(settings, 'PostToolUse', c =>
+        c.includes('gsd-context-monitor')
+      )) {
+        settingsModified = true;
+        console.log(`  ${green}✓${reset} Removed context monitor hook from settings`);
       }
 
       // Remove GSD hooks from PreToolUse. bash-safety-hook.cjs is GSD-installed
       // despite the unprefixed name; leaving its entry behind would point the
       // runtime at a script uninstall has just deleted.
-      if (settings.hooks && settings.hooks.PreToolUse) {
-        const before = settings.hooks.PreToolUse.length;
-        settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry => {
-          if (entry.hooks && Array.isArray(entry.hooks)) {
-            const hasGsdHook = entry.hooks.some(h =>
-              h.command && (
-                h.command.includes('gsd-sandbox-detect') ||
-                h.command.includes('gsd-guardrail') ||
-                h.command.includes('bash-safety-hook.cjs')
-              )
-            );
-            return !hasGsdHook;
-          }
-          return true;
-        });
-        if (settings.hooks.PreToolUse.length < before) {
-          settingsModified = true;
-          console.log(`  ${green}✓${reset} Removed GSD PreToolUse hooks from settings`);
-        }
-        if (settings.hooks.PreToolUse.length === 0) {
-          delete settings.hooks.PreToolUse;
-        }
+      if (pruneGsdHookEntries(settings, 'PreToolUse', c =>
+        c.includes('gsd-sandbox-detect') ||
+        c.includes('gsd-guardrail') ||
+        c.includes('bash-safety-hook.cjs')
+      )) {
+        settingsModified = true;
+        console.log(`  ${green}✓${reset} Removed GSD PreToolUse hooks from settings`);
       }
 
       // Remove GSD-seeded permissions.allow entries

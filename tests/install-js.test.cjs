@@ -4550,6 +4550,207 @@ test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash
   }
 });
 
+// ── uninstall prunes GSD hooks without taking co-located user hooks ──
+
+function runUninstallIn(tmpDir) {
+  return spawnSync(
+    process.execPath,
+    [INSTALLER, '--runtime', 'claude', '--local', '--uninstall'],
+    {
+      encoding: 'utf8',
+      timeout: 15000,
+      cwd: tmpDir,
+      env: Object.assign({}, process.env, { HOME: os.homedir() }),
+    },
+  );
+}
+
+const USER_HOOK = 'node /home/me/my-own-pretooluse-hook.js';
+
+test('HOOKENTRY-01: uninstall keeps a user command sharing a PreToolUse entry with a GSD hook', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-01-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-guardrail.js' },
+                  { type: 'command', command: USER_HOOK },
+                ],
+              },
+              {
+                matcher: 'Write',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-sandbox-detect.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    const entries = (after.hooks && after.hooks.PreToolUse) || [];
+    const commands = entries.flatMap((e) =>
+      (e.hooks || []).map((h) => h.command),
+    );
+
+    assert.ok(
+      commands.includes(USER_HOOK),
+      'a user command co-located with a GSD hook must survive uninstall (HOOKENTRY-01).\n' +
+        'Remaining PreToolUse: ' +
+        JSON.stringify(entries),
+    );
+    assert.ok(
+      !commands.some((c) => c.includes('gsd-guardrail')),
+      'the GSD hook must still be removed from the shared entry (HOOKENTRY-01)',
+    );
+    // The Write entry held nothing but a GSD hook, so it must go entirely
+    // rather than linger as an entry with an empty hooks array.
+    assert.ok(
+      !commands.some((c) => c.includes('gsd-sandbox-detect')),
+      'a GSD-only entry must still be removed (HOOKENTRY-01)',
+    );
+    assert.strictEqual(
+      entries.length,
+      1,
+      'the emptied entry must be dropped, not left with an empty hooks array (HOOKENTRY-01).\n' +
+        'Remaining: ' +
+        JSON.stringify(entries),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('HOOKENTRY-02: uninstall keeps user commands sharing SessionStart and PostToolUse entries', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-02-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-check-update.js' },
+                  { type: 'command', command: 'node /home/me/session-hook.js' },
+                ],
+              },
+            ],
+            PostToolUse: [
+              {
+                matcher: 'Edit',
+                hooks: [
+                  {
+                    type: 'command',
+                    command: 'node /x/gsd-context-monitor.js',
+                  },
+                  { type: 'command', command: 'node /home/me/post-hook.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    const commandsFor = (event) =>
+      ((after.hooks && after.hooks[event]) || []).flatMap((e) =>
+        (e.hooks || []).map((h) => h.command),
+      );
+
+    assert.ok(
+      commandsFor('SessionStart').includes('node /home/me/session-hook.js'),
+      'user SessionStart command must survive uninstall (HOOKENTRY-02).\nGot: ' +
+        JSON.stringify(commandsFor('SessionStart')),
+    );
+    assert.ok(
+      !commandsFor('SessionStart').some((c) => c.includes('gsd-check-update')),
+      'GSD SessionStart hook must be removed (HOOKENTRY-02)',
+    );
+    assert.ok(
+      commandsFor('PostToolUse').includes('node /home/me/post-hook.js'),
+      'user PostToolUse command must survive uninstall (HOOKENTRY-02).\nGot: ' +
+        JSON.stringify(commandsFor('PostToolUse')),
+    );
+    assert.ok(
+      !commandsFor('PostToolUse').some((c) => c.includes('gsd-context-monitor')),
+      'GSD PostToolUse hook must be removed (HOOKENTRY-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('HOOKENTRY-03: an event left with no entries is removed, not left as an empty array', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-03-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-guardrail.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.ok(
+      !(after.hooks && 'PreToolUse' in after.hooks),
+      'an event with nothing left in it must be deleted, not left as [] (HOOKENTRY-03).\n' +
+        'Got hooks: ' +
+        JSON.stringify(after.hooks),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── an unreadable settings.json must never be silently replaced ──
 
 function readSettingsFile(tmpDir) {
@@ -4668,8 +4869,8 @@ test('SETTINGS-02: an unrecoverable settings.json is refused, not overwritten', 
   }
 });
 
-// Control for SETTINGS-01: strict-valid settings must take the ordinary path —
-// no backup file, no warning, user keys intact.
+// Control for the JSONC test above: strict-valid settings must take the
+// ordinary path — no backup file, no warning, user keys intact.
 test('SETTINGS-03: a valid settings.json round-trips without a backup', () => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-03-'));
   try {
