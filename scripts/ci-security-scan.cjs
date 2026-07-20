@@ -52,20 +52,36 @@ const SCAN_PATHS = [
   'CLAUDE.md',
 ];
 
-// Exact repository paths whose high-confidence hits do not fail the build.
+// Exact repository paths permitted to declare exempt regions. Being listed
+// here exempts nothing on its own — it only means markers in this file are
+// honoured. What is exempt is the text between them, so prose added anywhere
+// else in the file blocks exactly as it would in any other file.
 //
-// Both entries are the injection detector itself and its written reference:
-// they enumerate the attack strings they exist to recognise, so every scan
-// trips on them and the repository would block its own security work.
+// Both entries enumerate the attack strings they exist to recognise, so they
+// trip their own detector and the repository would otherwise block its own
+// security work. `security-untrusted-content.md` is @-included into three
+// shipped workflows, which makes it the most attractive file in the tree to
+// poison; a whole-file exemption would have covered every line an attacker
+// appended to it.
 //
-// These files are still scanned and every finding is still emitted as an
-// annotation — the exemption removes the failure, not the signal. Exact
-// paths only (no prefixes, no globs), and the test suite deep-equals this
-// array so it cannot grow without a deliberate, reviewed edit.
-const BLOCK_EXEMPT_PATHS = [
+// Findings are still emitted for exempt matches — the exemption removes the
+// failure, not the signal. Exact paths only (no prefixes, no globs), and the
+// test suite deep-equals this array so it cannot grow unreviewed.
+const REGION_EXEMPT_PATHS = [
   'gsd-ng/bin/lib/security.cjs',
   'gsd-ng/references/security-untrusted-content.md',
 ];
+
+// A marker must occupy its own line, optionally wrapped in comment syntax, so
+// it cannot be smuggled into the middle of a sentence.
+//
+// Markdown uses the link-reference form `[//]: # (…)`, which renders as
+// nothing. The HTML comment form is deliberately not accepted: the dotall
+// html-comment injection rule matches a whole document from a single comment
+// opener, so marking the security reference up that way — or naming the
+// syntax in this pattern — adds a false positive to the measured budget.
+const EXEMPT_MARKER =
+  /^\s*(?:\/\*|\/\/|#|\*|\[\/\/\]:\s*#\s*\()?\s*security-scan:exempt-(start|end)\s*(?:\*\/|\))?\s*$/;
 
 // Runaway-pagination guard only. It cannot establish that the whole diff was
 // retrieved: 30 pages of 100 is 3000 entries, which is exactly GitHub's own
@@ -248,10 +264,40 @@ function reconstructFromPatch(patch) {
   return kept.join('\n');
 }
 
-// Exact-path membership. Never a prefix or glob test — a prefix exemption on
-// a directory would silently cover files added to it later.
-function isBlockExempt(filename) {
-  return BLOCK_EXEMPT_PATHS.includes(filename);
+// Exact-path membership. Never a prefix or glob test — a prefix entry on a
+// directory would silently cover files added to it later.
+function hasExemptRegions(filename) {
+  return REGION_EXEMPT_PATHS.includes(filename);
+}
+
+/**
+ * Remove the text between exempt markers.
+ *
+ * The result is what the blocking verdict is computed against; annotations
+ * still come from the full text.
+ *
+ * An unterminated region is treated as no exemption at all rather than as one
+ * running to end of file. Otherwise a single added start marker would exempt
+ * everything below it.
+ *
+ * @param {string} content
+ * @returns {string} content with every closed exempt region removed
+ */
+function stripExemptRegions(content) {
+  const text = String(content);
+  const kept = [];
+  let inside = false;
+
+  for (const line of text.split('\n')) {
+    const marker = EXEMPT_MARKER.exec(line);
+    if (marker) {
+      inside = marker[1] === 'start';
+      continue;
+    }
+    if (!inside) kept.push(line);
+  }
+
+  return inside ? text : kept.join('\n');
 }
 
 function formatAnnotation(annotation) {
@@ -282,7 +328,12 @@ async function analyzePullRequestFiles(files, opts = {}) {
   let blobScannedCount = 0;
 
   for (const file of scannable) {
-    const hasPatch = typeof file.patch === 'string' && file.patch !== '';
+    // A file carrying exempt regions is read whole rather than from its diff.
+    // A hunk need not include the marker lines that enclose the text it
+    // changes, so the region structure is only intact in the full file.
+    const regionAware = hasExemptRegions(file.filename);
+    const hasPatch =
+      !regionAware && typeof file.patch === 'string' && file.patch !== '';
     let content = hasPatch ? reconstructFromPatch(file.patch) : '';
 
     // No diff hunk. The API omits `patch` for oversized and binary-classified
@@ -309,20 +360,29 @@ async function analyzePullRequestFiles(files, opts = {}) {
     const result = scanForInjection(content, { external: true });
     if (result.clean) continue;
 
-    const exempt = isBlockExempt(file.filename);
+    // Exemption is decided per pattern, not per file: a rule that still fires
+    // once the exempt regions are removed is firing on unexempt text, even if
+    // the same rule also matches a quoted example inside a region.
+    const blockedOutsideRegions = regionAware
+      ? new Set(
+          scanForInjection(stripExemptRegions(content), { external: true })
+            .blocked,
+        )
+      : null;
 
-    if (result.blocked.length > 0) {
-      if (!exempt) hasBlocking = true;
-      for (const pattern of result.blocked) {
-        annotations.push({
-          level: exempt ? 'warning' : 'error',
-          file: file.filename,
-          message: exempt
-            ? `High-confidence injection pattern (known detector content, not blocking — review manually): ${pattern}`
-            : `High-confidence injection pattern detected: ${pattern}`,
-        });
-      }
-      if (exempt) warningCount += result.blocked.length;
+    for (const pattern of result.blocked) {
+      const exempt =
+        blockedOutsideRegions !== null && !blockedOutsideRegions.has(pattern);
+      if (exempt) warningCount++;
+      else hasBlocking = true;
+
+      annotations.push({
+        level: exempt ? 'warning' : 'error',
+        file: file.filename,
+        message: exempt
+          ? `High-confidence injection pattern inside a declared exempt region (not blocking — review manually): ${pattern}`
+          : `High-confidence injection pattern detected: ${pattern}`,
+      });
     }
 
     for (const pattern of result.findings) {
@@ -431,7 +491,8 @@ module.exports = {
   EXIT_BLOCKED,
   EXIT_INCOMPLETE,
   SCAN_PATHS,
-  BLOCK_EXEMPT_PATHS,
+  REGION_EXEMPT_PATHS,
+  EXEMPT_MARKER,
   MAX_FILE_PAGES,
   parseNextLink,
   fetchPullRequest,
@@ -439,7 +500,8 @@ module.exports = {
   fetchFileContent,
   shouldScan,
   reconstructFromPatch,
-  isBlockExempt,
+  hasExemptRegions,
+  stripExemptRegions,
   formatAnnotation,
   analyzePullRequestFiles,
   main,

@@ -48,6 +48,9 @@ const { CONFUSABLES_MAP } = require('./confusables.cjs');
  *
  * Exported for test visibility.
  */
+
+/* security-scan:exempt-start */
+
 const INJECTION_PATTERNS = [
   // Direct instruction override
   /ignore\s+(all\s+)?previous\s+instructions/i,
@@ -524,6 +527,8 @@ const INJECTION_PATTERNS_TIERED = [
   },
 ];
 
+/* security-scan:exempt-end */
+
 // ─── validatePath ─────────────────────────────────────────────────────────────
 
 /**
@@ -987,10 +992,12 @@ function securityWarningFor(content, opts = {}) {
     return null;
   }
   const allFindings = [...result.blocked, ...result.findings];
+  /* security-scan:exempt-start */
   // Surface "homoglyph evasion" phrase when any finding/blocked entry
   // carries the [homoglyph-evasion] tag. This gives agents an explicit cue that
   // a Unicode-substitution attack was attempted (no innocent reason to write
   // "ignore previous instructions" with a Cyrillic а).
+  /* security-scan:exempt-end */
   const evasionDetected = allFindings.some((f) =>
     f.includes('[homoglyph-evasion]'),
   );
