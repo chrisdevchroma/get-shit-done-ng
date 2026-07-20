@@ -23,7 +23,8 @@ const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
 // agent may read as instructions (commands, agent definitions, hooks, the
 // packaged runtime, workflow and script code, prose docs shipped alongside).
 // Matching is a plain prefix test, so directory entries end in '/' and bare
-// filenames match that file at the repository root.
+// filenames match that file at the repository root. Root files are covered
+// only by name, so every tracked root markdown file must be listed here.
 //
 // Deliberately NOT covered: tests/ and benchmarks/. Those hold the detector's
 // own fixture corpus — files that exist precisely to contain attack strings —
@@ -49,7 +50,12 @@ const SCAN_PATHS = [
   'hooks/',
   'scripts/',
   'AGENTS.md',
+  'CHANGELOG.md',
   'CLAUDE.md',
+  'CONTRIBUTING.md',
+  'README.md',
+  'SECURITY.md',
+  'VERSIONING.md',
 ];
 
 // Exact repository paths permitted to declare exempt regions. Being listed

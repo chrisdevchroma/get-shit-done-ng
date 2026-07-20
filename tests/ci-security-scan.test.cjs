@@ -32,6 +32,17 @@ function trackedTopLevelDirs() {
   return dirs;
 }
 
+function trackedRootMarkdown() {
+  const out = execFileSync('git', ['ls-files'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  return out
+    .trim()
+    .split('\n')
+    .filter((line) => !line.includes('/') && line.endsWith('.md'));
+}
+
 function fakeResponse({ ok = true, status = 200, body = [], link = null }) {
   return {
     ok,
@@ -125,6 +136,20 @@ test('SCAN-PATHS-01: scan paths cover every tracked agent-context directory', ()
   }
 });
 
+test('SCAN-PATHS-04: scan paths cover every tracked root markdown file', () => {
+  // The directory sweep above skips paths with no slash, so root files can
+  // only be covered by name. Enumerate them rather than trusting that list.
+  const covered = new Set(scanner.SCAN_PATHS);
+  const uncovered = trackedRootMarkdown().filter((f) => !covered.has(f));
+
+  assert.deepEqual(
+    uncovered,
+    [],
+    `tracked root markdown is read as agent context but is not scanned: ${uncovered.join(', ')}. ` +
+      'Add each to SCAN_PATHS.',
+  );
+});
+
 test('SCAN-PATHS-02: the scan workflow starts for every pull request, unfiltered', () => {
   // SCAN_WF is declared below; test bodies run after module evaluation.
   const workflowYml = fs.readFileSync(SCAN_WF, 'utf8');
@@ -152,7 +177,8 @@ test('SCAN-PATHS-03: SCAN_PATHS still governs which changed files are scanned', 
   assert.equal(scanner.shouldScan('gsd-ng/references/x.md'), true);
   assert.equal(scanner.shouldScan('package.json'), false);
   assert.equal(scanner.shouldScan('package-lock.json'), false);
-  assert.equal(scanner.shouldScan('README.md'), false);
+  assert.equal(scanner.shouldScan('LICENSE'), false);
+  assert.equal(scanner.shouldScan('README.md'), true);
   assert.equal(scanner.shouldScan('tests/fixtures/attack.jsonl'), false);
 
   // And the filter really is applied: injection text in an unscanned file is
@@ -850,7 +876,7 @@ test('SCAN-FILTER-01: out-of-scope and removed files are not scanned', async () 
       patch: payload,
     },
     { filename: 'agents/deleted.md', status: 'removed', patch: payload },
-    { filename: 'README.md', status: 'modified', patch: payload },
+    { filename: 'LICENSE', status: 'modified', patch: payload },
   ]);
 
   assert.deepEqual(report.scannable, []);
