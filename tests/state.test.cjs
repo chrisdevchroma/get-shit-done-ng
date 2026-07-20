@@ -4456,3 +4456,156 @@ describe('cmdStateAdvancePlan derives position from disk', () => {
     assert.strictEqual(currentPlanInState(), '3');
   });
 });
+
+// ─── cmdStateAdvancePlan distinguishes a rewind from an advance ────────
+
+describe('cmdStateAdvancePlan rewind reporting', () => {
+  let tmpDir;
+  let statePath;
+  let phaseDir;
+
+  const PLAN_IDS = ['07-01', '07-02', '07-03', '07-04', '07-05'];
+
+  function seedPhase(currentPlan) {
+    phaseDir = path.join(tmpDir, '.planning', 'phases', '07-rewind');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (const id of PLAN_IDS) {
+      fs.writeFileSync(
+        path.join(phaseDir, `${id}-PLAN.md`),
+        `# Plan ${id}\n`,
+        'utf-8',
+      );
+    }
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 07',
+        '**Current Phase Name:** Rewind',
+        `**Current Plan:** ${currentPlan}`,
+        '**Total Plans in Phase:** 5',
+        '**Status:** Executing',
+        '**Last Activity:** 2024-01-10',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
+  }
+
+  function completePlans(ids) {
+    for (const id of ids) {
+      fs.writeFileSync(
+        path.join(phaseDir, `${id}-SUMMARY.md`),
+        `# Summary ${id}\n`,
+        'utf-8',
+      );
+    }
+  }
+
+  function currentPlanInState() {
+    const content = fs.readFileSync(statePath, 'utf-8');
+    const match = content.match(/\*\*Current Plan:\*\*\s*(.+)/);
+    return match ? match[1].trim() : null;
+  }
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a backwards correction is not reported as a plain advance', () => {
+    seedPhase('07-04');
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.previous_plan, 4);
+    assert.strictEqual(output.current_plan, 1);
+    assert.strictEqual(output.rewound, true);
+    assert.strictEqual(
+      output.advanced,
+      false,
+      'a caller branching on `advanced` alone must not read a rewind as progress',
+    );
+    assert.strictEqual(
+      output.reason,
+      'rewound',
+      '`advanced: false` also means last_plan, so the reason must disambiguate',
+    );
+    assert.strictEqual(currentPlanInState(), '07-01');
+  });
+
+  test('a rewind is distinguishable from an advance in plain-text mode', () => {
+    seedPhase('07-04');
+    const rewind = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(rewind.success, `Command failed: ${rewind.error}`);
+
+    cleanup(tmpDir);
+    tmpDir = createTempProject();
+    seedPhase('07-01');
+    completePlans(['07-01', '07-02']);
+    const advance = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(advance.success, `Command failed: ${advance.error}`);
+
+    assert.notStrictEqual(
+      rewind.output,
+      advance.output,
+      'terminal output must show that the counter went backwards',
+    );
+    assert.strictEqual(rewind.output, 'rewound');
+  });
+
+  test('a genuine advance is still reported as one', () => {
+    seedPhase('07-01');
+    completePlans(['07-01', '07-02']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.rewound, false);
+    assert.strictEqual(output.previous_plan, 1);
+    assert.strictEqual(output.current_plan, 3);
+    assert.strictEqual(output.reason, undefined);
+    assert.strictEqual(currentPlanInState(), '07-03');
+  });
+
+  test('a genuine advance still prints true in plain-text mode', () => {
+    seedPhase('07-01');
+    completePlans(['07-01', '07-02']);
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.strictEqual(result.output, 'true');
+  });
+
+  test('parallel rewinds converge on the position implied by disk', async () => {
+    seedPhase('07-04');
+    completePlans(['07-01']);
+
+    const results = await Promise.all([
+      advancePlanAsync(tmpDir),
+      advancePlanAsync(tmpDir),
+      advancePlanAsync(tmpDir),
+    ]);
+
+    for (const r of results) {
+      assert.strictEqual(r.code, 0, `advance-plan exited ${r.code}: ${r.stderr}`);
+      const output = JSON.parse(r.output);
+      assert.strictEqual(
+        output.current_plan,
+        2,
+        'every concurrent caller must compute the same position from disk',
+      );
+      assert.strictEqual(output.rewound, true);
+      assert.strictEqual(output.advanced, false);
+    }
+
+    assert.strictEqual(currentPlanInState(), '07-02');
+  });
+});

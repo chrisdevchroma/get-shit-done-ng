@@ -430,19 +430,21 @@ function cmdStateAdvancePlan(cwd) {
     writeStateMd(statePath, content, cwd);
     // Deriving from disk can land *behind* the stored value — a STATE.md that
     // claims more progress than the summaries on disk support gets corrected
-    // downwards. The new position is right, but calling that an advance reads
-    // as forward progress, so say plainly which way the counter moved.
+    // downwards. `advanced` is reserved for forward movement so a caller
+    // branching on it alone cannot read a correction as progress.
+    const rewound = nextPlan < currentPlan;
     output(
       {
-        advanced: true,
-        rewound: nextPlan < currentPlan,
+        advanced: !rewound,
+        rewound,
+        ...(rewound ? { reason: 'rewound' } : {}),
         previous_plan: currentPlan,
         current_plan: nextPlan,
         total_plans: totalPlans,
         completed_plans: completedOnDisk,
         derived_from_disk: derivedFromDisk,
       },
-      'true',
+      rewound ? 'rewound' : 'true',
     );
   }
 }
