@@ -4576,6 +4576,22 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
     assert.strictEqual(currentPlanInState(), '07-03');
   });
 
+  test('an unchanged position is not a rewind', () => {
+    // A retried executor re-runs advance-plan against the same disk state: the
+    // position it computes equals the one already stored. Nothing moved
+    // backwards, so nothing should say it did.
+    seedPhase('07-03');
+    completePlans(['07-01', '07-02']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.previous_plan, 3);
+    assert.strictEqual(output.current_plan, 3);
+    assert.strictEqual(output.rewound, false);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(currentPlanInState(), '07-03');
+  });
+
   test('a genuine advance still prints true in plain-text mode', () => {
     seedPhase('07-01');
     completePlans(['07-01', '07-02']);
