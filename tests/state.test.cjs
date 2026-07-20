@@ -4588,8 +4588,26 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
     assert.strictEqual(output.previous_plan, 3);
     assert.strictEqual(output.current_plan, 3);
     assert.strictEqual(output.rewound, false);
-    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(
+      output.advanced,
+      false,
+      'nothing moved, so nothing advanced either',
+    );
+    assert.strictEqual(
+      output.reason,
+      'idempotent',
+      '`advanced: false` also means last_plan and rewound, so the reason must disambiguate',
+    );
     assert.strictEqual(currentPlanInState(), '07-03');
+  });
+
+  test('an unchanged position is distinguishable from an advance in plain-text mode', () => {
+    seedPhase('07-03');
+    completePlans(['07-01', '07-02']);
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(result.output, 'unchanged');
   });
 
   test('a genuine advance still prints true in plain-text mode', () => {
@@ -4631,7 +4649,7 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
       `at least one caller must report the rewind: ${JSON.stringify(outputs)}`,
     );
     assert.ok(
-      outputs.every((o) => o.rewound === true || o.advanced === true),
+      outputs.every((o) => o.rewound === true || o.reason === 'idempotent'),
       `every caller is either the rewind or an idempotent re-run: ${JSON.stringify(outputs)}`,
     );
 
