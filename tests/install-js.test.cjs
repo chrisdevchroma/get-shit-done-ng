@@ -4550,6 +4550,176 @@ test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash
   }
 });
 
+// ── an unreadable settings.json must never be silently replaced ──
+
+function readSettingsFile(tmpDir) {
+  return fs.readFileSync(
+    path.join(tmpDir, '.claude', 'settings.json'),
+    'utf8',
+  );
+}
+
+function seedSettings(tmpDir, body) {
+  const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, body);
+  return settingsPath;
+}
+
+test('SETTINGS-01: JSONC settings.json keeps model/env/permissions and the original is backed up', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-01-'));
+  try {
+    // A comment and a trailing comma — strict JSON.parse rejects both, and this
+    // is what settings authors demonstrably hand-write.
+    const original = [
+      '{',
+      '  // my preferred model',
+      '  "model": "opus",',
+      '  "env": { "MY_VAR": "my-value" },',
+      '  "permissions": {',
+      '    "allow": ["Bash(my-tool:*)"],',
+      '  },',
+      '}',
+      '',
+    ].join('\n');
+    seedSettings(tmpDir, original);
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r.status,
+      0,
+      'install over a JSONC settings.json must exit 0\nstderr: ' +
+        (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.strictEqual(
+      after.model,
+      'opus',
+      'user model must survive install over JSONC settings (SETTINGS-01)',
+    );
+    assert.deepStrictEqual(
+      after.env,
+      { MY_VAR: 'my-value' },
+      'user env must survive install over JSONC settings (SETTINGS-01)',
+    );
+    assert.ok(
+      Array.isArray(after.permissions && after.permissions.allow) &&
+        after.permissions.allow.includes('Bash(my-tool:*)'),
+      'user permissions.allow entry must survive install over JSONC settings (SETTINGS-01).\n' +
+        'Got: ' +
+        JSON.stringify(after.permissions),
+    );
+
+    // Recovery path: the write is a reformat that drops their comments, so the
+    // original text must still exist somewhere on disk.
+    const backups = fs
+      .readdirSync(path.join(tmpDir, '.claude'))
+      .filter((f) => f.startsWith('settings.json.gsd-backup'));
+    assert.strictEqual(
+      backups.length,
+      1,
+      'exactly one backup of the original settings.json must be written (SETTINGS-01). Found: ' +
+        JSON.stringify(backups),
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.claude', backups[0]), 'utf8'),
+      original,
+      'the backup must be the byte-identical original, comments included (SETTINGS-01)',
+    );
+    assert.ok(
+      /settings\.json/.test(r.stdout || '') &&
+        /backed up|backup/i.test(r.stdout || ''),
+      'the reformat must be reported, not silent (SETTINGS-01).\nstdout: ' +
+        (r.stdout || '').slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('SETTINGS-02: an unrecoverable settings.json is refused, not overwritten', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-02-'));
+  try {
+    const original = '{ "model": "opus", "env": { "MY_VAR": "my-value" }';
+    seedSettings(tmpDir, original);
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.notStrictEqual(
+      r.status,
+      0,
+      'install must refuse rather than proceed over an unparseable settings.json (SETTINGS-02).\n' +
+        'stdout: ' +
+        (r.stdout || '').slice(0, 2000),
+    );
+    assert.strictEqual(
+      readSettingsFile(tmpDir),
+      original,
+      'an unparseable settings.json must be left byte-identical (SETTINGS-02)',
+    );
+    const message = (r.stderr || '') + (r.stdout || '');
+    assert.ok(
+      /settings\.json/.test(message),
+      'the refusal must name the offending file (SETTINGS-02).\nOutput: ' +
+        message.slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// Control for SETTINGS-01: strict-valid settings must take the ordinary path —
+// no backup file, no warning, user keys intact.
+test('SETTINGS-03: a valid settings.json round-trips without a backup', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-03-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          model: 'opus',
+          env: { MY_VAR: 'my-value' },
+          permissions: { allow: ['Bash(my-tool:*)'] },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r.status,
+      0,
+      'install over a valid settings.json must exit 0\nstderr: ' +
+        (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.strictEqual(after.model, 'opus', 'user model must survive install');
+    assert.deepStrictEqual(
+      after.env,
+      { MY_VAR: 'my-value' },
+      'user env must survive install',
+    );
+    assert.ok(
+      after.permissions.allow.includes('Bash(my-tool:*)'),
+      'user permissions.allow entry must survive install',
+    );
+
+    const backups = fs
+      .readdirSync(path.join(tmpDir, '.claude'))
+      .filter((f) => f.startsWith('settings.json.gsd-backup'));
+    assert.deepStrictEqual(
+      backups,
+      [],
+      'a valid settings.json must not trigger a backup (SETTINGS-03). Found: ' +
+        JSON.stringify(backups),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
 // ── --clean must not delete through a symlinked managed directory ──
 
 function runInstallIn(tmpDir, rt, extraArgs = []) {

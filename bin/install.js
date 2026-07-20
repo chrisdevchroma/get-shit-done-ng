@@ -267,23 +267,90 @@ function buildHookCommand(configDir, hookName) {
 }
 
 /**
- * Read and parse settings.json, returning empty object if it doesn't exist
+ * Remove line and block comments, then trailing commas, both string-aware.
+ * Claude Code accepts JSONC in settings.json, so a hand-written file that
+ * JSON.parse rejects is usually still meaningful rather than damaged.
+ */
+function stripJsonc(text) {
+  let out = '';
+  let inString = false, escaped = false, inLine = false, inBlock = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
+    if (inLine) {
+      if (c === '\n') { inLine = false; out += c; }
+      continue;
+    }
+    if (inBlock) {
+      if (c === '*' && n === '/') { inBlock = false; i++; }
+      continue;
+    }
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; out += c; continue; }
+    if (c === '/' && n === '/') { inLine = true; i++; continue; }
+    if (c === '/' && n === '*') { inBlock = true; i++; continue; }
+    if (c === ',') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] === '}' || text[j] === ']') continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+// Paths whose on-disk text only parsed after JSONC stripping. Writing them back
+// as strict JSON discards the user's comments, so writeSettings preserves the
+// original alongside first.
+const jsoncSettingsPaths = new Set();
+
+/**
+ * Read and parse settings.json, returning empty object if it doesn't exist.
+ *
+ * A file that cannot be parsed at all is the user's content, not ours to
+ * discard: returning {} here made the caller write a fresh file over it and
+ * silently destroy every key in it. There is no safe way to merge into settings
+ * we cannot read, so this refuses instead.
  */
 function readSettings(settingsPath) {
-  if (fs.existsSync(settingsPath)) {
+  if (!fs.existsSync(settingsPath)) return {};
+  const raw = fs.readFileSync(settingsPath, 'utf8');
+  try {
+    return JSON.parse(raw);
+  } catch (strictError) {
     try {
-      return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      return {};
+      const parsed = JSON.parse(stripJsonc(raw));
+      jsoncSettingsPaths.add(settingsPath);
+      return parsed;
+    } catch {
+      console.error(`\n  ${yellow}Error: cannot parse ${settingsPath}${reset}`);
+      console.error(`  ${dim}${strictError.message}${reset}`);
+      console.error(`  Refusing to continue — overwriting it would destroy the settings it holds.`);
+      console.error(`  Fix the syntax, or move the file aside, then run the installer again.\n`);
+      process.exit(1);
     }
   }
-  return {};
 }
 
 /**
  * Write settings.json with proper formatting
  */
 function writeSettings(settingsPath, settings) {
+  if (jsoncSettingsPaths.has(settingsPath) && fs.existsSync(settingsPath)) {
+    let backupPath = settingsPath + '.gsd-backup';
+    let n = 2;
+    while (fs.existsSync(backupPath)) {
+      backupPath = settingsPath + '.gsd-backup-' + n++;
+    }
+    fs.copyFileSync(settingsPath, backupPath);
+    jsoncSettingsPaths.delete(settingsPath);
+    console.log(`  ${yellow}!${reset}  ${settingsPath} used JSONC syntax — rewritten as strict JSON, original backed up to ${path.basename(backupPath)}`);
+  }
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
