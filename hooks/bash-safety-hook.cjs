@@ -16,6 +16,8 @@
  *   Allow: {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"..."}}
  *   Deny:  {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
  *   Fall-through (no output): exit 0 silently
+ *   Unread stdin (timeout): deny — the command was never checked, and silence
+ *     would approve it outright under an auto-approving permission mode
  *
  * Kill switch: GSD_DISABLE_BASH_HOOK=1 — exits immediately (checked FIRST, before stdin read)
  * Debug logging: GSD_HOOK_DEBUG=1 — writes verbose logs to stderr
@@ -1547,6 +1549,24 @@ if (require.main === module) {
 
   const debug = process.env.GSD_HOOK_DEBUG === '1';
 
+  // An unread payload leaves the command unexamined. Staying silent would let
+  // it through under an auto-approving permission mode, so deny instead.
+  const denyOnUnreadStdin = () => {
+    if (debug)
+      process.stderr.write('[gsd-bash-hook] stdin timeout, failing closed\n');
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            'gsd bash safety hook could not read its stdin payload before timing out, so the command was never checked against the allowlist. Retry, or set GSD_DISABLE_BASH_HOOK=1 to bypass the hook.',
+        },
+      }),
+    );
+    process.exit(0);
+  };
+
   readStdinWithTimeout((input) => {
     try {
       const data = JSON.parse(input);
@@ -1606,7 +1626,7 @@ if (require.main === module) {
         process.stderr.write('[gsd-bash-hook] error: ' + _e.message + '\n');
       process.exit(0);
     }
-  });
+  }, { onTimeout: denyOnUnreadStdin });
 }
 
 // ── Module exports for testability ───────────────────────────────────────────
