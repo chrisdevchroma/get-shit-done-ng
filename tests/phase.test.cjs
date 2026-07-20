@@ -4620,15 +4620,99 @@ ${reqLine}**Plans:** 2 plans
     const result = runGsdTools('phase complete 70 --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
-    const closed = JSON.parse(result.output).requirements_closed;
+    const output = JSON.parse(result.output);
     assert.deepStrictEqual(
-      closed,
+      output.requirements_closed,
       ['DLV-EXECUTED'],
       'narrowing is inert if the phase-level line closes the rest anyway',
+    );
+    assert.deepStrictEqual(
+      output.requirements_narrowed_summaries,
+      [{ summary: '70-01-SUMMARY.md', withheld: ['DLV-DEVIATED'] }],
+      'a refusal nobody is told about is the failure this reporting prevents',
     );
     const req = readRequirements();
     assert.ok(req.includes('- [ ] **DLV-DEVIATED**'));
     assert.ok(req.includes('- [ ] **DLV-ROADMAP**'));
+  });
+
+  test('a narrowed record names the withheld IDs even with no roadmap line', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': {
+          declared: ['DLV-EXECUTED', 'DLV-DEVIATED', 'DLV-UNRUN'],
+          summary: ['DLV-EXECUTED'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(
+      JSON.parse(result.output).requirements_narrowed_summaries,
+      [
+        {
+          summary: '70-01-SUMMARY.md',
+          withheld: ['DLV-DEVIATED', 'DLV-UNRUN'],
+        },
+      ],
+      '"which requirement did this plan not deliver" must be answerable',
+    );
+  });
+
+  // Pins the all-or-nothing gate against the surgical form (admit the roadmap
+  // line, subtract only the withheld IDs). Under the surgical form the
+  // roadmap-only ID would close here, since no delivery record names it. It
+  // must not: an ID no plan declared has no delivery evidence, and a narrowing
+  // elsewhere in the phase disproves that every intent landed.
+  test('an unrelated plan narrowing withholds a roadmap-only ID', () => {
+    seedDeliveryPhase({
+      roadmapRequirements: 'DLV-ROADMAP',
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED'], summary: ['DLV-EXECUTED'] },
+        '70-02': {
+          declared: ['DLV-DEVIATED', 'DLV-UNRUN'],
+          summary: ['DLV-DEVIATED'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.requirements_closed.includes('DLV-ROADMAP'),
+      'a roadmap-only ID must not close on the strength of a partial phase',
+    );
+    assert.deepStrictEqual(output.requirements_narrowed_summaries, [
+      { summary: '70-02-SUMMARY.md', withheld: ['DLV-UNRUN'] },
+    ]);
+    assert.ok(
+      readRequirements().includes('- [ ] **DLV-ROADMAP**'),
+      'and the user is told which record withheld, so the gap is diagnosable',
+    );
+  });
+
+  test('a summary that delivers everything it declared is not reported as narrowed', () => {
+    seedDeliveryPhase({
+      plans: {
+        '70-01': {
+          declared: ['DLV-EXECUTED', 'DLV-DEVIATED'],
+          summary: ['DLV-DEVIATED', 'DLV-EXECUTED'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(
+      JSON.parse(result.output).requirements_narrowed_summaries,
+      [],
+      'order and case differences are not a narrowing',
+    );
   });
 
   test('the roadmap requirements line closes once every plan has a summary', () => {

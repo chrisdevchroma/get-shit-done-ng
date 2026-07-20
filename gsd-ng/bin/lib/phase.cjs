@@ -143,8 +143,22 @@ function readFrontmatterRequirements(filePath, field) {
  * its plan declared. Otherwise the phase-level intent would re-close exactly
  * what the per-plan records just withheld.
  *
+ * That gate is deliberately all-or-nothing, and must stay that way. The
+ * surgical alternative — admit the line and subtract only the IDs some record
+ * withheld — looks tighter and is wrong, because it assumes the withheld IDs
+ * are exactly the work that did not land. Requirement IDs do not partition work
+ * that cleanly: a task an executor dropped can be the work behind a requirement
+ * that plan never listed, including one only the roadmap names. So subtracting
+ * ID-by-ID closes roadmap-only IDs on the strength of "every plan ran", which
+ * is precisely the inference the narrowing disproved. The two failure modes are
+ * not symmetric — over-closing asserts in the traceability table that unshipped
+ * work is done and nobody is told, while under-closing leaves an ID Pending and
+ * reports why in `narrowedSummaries`, which a re-run clears once the narrowing
+ * is resolved. Fail closed, and report.
+ *
  * @returns {{ids: string[], undeclared: string[], unreadableSummaries: string[],
- *            emptySummaries: string[]}}
+ *            emptySummaries: string[],
+ *            narrowedSummaries: Array<{summary: string, withheld: string[]}>}}
  */
 function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   const ids = [];
@@ -167,6 +181,7 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   const undeclaredSeen = new Set();
   const unreadableSummaries = [];
   const emptySummaries = [];
+  const narrowedSummaries = [];
   let withheldFromPlans = false;
 
   for (const planFile of phaseInfo.plans || []) {
@@ -200,7 +215,11 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     }
 
     const deliveredKeys = new Set(delivery.ids.map((id) => id.toLowerCase()));
-    if (declaredIds.some((id) => !deliveredKeys.has(id.toLowerCase()))) {
+    const withheld = declaredIds.filter(
+      (id) => !deliveredKeys.has(id.toLowerCase()),
+    );
+    if (withheld.length > 0) {
+      narrowedSummaries.push({ summary: summaryFile, withheld });
       withheldFromPlans = true;
     }
 
@@ -233,7 +252,13 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
   }
 
-  return { ids, undeclared, unreadableSummaries, emptySummaries };
+  return {
+    ids,
+    undeclared,
+    unreadableSummaries,
+    emptySummaries,
+    narrowedSummaries,
+  };
 }
 
 // Status values the traceability table uses. Doubles as the signal that a
@@ -1523,6 +1548,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
   let requirementsUndeclared = [];
   let requirementsUnreadableSummaries = [];
   let requirementsEmptySummaries = [];
+  let requirementsNarrowedSummaries = [];
   let requirementsBlockedHint = null;
   if (requirementsBlockedBy) {
     // Verifier says the goal is not met — leave every ID Pending. A later
@@ -1559,6 +1585,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirementsUndeclared = collected.undeclared;
     requirementsUnreadableSummaries = collected.unreadableSummaries;
     requirementsEmptySummaries = collected.emptySummaries;
+    requirementsNarrowedSummaries = collected.narrowedSummaries;
   }
 
   // Find next phase — check both filesystem AND roadmap
@@ -1719,6 +1746,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirements_undeclared: requirementsUndeclared,
     requirements_unreadable_summaries: requirementsUnreadableSummaries,
     requirements_empty_summaries: requirementsEmptySummaries,
+    requirements_narrowed_summaries: requirementsNarrowedSummaries,
     verification_status: verificationStatus,
     verification_stale: verificationStale,
     verification_stale_summaries: staleSummaries,
