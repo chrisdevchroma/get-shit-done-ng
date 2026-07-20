@@ -58,13 +58,6 @@ function readRequirementIdField(value) {
   return ids;
 }
 
-// The roadmap phase-section requirements line. Every producer — templates,
-// gsd-roadmapper, discuss-phase, `phase add` — writes the colon outside the
-// bold, matching init.cjs. The colon-inside form is accepted too because
-// documents in the wild carry it and rejecting them would silently close
-// nothing for those projects.
-const ROADMAP_REQUIREMENTS_LINE = /\*\*Requirements(?:\*\*:|:\*\*)\s*([^\n]+)/i;
-
 /**
  * The identifier a plan document shares with its execution record, so the two
  * can be paired. Both the numbered and the bare filename forms reduce to the
@@ -74,17 +67,44 @@ function planDocumentId(filename) {
   return filename.replace(/-?(?:PLAN|SUMMARY)\.md$/i, '');
 }
 
+const FRONTMATTER_OPEN = /^---\r?\n/;
+const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]+?\r?\n---/;
+
+// The roadmap phase-section requirements line. Every producer — templates,
+// gsd-roadmapper, discuss-phase, `phase add` — writes the colon outside the
+// bold, matching init.cjs. The colon-inside form is accepted too because
+// documents in the wild carry it and rejecting them would silently close
+// nothing for those projects.
+const ROADMAP_REQUIREMENTS_LINE = /\*\*Requirements(?:\*\*:|:\*\*)\s*([^\n]+)/i;
+
 /**
- * Read the requirement IDs the frontmatter of one file declares under `field`.
- * An unreadable file contributes nothing rather than aborting collection.
+ * Read the requirement IDs one file records under `field`, keeping the three
+ * states a caller has to tell apart:
+ *
+ *   - `unreadable` — the file could not be read, or opens a frontmatter block it
+ *     never closes. A truncated document parses to an empty object, so without
+ *     the delimiter check the strongest signal available (this record cannot be
+ *     trusted) collapses into the weakest (no opinion). A document with no
+ *     opening delimiter at all is not corrupt, merely frontmatter-less, and is
+ *     reported `absent`;
+ *   - `absent` — the file carries no such field;
+ *   - `present` — the field is there, and its value may be empty.
+ *
+ * @returns {{status: 'unreadable'|'absent'|'present', ids: string[]}}
  */
 function readFrontmatterRequirements(filePath, field) {
+  let content;
   try {
-    const fm = extractFrontmatter(fs.readFileSync(filePath, 'utf-8'));
-    return readRequirementIdField(fm && fm[field]);
+    content = fs.readFileSync(filePath, 'utf-8');
   } catch {
-    return [];
+    return { status: 'unreadable', ids: [] };
   }
+  if (FRONTMATTER_OPEN.test(content) && !FRONTMATTER_BLOCK.test(content)) {
+    return { status: 'unreadable', ids: [] };
+  }
+  const value = extractFrontmatter(content)[field];
+  if (value === undefined) return { status: 'absent', ids: [] };
+  return { status: 'present', ids: readRequirementIdField(value) };
 }
 
 /**
@@ -101,19 +121,30 @@ function readFrontmatterRequirements(filePath, field) {
  *   - summary lists IDs → those are the delivered IDs, and any of them the plan
  *     never declared is returned as `undeclared` so the divergence surfaces
  *     instead of being silently accepted;
- *   - summary is silent (field absent, empty, or the file unreadable) → fall
- *     back to the plan's declaration. The field is a comparatively recent
- *     addition and its template default is an empty list, so failing closed
- *     here would strand every requirement of every phase written before it.
+ *   - summary omits the field entirely → fall back to the plan's declaration.
+ *     The field is a comparatively recent addition, so a summary written before
+ *     it existed makes no claim either way, and failing closed on silence would
+ *     strand every requirement of every phase predating it;
+ *   - summary carries the field but empty → close nothing for that plan, and
+ *     return it in `emptySummaries`. An empty list is not silence: it is a
+ *     written claim to have delivered nothing, and reading a claim of nothing as
+ *     permission to close everything inverts it;
+ *   - summary unreadable or corrupt → close nothing for that plan, and return it
+ *     in `unreadableSummaries`. Falling back here would let a truncated file
+ *     close a full declaration, which is the failure this whole mechanism exists
+ *     to prevent. An unusable record is not evidence of delivery.
  *
  * The ROADMAP.md phase section's `**Requirements**:` line is a third source and
  * is unioned in, because a phase whose plans carry no `requirements:` would
  * otherwise never close anything — phase-close is the only place closure
  * happens. It is a phase-level declaration, though, not a delivery record, so it
- * is admitted only once every plan in the phase has a summary. Until then it is
- * intent covering work that has not all landed.
+ * is admitted only when the delivery records raise nothing against it: every
+ * plan has a summary, none is empty or unreadable, and none records less than
+ * its plan declared. Otherwise the phase-level intent would re-close exactly
+ * what the per-plan records just withheld.
  *
- * @returns {{ids: string[], undeclared: string[]}}
+ * @returns {{ids: string[], undeclared: string[], unreadableSummaries: string[],
+ *            emptySummaries: string[]}}
  */
 function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
   const ids = [];
@@ -127,7 +158,68 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
 
   const phaseDir = path.join(cwd, phaseInfo.directory);
 
-  if (roadmapContent && getPhaseCompletionStatus(phaseDir).isComplete) {
+  const summaryByPlanId = new Map();
+  for (const summaryFile of phaseInfo.summaries || []) {
+    summaryByPlanId.set(planDocumentId(summaryFile), summaryFile);
+  }
+
+  const undeclared = [];
+  const undeclaredSeen = new Set();
+  const unreadableSummaries = [];
+  const emptySummaries = [];
+  let withheldFromPlans = false;
+
+  for (const planFile of phaseInfo.plans || []) {
+    const summaryFile = summaryByPlanId.get(planDocumentId(planFile));
+    if (!summaryFile) continue;
+
+    const delivery = readFrontmatterRequirements(
+      path.join(phaseDir, summaryFile),
+      'requirements-completed',
+    );
+    if (delivery.status === 'unreadable') {
+      unreadableSummaries.push(summaryFile);
+      withheldFromPlans = true;
+      continue;
+    }
+
+    const declaredIds = readFrontmatterRequirements(
+      path.join(phaseDir, planFile),
+      'requirements',
+    ).ids;
+
+    if (delivery.status === 'absent') {
+      declaredIds.forEach(add);
+      continue;
+    }
+
+    if (delivery.ids.length === 0) {
+      emptySummaries.push(summaryFile);
+      withheldFromPlans = true;
+      continue;
+    }
+
+    const deliveredKeys = new Set(delivery.ids.map((id) => id.toLowerCase()));
+    if (declaredIds.some((id) => !deliveredKeys.has(id.toLowerCase()))) {
+      withheldFromPlans = true;
+    }
+
+    const declaredKeys = new Set(declaredIds.map((id) => id.toLowerCase()));
+    for (const id of delivery.ids) {
+      add(id);
+      const key = id.toLowerCase();
+      if (!declaredKeys.has(key) && !undeclaredSeen.has(key)) {
+        undeclaredSeen.add(key);
+        undeclared.push(id);
+      }
+    }
+  }
+
+  if (
+    roadmapContent &&
+    !withheldFromPlans &&
+    getPhaseCompletionStatus(phaseDir).isComplete
+  ) {
     const phaseEsc = escapeRegex(phaseNum);
     const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
       new RegExp(
@@ -141,44 +233,7 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     if (reqMatch) parseRequirementIdList(reqMatch[1]).forEach(add);
   }
 
-  const summaryByPlanId = new Map();
-  for (const summaryFile of phaseInfo.summaries || []) {
-    summaryByPlanId.set(planDocumentId(summaryFile), summaryFile);
-  }
-
-  const undeclared = [];
-  const undeclaredSeen = new Set();
-
-  for (const planFile of phaseInfo.plans || []) {
-    const summaryFile = summaryByPlanId.get(planDocumentId(planFile));
-    if (!summaryFile) continue;
-
-    const declaredIds = readFrontmatterRequirements(
-      path.join(phaseDir, planFile),
-      'requirements',
-    );
-    const deliveredIds = readFrontmatterRequirements(
-      path.join(phaseDir, summaryFile),
-      'requirements-completed',
-    );
-
-    if (deliveredIds.length === 0) {
-      declaredIds.forEach(add);
-      continue;
-    }
-
-    const declaredKeys = new Set(declaredIds.map((id) => id.toLowerCase()));
-    for (const id of deliveredIds) {
-      add(id);
-      const key = id.toLowerCase();
-      if (!declaredKeys.has(key) && !undeclaredSeen.has(key)) {
-        undeclaredSeen.add(key);
-        undeclared.push(id);
-      }
-    }
-  }
-
-  return { ids, undeclared };
+  return { ids, undeclared, unreadableSummaries, emptySummaries };
 }
 
 // Status values the traceability table uses. Doubles as the signal that a
@@ -1466,6 +1521,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
   let requirementsOtherPhase = [];
   let requirementsUnmapped = [];
   let requirementsUndeclared = [];
+  let requirementsUnreadableSummaries = [];
+  let requirementsEmptySummaries = [];
   let requirementsBlockedHint = null;
   if (requirementsBlockedBy) {
     // Verifier says the goal is not met — leave every ID Pending. A later
@@ -1500,6 +1557,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirementsOtherPhase = closure.otherPhase;
     requirementsUnmapped = closure.unmapped;
     requirementsUndeclared = collected.undeclared;
+    requirementsUnreadableSummaries = collected.unreadableSummaries;
+    requirementsEmptySummaries = collected.emptySummaries;
   }
 
   // Find next phase — check both filesystem AND roadmap
@@ -1658,6 +1717,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
     requirements_other_phase: requirementsOtherPhase,
     requirements_unmapped: requirementsUnmapped,
     requirements_undeclared: requirementsUndeclared,
+    requirements_unreadable_summaries: requirementsUnreadableSummaries,
+    requirements_empty_summaries: requirementsEmptySummaries,
     verification_status: verificationStatus,
     verification_stale: verificationStale,
     verification_stale_summaries: staleSummaries,

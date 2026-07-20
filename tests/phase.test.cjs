@@ -4454,12 +4454,49 @@ ${reqLine}**Plans:** 2 plans
     );
   });
 
-  test('a summary with no requirements-completed falls back to its plan declaration', () => {
+  test('a summary that omits requirements-completed falls back to its plan declaration', () => {
+    const dir = seedDeliveryPhase({
+      plans: { '70-01': { declared: ['DLV-EXECUTED'] } },
+    });
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nphase: 70-delivery-tracking\n---\n# Summary\n',
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['DLV-EXECUTED'],
+      'a summary predating the field makes no claim, so the declaration stands',
+    );
+    assert.deepStrictEqual(output.requirements_empty_summaries, []);
+    assert.deepStrictEqual(output.requirements_unreadable_summaries, []);
+  });
+
+  test('a summary with no frontmatter at all is absent, not corrupt', () => {
+    const dir = seedDeliveryPhase({
+      plans: { '70-01': { declared: ['DLV-EXECUTED'] } },
+    });
+    fs.writeFileSync(path.join(dir, '70-01-SUMMARY.md'), '# Summary 70-01\n');
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      ['DLV-EXECUTED'],
+      'a frontmatter-less document is well-formed and simply carries no field',
+    );
+    assert.deepStrictEqual(output.requirements_unreadable_summaries, []);
+  });
+
+  test('an explicitly empty requirements-completed closes nothing and is reported', () => {
     seedDeliveryPhase({
-      plans: {
-        '70-01': { declared: ['DLV-EXECUTED'], summary: [] },
-        '70-02': { declared: ['DLV-DEVIATED'], summary: null },
-      },
+      plans: { '70-01': { declared: ['DLV-EXECUTED'], summary: [] } },
     });
 
     const result = runGsdTools('phase complete 70 --json', tmpDir);
@@ -4467,11 +4504,14 @@ ${reqLine}**Plans:** 2 plans
 
     const output = JSON.parse(result.output);
     assert.deepStrictEqual(
-      output.requirements_closed.slice().sort(),
-      ['DLV-DEVIATED', 'DLV-EXECUTED'],
-      'an empty or absent delivery record must not strand a plan that ran',
+      output.requirements_closed,
+      [],
+      'an empty list is a written claim to have delivered nothing, not silence',
     );
-    assert.deepStrictEqual(output.requirements_undeclared, []);
+    assert.deepStrictEqual(output.requirements_empty_summaries, [
+      '70-01-SUMMARY.md',
+    ]);
+    assert.ok(readRequirements().includes('- [ ] **DLV-EXECUTED**'));
   });
 
   test('a summary that records its IDs as a bare string is read the same way', () => {
@@ -4491,7 +4531,7 @@ ${reqLine}**Plans:** 2 plans
     ]);
   });
 
-  test('an unreadable summary falls back to its plan declaration', () => {
+  test('an unreadable summary closes nothing and is reported', () => {
     const dir = seedDeliveryPhase({
       plans: { '70-01': { declared: ['DLV-EXECUTED'] } },
     });
@@ -4502,11 +4542,93 @@ ${reqLine}**Plans:** 2 plans
     const result = runGsdTools('phase complete 70 --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      [],
+      'a record nothing can be read out of is not evidence of delivery',
+    );
+    assert.deepStrictEqual(output.requirements_unreadable_summaries, [
+      '70-01-SUMMARY.md',
+    ]);
+    assert.ok(readRequirements().includes('- [ ] **DLV-EXECUTED**'));
+  });
+
+  test('a corrupt summary does not close the declaration it was truncated out of', () => {
+    const dir = seedDeliveryPhase({
+      plans: {
+        '70-01': { declared: ['DLV-EXECUTED', 'DLV-DEVIATED'], summary: [] },
+      },
+    });
+    // Truncated mid-frontmatter: the opening delimiter is there, the closing
+    // one never arrived. This parses to an empty object, so without a block
+    // check it is indistinguishable from a summary that omitted the field.
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nphase: 70-delivery-tracking\nrequirements-comp',
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_closed,
+      [],
+      'a truncated summary must never close the full declaration',
+    );
+    assert.deepStrictEqual(output.requirements_unreadable_summaries, [
+      '70-01-SUMMARY.md',
+    ]);
+    const req = readRequirements();
+    assert.ok(req.includes('- [ ] **DLV-EXECUTED**'));
+    assert.ok(req.includes('- [ ] **DLV-DEVIATED**'));
+  });
+
+  test('a corrupt summary also withholds the roadmap requirements line', () => {
+    const dir = seedDeliveryPhase({
+      roadmapRequirements: 'DLV-ROADMAP',
+      plans: { '70-01': { declared: ['DLV-EXECUTED'], summary: [] } },
+    });
+    fs.writeFileSync(
+      path.join(dir, '70-01-SUMMARY.md'),
+      '---\nphase: 70-delivery-tracking\nrequirements-comp',
+    );
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
     assert.deepStrictEqual(
       JSON.parse(result.output).requirements_closed,
-      ['DLV-EXECUTED'],
-      'an unreadable record is silence, not a denial that the work happened',
+      [],
+      'the phase-level declaration must not re-close what the record withheld',
     );
+    assert.ok(readRequirements().includes('- [ ] **DLV-ROADMAP**'));
+  });
+
+  test('a narrowed delivery record withholds the roadmap requirements line', () => {
+    seedDeliveryPhase({
+      roadmapRequirements: 'DLV-ROADMAP',
+      plans: {
+        '70-01': {
+          declared: ['DLV-EXECUTED', 'DLV-DEVIATED'],
+          summary: ['DLV-EXECUTED'],
+        },
+      },
+    });
+
+    const result = runGsdTools('phase complete 70 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const closed = JSON.parse(result.output).requirements_closed;
+    assert.deepStrictEqual(
+      closed,
+      ['DLV-EXECUTED'],
+      'narrowing is inert if the phase-level line closes the rest anyway',
+    );
+    const req = readRequirements();
+    assert.ok(req.includes('- [ ] **DLV-DEVIATED**'));
+    assert.ok(req.includes('- [ ] **DLV-ROADMAP**'));
   });
 
   test('the roadmap requirements line closes once every plan has a summary', () => {
