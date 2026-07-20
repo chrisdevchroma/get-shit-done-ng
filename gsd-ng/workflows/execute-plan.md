@@ -398,6 +398,10 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-metric \
   --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
   --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
 ```
+
+`advance-plan` derives the position from the SUMMARY files in the phase directory, so it is safe to run concurrently from parallel waves and safe to re-run after a failure. The same derivation can move the counter *backwards* when STATE.md claims more progress than the summaries on disk support. It reports that case as `rewound` rather than `true` (`--json`: `advanced: false`, `rewound: true`, `reason: "rewound"`).
+
+A rewind is not progress. The written position is correct for what is on disk, but STATE.md and the phase directory disagreed — find out why before continuing. The usual cause is a SUMMARY that was never written or landed outside the phase directory. If plans really did complete without summaries, stop and report it; do not let the phase re-execute from the rewound position.
 </step>
 
 <step name="extract_decisions_and_issues">
