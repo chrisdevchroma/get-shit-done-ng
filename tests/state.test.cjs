@@ -4610,17 +4610,30 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
       advancePlanAsync(tmpDir),
     ]);
 
-    for (const r of results) {
+    const outputs = results.map((r) => {
       assert.strictEqual(r.code, 0, `advance-plan exited ${r.code}: ${r.stderr}`);
-      const output = JSON.parse(r.output);
+      return JSON.parse(r.output);
+    });
+
+    for (const output of outputs) {
       assert.strictEqual(
         output.current_plan,
         2,
         'every concurrent caller must compute the same position from disk',
       );
-      assert.strictEqual(output.rewound, true);
-      assert.strictEqual(output.advanced, false);
     }
+
+    // Only the caller that observes the pre-correction position moves anything
+    // backwards; whichever run last is reading state already at 07-02 and is an
+    // idempotent re-run, not a rewind.
+    assert.ok(
+      outputs.some((o) => o.rewound === true && o.advanced === false),
+      `at least one caller must report the rewind: ${JSON.stringify(outputs)}`,
+    );
+    assert.ok(
+      outputs.every((o) => o.rewound === true || o.advanced === true),
+      `every caller is either the rewind or an idempotent re-run: ${JSON.stringify(outputs)}`,
+    );
 
     assert.strictEqual(currentPlanInState(), '07-02');
   });
