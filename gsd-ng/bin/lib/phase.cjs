@@ -188,6 +188,8 @@ const TRACEABILITY_STATUSES = new Set([
 // and 'Blocked' is a human decision that closure must not silently revert.
 const CLOSEABLE_STATUSES = /^(?:pending|in progress)$/i;
 
+const SEPARATOR_CELL = /^:?-+:?$/;
+
 /**
  * Parse the traceability table out of REQUIREMENTS.md lines.
  *
@@ -223,6 +225,8 @@ function parseTraceabilityRows(lines) {
       if (cells.length < 5) continue;
       const id = cells[1].trim();
       if (!id) continue;
+      if (cells.slice(1, -1).every((c) => SEPARATOR_CELL.test(c.trim())))
+        continue;
       const status = cells[3].trim();
       block.push({
         lineIndex: j,

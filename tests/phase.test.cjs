@@ -4068,6 +4068,71 @@ describe('phase complete requirement closure', () => {
     );
   });
 
+  test('another phase’s unreadable row does not hold up this phase’s row', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 6: Earlier
+- [ ] Phase 7: Later
+
+### Phase 6: Earlier
+**Goal:** Ship the earlier half
+**Plans:** 1 plan
+
+### Phase 7: Later
+**Goal:** Never executed
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements
+
+- [ ] **REQ-SPLIT**: Delivered across two phases
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| REQ-SPLIT | 06 | Pending |
+| REQ-SPLIT | 07 | Deferred |
+`,
+    );
+    const dir = path.join(tmpDir, '.planning', 'phases', '06-earlier');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '06-01-PLAN.md'),
+      `---\nrequirements: [REQ-SPLIT]\n---\n# Plan 06-01\n`,
+    );
+    fs.writeFileSync(path.join(dir, '06-01-SUMMARY.md'), '# Summary 06-01');
+
+    const result = runGsdTools('phase complete 6 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.requirements_unreadable_rows,
+      [],
+      'only rows this phase owns can make its own closure unreadable',
+    );
+
+    const req = readRequirements();
+    assert.match(
+      req,
+      /\|\s*REQ-SPLIT\s*\|\s*06\s*\|\s*Complete\s*\|/,
+      'this phase closes the row it owns',
+    );
+    assert.match(
+      req,
+      /\|\s*REQ-SPLIT\s*\|\s*07\s*\|\s*Deferred\s*\|/,
+      'and leaves the other phase’s row exactly as it found it',
+    );
+    assert.ok(
+      req.includes('- [ ] **REQ-SPLIT**'),
+      'an unreadable row elsewhere still counts as work outstanding',
+    );
+  });
+
   test('a traceability table with no rows yet is still a table', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
