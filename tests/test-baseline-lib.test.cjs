@@ -32,15 +32,17 @@ test('test-baseline lib module', async (t) => {
     'gsd-tools test capture-baseline with no args produces Too few arguments error',
     () => {
       let output = '';
+      let exited = false;
       try {
         execSync(`node "${GSD_TOOLS}" test capture-baseline`, {
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-        assert.fail('should have exited with error');
       } catch (err) {
+        exited = true;
         output = (err.stdout || '') + (err.stderr || '');
       }
+      assert.ok(exited, 'should have exited with error');
       assert.ok(
         output.includes('Too few arguments'),
         `expected "Too few arguments" in output, got: ${output}`,
@@ -50,15 +52,17 @@ test('test-baseline lib module', async (t) => {
 
   await t.test('gsd-tools test with unknown subcommand produces error', () => {
     let output = '';
+    let exited = false;
     try {
       execSync(`node "${GSD_TOOLS}" test unknown-subcmd arg1 arg2`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      assert.fail('should have exited with error');
     } catch (err) {
+      exited = true;
       output = (err.stdout || '') + (err.stderr || '');
     }
+    assert.ok(exited, 'should have exited with error');
     assert.ok(
       output.includes('Unknown test subcommand') ||
         output.includes('unknown-subcmd'),
@@ -66,7 +70,6 @@ test('test-baseline lib module', async (t) => {
     );
   });
 
-  // F-002: captureBaseline should not pollute stdout with progress messages
   await t.test(
     'F-002: captureBaseline progress output goes to stderr, not stdout',
     () => {
@@ -77,11 +80,16 @@ test('test-baseline lib module', async (t) => {
         const {
           captureBaseline,
         } = require('../gsd-ng/bin/lib/test-baseline.cjs');
-        // Intercept stdout to verify no progress is written there
         const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+        const originalStderrWrite = process.stderr.write.bind(process.stderr);
         const stdoutChunks = [];
+        const stderrChunks = [];
         process.stdout.write = (chunk) => {
           stdoutChunks.push(String(chunk));
+          return true;
+        };
+        process.stderr.write = (chunk) => {
+          stderrChunks.push(String(chunk));
           return true;
         };
         try {
@@ -91,8 +99,14 @@ test('test-baseline lib module', async (t) => {
           );
         } finally {
           process.stdout.write = originalStdoutWrite;
+          process.stderr.write = originalStderrWrite;
         }
         const stdoutOutput = stdoutChunks.join('');
+        const stderrOutput = stderrChunks.join('');
+        assert.ok(
+          stderrOutput.includes('.: passing'),
+          `captureBaseline must report per-entry progress on stderr, got: ${stderrOutput}`,
+        );
         assert.ok(
           !stdoutOutput.includes(': passing') &&
             !stdoutOutput.includes(': failing'),
@@ -811,4 +825,170 @@ test('test-baseline branch coverage', async (t) => {
       }
     },
   );
+
+  // A command killed by the timeout produces no TAP summary. Recording that as
+  // a failing suite makes an unfinished run indistinguishable from a red one,
+  // and a baseline that claims "already failing" suppresses new-failure
+  // detection on the next comparison — silently disabling regression triage.
+  await t.test(
+    'a timed-out capture records unknown, never a failing baseline',
+    () => {
+      const tmpBase = resolveTmpDir();
+      const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-tmo-'));
+      const prev = process.env.GSD_TEST_TIMEOUT_MS;
+      try {
+        process.env.GSD_TEST_TIMEOUT_MS = '50';
+        const outputFile = path.join(tmpDir, 'baseline.json');
+        delete require.cache[
+          require.resolve('../gsd-ng/bin/lib/test-baseline.cjs')
+        ];
+        const {
+          captureBaseline,
+        } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+        const origErr = process.stderr.write.bind(process.stderr);
+        const errChunks = [];
+        process.stderr.write = (c) => {
+          errChunks.push(String(c));
+          return true;
+        };
+        try {
+          captureBaseline(
+            JSON.stringify([{ dir: '.', command: 'sleep 5' }]),
+            outputFile,
+          );
+        } finally {
+          process.stderr.write = origErr;
+        }
+
+        const recorded = JSON.parse(fs.readFileSync(outputFile, 'utf-8'))['.'];
+        assert.equal(
+          recorded.exit_code,
+          -2,
+          `timed-out run must record the timeout sentinel, got ${recorded.exit_code}`,
+        );
+        assert.notEqual(
+          recorded.exit_code,
+          1,
+          'a timeout must not be recorded as a plain failing exit',
+        );
+        assert.match(
+          errChunks.join(''),
+          /unknown \(timed out/,
+          'progress line must say the state is unknown, not "failing"',
+        );
+      } finally {
+        if (prev === undefined) delete process.env.GSD_TEST_TIMEOUT_MS;
+        else process.env.GSD_TEST_TIMEOUT_MS = prev;
+        delete require.cache[
+          require.resolve('../gsd-ng/bin/lib/test-baseline.cjs')
+        ];
+        cleanup(tmpDir);
+      }
+    },
+  );
+
+  // The safety property the sentinel exists for: an unknown baseline must not
+  // be read as "was already failing", because that is what suppresses the
+  // triage prompt and lets a real regression through as pre-existing.
+  await t.test('an unknown baseline does not mask a new failure', () => {
+    const tmpBase = resolveTmpDir();
+    const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-mask-'));
+    try {
+      const baselineFile = path.join(tmpDir, 'baseline.json');
+      fs.writeFileSync(
+        baselineFile,
+        JSON.stringify({
+          '.': {
+            captured: '2026-01-01T00:00:00.000Z',
+            command: 'false',
+            exit_code: -2,
+            tests: null,
+            pass: null,
+            fail: null,
+          },
+        }),
+      );
+      const {
+        compareBaseline,
+      } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+      const chunks = [];
+      const orig = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => {
+        chunks.push(String(c));
+        return true;
+      };
+      try {
+        compareBaseline(
+          JSON.stringify([{ dir: '.', command: 'false' }]),
+          baselineFile,
+        );
+      } finally {
+        process.stdout.write = orig;
+      }
+      const out = chunks.join('');
+      assert.match(
+        out,
+        /NEW_FAILURES=true/,
+        `an unknown baseline must fail safe, got: ${out}`,
+      );
+      assert.match(
+        out,
+        /\? unknown/,
+        `baseline column must show unknown, got: ${out}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  // The pre-fix behaviour, pinned so it cannot return: a baseline that really
+  // did observe a red suite still suppresses the prompt.
+  await t.test('a genuinely failing baseline still suppresses triage', () => {
+    const tmpBase = resolveTmpDir();
+    const tmpDir = fs.mkdtempSync(path.join(tmpBase, 'gsd-baseline-red-'));
+    try {
+      const baselineFile = path.join(tmpDir, 'baseline.json');
+      fs.writeFileSync(
+        baselineFile,
+        JSON.stringify({
+          '.': {
+            captured: '2026-01-01T00:00:00.000Z',
+            command: 'false',
+            exit_code: 1,
+            tests: 10,
+            pass: 9,
+            fail: 1,
+          },
+        }),
+      );
+      const {
+        compareBaseline,
+      } = require('../gsd-ng/bin/lib/test-baseline.cjs');
+
+      const chunks = [];
+      const orig = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => {
+        chunks.push(String(c));
+        return true;
+      };
+      try {
+        compareBaseline(
+          JSON.stringify([{ dir: '.', command: 'false' }]),
+          baselineFile,
+        );
+      } finally {
+        process.stdout.write = orig;
+      }
+      const out = chunks.join('');
+      assert.match(
+        out,
+        /NEW_FAILURES=false/,
+        `a real pre-existing failure must stay suppressed, got: ${out}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });

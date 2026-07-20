@@ -326,7 +326,7 @@ Present next steps:
 {otherwise:}
 **All tests passing!** Phase ${phase_number} is fully tested.
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

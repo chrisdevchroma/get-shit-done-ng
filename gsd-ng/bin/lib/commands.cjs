@@ -41,6 +41,7 @@ const {
   PLATFORM_TO_CLI,
   getReadEditWriteAllowRules,
   RW_FORMS,
+  normalizePermissionRules,
 } = require('./allowlist.cjs');
 const {
   compareSemVer,
@@ -678,9 +679,65 @@ function isRecurringDue(todoData) {
 
 const DEFAULT_TODO_BODY = '## Problem\n\n## Solution\n';
 
+const YAML_INDICATORS = new Set([
+  '-',
+  '?',
+  ':',
+  ',',
+  '[',
+  ']',
+  '{',
+  '}',
+  '#',
+  '&',
+  '*',
+  '!',
+  '|',
+  '>',
+  "'",
+  '"',
+  '%',
+  '@',
+  '`',
+]);
+
+const YAML_RESERVED_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
+
+const YAML_NUMERIC =
+  /^[-+]?(?:0b[01_]+|0x[0-9a-f_]+|0o[0-7_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:e[-+]?[0-9]+)?|\.[0-9][0-9_]*(?:e[-+]?[0-9]+)?|\.(?:inf|nan))$/i;
+
+const YAML_TIMESTAMP =
+  /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ][\d:.]+(?:\s*(?:Z|[-+]\d{1,2}(?::?\d{2})?))?)?$/;
+
+const YAML_UNSAFE_CHARS = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/;
+
+function needsYamlQuoting(str) {
+  if (str === '') return true;
+  if (/^\s|\s$/.test(str)) return true;
+  if (YAML_UNSAFE_CHARS.test(str)) return true;
+  if (/[:#]/.test(str)) return true;
+
+  const first = str[0];
+  if (YAML_INDICATORS.has(first)) {
+    const plainSafe =
+      (first === '-' || first === '?') && str.length > 1 && !/\s/.test(str[1]);
+    if (!plainSafe) return true;
+  }
+
+  return (
+    YAML_RESERVED_WORD.test(str) ||
+    YAML_NUMERIC.test(str) ||
+    YAML_TIMESTAMP.test(str)
+  );
+}
+
 function yamlScalar(value) {
   const str = String(value);
-  return /[:#]|^["'\s]|\s$/.test(str) ? JSON.stringify(str) : str;
+  if (!needsYamlQuoting(str)) return str;
+  return JSON.stringify(str).replace(
+    /[\u0085\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 function splitList(value) {
@@ -785,11 +842,24 @@ function cmdTodoComplete(cwd, filename) {
     );
   }
 
-  const sourcePath = path.join(pendingDir, filename);
+  // Accept the id with or without its .md extension — `list-todos` prints
+  // filenames while slugs get passed around bare, and both should resolve.
+  const candidates = filename.endsWith('.md')
+    ? [filename]
+    : [filename, `${filename}.md`];
+  const sourcePath = candidates
+    .map((candidate) => path.join(pendingDir, candidate))
+    .find((candidatePath) => fs.existsSync(candidatePath));
 
-  if (!fs.existsSync(sourcePath)) {
-    error(`Todo not found: ${filename}`);
+  if (!sourcePath) {
+    error(
+      `Todo not found: ${filename} — looked for ${candidates.join(' and ')} ` +
+        `in ${toPosixPath(path.relative(cwd, pendingDir))}/`,
+    );
   }
+
+  // Everything downstream (completed/ filename, output) uses the resolved name.
+  const resolvedName = path.basename(sourcePath);
 
   // Read file content once for both recurring check and non-recurring path
   const content = fs.readFileSync(sourcePath, 'utf-8');
@@ -821,11 +891,11 @@ function cmdTodoComplete(cwd, filename) {
       {
         completed: true,
         recurring: true,
-        file: filename,
+        file: resolvedName,
         date: todayDate,
         next_due: fm.interval || 'unknown',
       },
-      `recurring-reset: ${filename}`,
+      `recurring-reset: ${resolvedName}`,
     );
     return;
   }
@@ -835,10 +905,12 @@ function cmdTodoComplete(cwd, filename) {
   fs.mkdirSync(completedDir, { recursive: true });
 
   const today = new Date().toISOString().split('T')[0];
-  const completedContent = `completed: ${today}\n` + content;
+  const completedContent = /^---\r?\n/.test(content)
+    ? content.replace(/^---(\r?\n)/, `---$1completed: ${today}$1`)
+    : `---\ncompleted: ${today}\n---\n\n${content}`;
 
   fs.writeFileSync(
-    path.join(completedDir, filename),
+    path.join(completedDir, resolvedName),
     completedContent,
     'utf-8',
   );
@@ -866,7 +938,12 @@ function cmdTodoComplete(cwd, filename) {
           itConfig,
         );
         output(
-          { completed: true, file: filename, date: today, synced: syncResults },
+          {
+            completed: true,
+            file: resolvedName,
+            date: today,
+            synced: syncResults,
+          },
           'completed',
         );
         return;
@@ -876,7 +953,98 @@ function cmdTodoComplete(cwd, filename) {
     }
   }
 
-  output({ completed: true, file: filename, date: today }, 'completed');
+  output({ completed: true, file: resolvedName, date: today }, 'completed');
+}
+
+const LEADING_COMPLETED = /^(completed:[^\r\n]*)(\r?\n)(---\r?\n)/;
+
+/**
+ * Repair completed todos written by the historical `todo complete` bug that
+ * prepended `completed: <date>` above the opening `---`, leaving the file
+ * unparseable by extractFrontmatter's ^--- anchor.
+ *
+ * Only the exact known-malformed shape is touched: a leading `completed:`
+ * line, an immediately following opening fence, an intact closing fence, and
+ * no existing `completed:` key inside the fence. Anything else is skipped and
+ * reported rather than guessed at. Dry run unless opts.write is set.
+ */
+function cmdTodoRepair(cwd, opts = {}) {
+  const dryRun = !opts.write;
+  const { todosCompleted } = planningPaths(cwd);
+
+  const repaired = [];
+  const alreadyCorrect = [];
+  const skipped = [];
+
+  let files = [];
+  try {
+    files = fs
+      .readdirSync(todosCompleted)
+      .filter((f) => f.endsWith('.md'))
+      .sort();
+  } catch {
+    files = [];
+  }
+
+  for (const file of files) {
+    const full = path.join(todosCompleted, file);
+    const content = fs.readFileSync(full, 'utf-8');
+
+    if (/^---\r?\n/.test(content)) {
+      alreadyCorrect.push(file);
+      continue;
+    }
+
+    const match = LEADING_COMPLETED.exec(content);
+    if (!match || match.index !== 0) {
+      skipped.push({
+        file,
+        reason: 'no leading completed: line above a fence',
+      });
+      continue;
+    }
+
+    const rest = content.slice(match[1].length + match[2].length);
+    const fence = rest.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!fence) {
+      skipped.push({ file, reason: 'no closing frontmatter fence' });
+      continue;
+    }
+    if (/^completed:/m.test(fence[1])) {
+      skipped.push({ file, reason: 'completed: already present inside fence' });
+      continue;
+    }
+
+    if (!dryRun) {
+      const fixed = content.replace(
+        LEADING_COMPLETED,
+        (_m, line, nl, open) => `${open}${line}${nl}`,
+      );
+      fs.writeFileSync(full, fixed, 'utf-8');
+    }
+    repaired.push(file);
+  }
+
+  const counts = {
+    total: files.length,
+    repaired: repaired.length,
+    already_correct: alreadyCorrect.length,
+    skipped: skipped.length,
+  };
+
+  const summary = dryRun
+    ? `dry-run: would repair ${counts.repaired}, ${counts.already_correct} already correct, ${counts.skipped} skipped (re-run with --write to apply)`
+    : `repaired ${counts.repaired}, ${counts.already_correct} already correct, ${counts.skipped} skipped`;
+
+  const result = {
+    dry_run: dryRun,
+    counts,
+    repaired,
+    already_correct: alreadyCorrect,
+    skipped,
+  };
+  output(result, summary);
+  return result;
 }
 
 /**
@@ -1034,20 +1202,24 @@ function cmdScaffold(cwd, type, options) {
 
   let filePath, content;
 
+  const displayName = name || phaseInfo?.phase_name || 'Unnamed';
+  const fmName = yamlScalar(displayName);
+  const fmPhase = yamlScalar(padded);
+
   switch (type) {
     case 'context': {
       filePath = path.join(phaseDir, `${padded}-CONTEXT.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — Context\n\n## Decisions\n\n_Decisions will be captured during /gsd:discuss-phase ${phase}_\n\n## Discretion Areas\n\n_Areas where the executor can use judgment_\n\n## Deferred Ideas\n\n_Ideas to consider later_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\n---\n\n# Phase ${phase}: ${displayName} — Context\n\n## Decisions\n\n_Decisions will be captured during /gsd:discuss-phase ${phase}_\n\n## Discretion Areas\n\n_Areas where the executor can use judgment_\n\n## Deferred Ideas\n\n_Ideas to consider later_\n`;
       break;
     }
     case 'uat': {
       filePath = path.join(phaseDir, `${padded}-UAT.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — User Acceptance Testing\n\n## Test Results\n\n| # | Test | Status | Notes |\n|---|------|--------|-------|\n\n## Summary\n\n_Pending UAT_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${displayName} — User Acceptance Testing\n\n## Test Results\n\n| # | Test | Status | Notes |\n|---|------|--------|-------|\n\n## Summary\n\n_Pending UAT_\n`;
       break;
     }
     case 'verification': {
       filePath = path.join(phaseDir, `${padded}-VERIFICATION.md`);
-      content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.phase_name || 'Unnamed'}"\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${name || phaseInfo?.phase_name || 'Unnamed'} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
+      content = `---\nphase: ${fmPhase}\nname: ${fmName}\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${displayName} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
       break;
     }
     case 'phase-dir': {
@@ -2278,7 +2450,17 @@ const LABEL_AREA_MAP = {
  * @param {string|null} repo - Optional repo override
  * @returns {{ imported, todo_file, title, external_ref, commented }}
  */
-function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
+function cmdIssueImport(cwd, platform, number, repo, options, _testOverrides) {
+  // The 5th positional may be either an options bag or an overrides object.
+  // `cliInvoker` is the sole discriminator, so an overrides object that omits
+  // it is silently accepted as options and its overrides are dropped.
+  let opts = options && typeof options === 'object' ? options : {};
+  let overridesArg = _testOverrides;
+  if (opts.cliInvoker) {
+    overridesArg = opts;
+    opts = {};
+  }
+  const forceUnsafe = opts.forceUnsafe === true;
   loadConfig(cwd); // Ensure config is loaded (side-effects: migration)
   // Read issue_tracker config directly from config.json since loadConfig
   // returns a flat structured object and does not expose the raw issue_tracker section.
@@ -2295,7 +2477,7 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const commentOnImport = commentStyle === 'verbose';
 
   // Resolve CLI invoker: explicit injection wins, then GSD_TEST_MODE shim, then real CLI.
-  const overrides = _testOverrides || {};
+  const overrides = overridesArg || {};
   const cli =
     overrides.cliInvoker ||
     (process.env.GSD_TEST_MODE ? _legacyTestModeInvoker : invokeIssueCli);
@@ -2312,7 +2494,16 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
     issueData.number = issueData.iid;
   }
 
-  const issueNumber = issueData.number || parseInt(String(number), 10);
+  const rawNumber = issueData.number != null ? issueData.number : number;
+  let issueNumber = parseInt(String(rawNumber), 10);
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    issueNumber = parseInt(String(number), 10);
+  }
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    error(
+      `Invalid issue number '${String(rawNumber).slice(0, 40)}' from ${platform}: expected a positive integer.`,
+    );
+  }
   const title = issueData.title || `Issue #${issueNumber}`;
   const body = issueData.body || '';
   const rawLabels = issueData.labels || [];
@@ -2341,6 +2532,12 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const titleScan = scanForInjection(title, { external: true });
   const bodyScan = scanForInjection(body, { external: true });
 
+  const highTier = titleScan.tier === 'high' || bodyScan.tier === 'high';
+  // --force-unsafe bypasses the GATE, never the DETECTION. The scan results below
+  // are logged unmodified; the override only adds a `forced` marker so a forced
+  // import is distinguishable in the audit trail.
+  const forcedOverride = highTier && forceUnsafe;
+
   // Log all findings regardless of tier
   if (!titleScan.clean) {
     logSecurityEvent(cwd, {
@@ -2348,6 +2545,7 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
       tier: titleScan.tier,
       blocked: titleScan.blocked,
       findings: titleScan.findings,
+      ...(forcedOverride ? { forced: true } : {}),
     });
   }
   if (!bodyScan.clean) {
@@ -2356,16 +2554,23 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
       tier: bodyScan.tier,
       blocked: bodyScan.blocked,
       findings: bodyScan.findings,
+      ...(forcedOverride ? { forced: true } : {}),
     });
   }
 
   // Block on high-confidence detection (unambiguous attack indicators in external content)
-  const highTier = titleScan.tier === 'high' || bodyScan.tier === 'high';
   if (highTier) {
     const allBlocked = [...titleScan.blocked, ...bodyScan.blocked];
-    error(
-      `[SECURITY] High-confidence injection detected in issue ${externalRef}. Detected: ${allBlocked.join('; ')}. Re-run with --force-unsafe to override.`,
-    );
+    if (forceUnsafe) {
+      // Documented escape hatch (see workflows/import-issue.md). Loud, never silent.
+      process.stderr.write(
+        `[SECURITY] Proceeding despite high-confidence injection in issue ${externalRef} because --force-unsafe was passed. Detected: ${allBlocked.join('; ')}. Logged to security-events.log with forced: true.\n`,
+      );
+    } else {
+      error(
+        `[SECURITY] High-confidence injection detected in issue ${externalRef}. Detected: ${allBlocked.join('; ')}. Re-run with --force-unsafe to override.`,
+      );
+    }
   }
 
   // Wrap body in untrusted-content tags for all non-blocked writes
@@ -2392,9 +2597,10 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const content = [
     '---',
     `created: ${created}`,
-    `title: ${title}`,
-    `area: ${area}`,
-    `external_ref: "${externalRef}"`,
+    `title: ${yamlScalar(title)}`,
+    'untrusted_title: true',
+    `area: ${yamlScalar(area)}`,
+    `external_ref: ${yamlScalar(externalRef)}`,
     'files: []',
     '---',
     '',
@@ -2429,7 +2635,7 @@ function cmdIssueImport(cwd, platform, number, repo, _testOverrides) {
   const result = {
     imported: true,
     todo_file: filename,
-    title,
+    title: wrapUntrustedContent(title, `${externalRef}:title`),
     external_ref: externalRef,
     commented,
   };
@@ -4194,8 +4400,16 @@ function cmdGenerateAllowlist(cwd, platform = process.platform) {
     }
   } catch {}
 
-  // 5. Merge static + dynamic, sort for consistency
-  const allEntries = [...new Set([...staticEntries, ...dynamicEntries])].sort();
+  // 5. Merge static + dynamic, normalise, sort for consistency.
+  //    normalizePermissionRules folds every unmatched path form (a rule Claude
+  //    Code accepts but never matches, and warns about at startup) into the
+  //    effective spelling. install.js runs the same pass over the settings it
+  //    seeds; both writers consume the same template, so both must sanitise it
+  //    or an unmatched form authored into the template leaks out of this one.
+  const allEntries = normalizePermissionRules([
+    ...staticEntries,
+    ...dynamicEntries,
+  ]).sort();
 
   // 6. Build output JSON
   const result = {
@@ -5004,6 +5218,7 @@ module.exports = {
   isRecurringDue,
   cmdTodoAdd,
   cmdTodoComplete,
+  cmdTodoRepair,
   cmdTodoListByPhase,
   cmdTodoScanPhaseLinked,
   cmdRecurringDue,

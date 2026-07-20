@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
 const homeDir = os.homedir();
 const cwd = process.cwd();
@@ -421,14 +422,7 @@ if (!process.env.GSD_SIMULATE_SANDBOX) {
   }
 }
 
-// Read stdin to get the SessionStart payload (source, session_id, cwd, etc.)
-// Mirror gsd-context-monitor.js idiom exactly.
-let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => (input += chunk));
-process.stdin.on('end', () => {
-  clearTimeout(stdinTimeout);
+readStdinWithTimeout((input) => {
   try {
     const data = JSON.parse(input);
     const source = data && data.source;

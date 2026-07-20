@@ -38,7 +38,7 @@ patterns-established:
   - "Pattern 1: description"
   - "Pattern 2: description"
 
-requirements-completed: []  # REQUIRED — Copy ALL requirement IDs from this plan's `requirements` frontmatter field.
+requirements-completed: []  # REQUIRED — The requirement IDs this plan actually DELIVERED. Start from the plan's `requirements` field and keep every ID whose work landed and verified. Delivered all of them (the usual case)? List all of them. Dropped or deferred one mid-execution? Leave it out — it stays open and is reported. Do not trim IDs you did deliver to look precise, and do not add IDs the plan never declared unless you genuinely delivered them.
 
 # Metrics
 duration: Xmin

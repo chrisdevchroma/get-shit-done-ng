@@ -741,7 +741,7 @@ Verification: {Passed | Passed with override | Skipped}
 
 `{{COMMAND_PREFIX}}execute-phase {X}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 

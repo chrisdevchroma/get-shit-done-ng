@@ -1211,7 +1211,7 @@ Exit skill and invoke SlashCommand("{{COMMAND_PREFIX}}discuss-phase 1 --auto")
 
 `{{COMMAND_PREFIX}}discuss-phase 1` — gather context and clarify approach
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

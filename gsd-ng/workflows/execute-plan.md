@@ -372,7 +372,7 @@ If user_setup exists: create `{phase}-USER-SETUP.md` using template `~/.claude/g
 <step name="create_summary">
 Create `{phase}-{plan}-SUMMARY.md` at `.planning/phases/XX-name/`. Use `~/.claude/gsd-ng/templates/summary.md`.
 
-**Frontmatter:** phase, plan, subsystem, tags | requires/provides/affects | tech-stack.added/patterns | key-files.created/modified | key-decisions | requirements-completed (**MUST** copy `requirements` array from PLAN.md frontmatter verbatim) | duration ($DURATION), completed ($PLAN_END_TIME date).
+**Frontmatter:** phase, plan, subsystem, tags | requires/provides/affects | tech-stack.added/patterns | key-files.created/modified | key-decisions | requirements-completed (**MUST** list the requirement IDs this plan actually DELIVERED — start from PLAN.md's `requirements` array and keep every ID whose work landed and verified. Delivered all of them, the usual case? List all of them. Dropped or deferred one mid-execution? Leave it out. Never trim an ID you did deliver, and never keep one you did not) | duration ($DURATION), completed ($PLAN_END_TIME date).
 
 Title: `# Phase [X] Plan [Y]: [Name] Summary`
 
@@ -387,7 +387,7 @@ Next: more plans → "Ready for {next-plan}" | last → "Phase complete, ready f
 Update STATE.md using gsd-tools:
 
 ```bash
-# Advance plan counter (handles last-plan edge case)
+# Recalculate plan position from disk (handles last-plan edge case)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state advance-plan
 
 # Recalculate progress bar from disk state
@@ -398,6 +398,10 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-metric \
   --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
   --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
 ```
+
+`advance-plan` derives the position from the SUMMARY files in the phase directory, so it is safe to run concurrently from parallel waves and safe to re-run after a failure. The same derivation can move the counter *backwards* when STATE.md claims more progress than the summaries on disk support. It reports that case as `rewound` rather than `true` (`--json`: `advanced: false`, `rewound: true`, `reason: "rewound"`).
+
+A rewind is not progress. The written position is correct for what is on disk, but STATE.md and the phase directory disagreed — find out why before continuing. The usual cause is a SUMMARY that was never written or landed outside the phase directory. If plans really did complete without summaries, stop and report it; do not let the phase re-execute from the rewound position.
 </step>
 
 <step name="extract_decisions_and_issues">
@@ -437,14 +441,17 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" roadmap update-plan-progress "${PH
 Counts PLAN vs SUMMARY files on disk. Updates progress table row with correct count and status (`In Progress` or `Complete` with date).
 </step>
 
-<step name="update_requirements">
-Mark completed requirements from the PLAN.md frontmatter `requirements:` field:
+<step name="requirements_are_not_closed_here">
+**Do not mark requirements complete at plan close.** Requirement closure happens
+once per phase, in `gsd-tools phase complete`, after the verifier has assessed
+the phase.
 
-```bash
-node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" requirements mark-complete ${REQ_IDS}
-```
-
-Extract requirement IDs from the plan's frontmatter (e.g., `requirements: [AUTH-01, AUTH-02]`). If no requirements field, skip.
+A plan finishing is not evidence that the requirements it declares are met.
+Plans in a phase routinely share a requirement ID — closing per-plan meant the
+ID flipped to Complete when the *first* of them finished, which under wave-based
+parallel execution is whichever agent happened to win the race. The plan's
+`requirements:` frontmatter stays as a declaration of intent; `phase complete`
+collects it across all plans in the phase and closes the union.
 </step>
 
 <step name="git_commit_metadata">

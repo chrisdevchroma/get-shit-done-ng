@@ -15,15 +15,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
-let input = '';
-// Timeout guard: if stdin doesn't close within 3s exit silently instead of
-// hanging (matches pattern from gsd-context-monitor.js).
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', () => {
-  clearTimeout(stdinTimeout);
+readStdinWithTimeout(input => {
   try {
     const data = JSON.parse(input);
     const sessionId = data.session_id || 'unknown';

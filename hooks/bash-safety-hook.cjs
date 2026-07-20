@@ -16,6 +16,8 @@
  *   Allow: {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"..."}}
  *   Deny:  {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
  *   Fall-through (no output): exit 0 silently
+ *   Unread stdin (timeout): deny — the command was never checked, and silence
+ *     would approve it outright under an auto-approving permission mode
  *
  * Kill switch: GSD_DISABLE_BASH_HOOK=1 — exits immediately (checked FIRST, before stdin read)
  * Debug logging: GSD_HOOK_DEBUG=1 — writes verbose logs to stderr
@@ -32,18 +34,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
-// ── SAFE_BUILTINS — removed ───────────────────────────────────────────────────
-// Previously auto-approved shell builtins (cd, echo, printf, etc.) without any
-// allowlist entry. Removed because combining builtins with shell redirection
-// (e.g. `echo "x" > ~/.bashrc`, `read var < /etc/shadow`) introduces filesystem
-// side effects that bypass allow/deny intent. The Python upstream
-// (liberzon/claude-hooks) never had this feature.
-//
-// Builtins are now approved through the same allowlist path as everything else.
-// The settings-sandbox.json template already includes Bash(echo *),
-// Bash(cd *), etc. — so sandbox users see no change. Non-sandbox users must
-// explicitly allowlist builtins they want auto-approved.
+const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
 // ── Structural shell keywords — filter these out (not real commands) ──────────
 // Control/syntax constructs that are not checkable commands. Includes shell
@@ -1558,15 +1549,25 @@ if (require.main === module) {
 
   const debug = process.env.GSD_HOOK_DEBUG === '1';
 
-  let input = '';
-  // Timeout guard: if stdin doesn't close within 3s, exit silently
-  const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-  });
-  process.stdin.on('end', () => {
-    clearTimeout(stdinTimeout);
+  // An unread payload leaves the command unexamined. Staying silent would let
+  // it through under an auto-approving permission mode, so deny instead.
+  const denyOnUnreadStdin = () => {
+    if (debug)
+      process.stderr.write('[gsd-bash-hook] stdin timeout, failing closed\n');
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            'gsd bash safety hook could not read its stdin payload before timing out, so the command was never checked against the allowlist. Retry, or set GSD_DISABLE_BASH_HOOK=1 to bypass the hook.',
+        },
+      }),
+    );
+    process.exit(0);
+  };
+
+  readStdinWithTimeout((input) => {
     try {
       const data = JSON.parse(input);
 
@@ -1625,7 +1626,7 @@ if (require.main === module) {
         process.stderr.write('[gsd-bash-hook] error: ' + _e.message + '\n');
       process.exit(0);
     }
-  });
+  }, { onTimeout: denyOnUnreadStdin });
 }
 
 // ── Module exports for testability ───────────────────────────────────────────

@@ -17,3 +17,7 @@ cov-tmp/
 # GSD artifacts
 /.claude/
 /.planning/
+
+# Default output of npm run evidence:clean-path; the phase copy is committed
+# under .planning/ via an explicit --out-dir
+/evidence/

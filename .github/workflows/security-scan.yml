@@ -1,16 +1,17 @@
 name: Security Scan
 
 on:
+  # Must stay unfiltered: `security-gate` is a required status check, and a
+  # required context on a path-filtered workflow deadlocks — a pull request
+  # outside the filter never starts the workflow, so the status it waits on is
+  # never posted. Scope is applied to changed files by SCAN_PATHS in
+  # scripts/ci-security-scan.cjs instead.
   pull_request_target:
-    paths:
-      - '.planning/**'
-      - '.claude/**'
-      - '.github/**'
-      - 'scripts/**'
 
 permissions:
-  checks: write
+  contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   security-scan:
@@ -22,13 +23,85 @@ jobs:
         # PR diff data is fetched via GitHub API in ci-security-scan.cjs, not via checkout
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
 
       - name: Run security scan
-        run: node scripts/ci-security-scan.cjs
+        id: scan
+        # Deferred so the gate status is always published, including on a
+        # blocking verdict. The job is failed again by the final step.
+        continue-on-error: true
+        # `outcome` cannot tell a blocking finding (exit 1) from a scan that
+        # never completed (exit 2); the gate description differs between them.
+        run: |
+          set +e
+          node scripts/ci-security-scan.cjs
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # Publishes the `security-gate` commit status. This is the context to
+      # make required under branch protection; the override supersedes it by
+      # posting a newer status — see scripts/security-gate.cjs.
+      - name: Publish security-gate commit status
+        id: publish-gate
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { classifyScanOutcome, publishGateVerdict } = require(
+              `${process.env.GITHUB_WORKSPACE}/scripts/security-gate.cjs`
+            );
+            const verdict = classifyScanOutcome({
+              outcome: process.env.SCAN_OUTCOME,
+              exitCode: process.env.SCAN_EXIT_CODE,
+            });
+            const status = await publishGateVerdict({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              headSha: context.payload.pull_request.head.sha,
+              blocked: verdict.blocked,
+              incomplete: verdict.incomplete,
+            });
+            core.info(`Published ${status.context} status: ${status.state}`);
+
+      # The step above loads the gate module out of the checkout, so a failed
+      # checkout leaves it unable to post anything and the required context
+      # pending with no verdict. This step touches no repository content.
+      # GATE_CONTEXT duplicates the module's constant because the module is
+      # precisely what is unreachable here; a test in
+      # tests/security-override.test.cjs pins the two together.
+      - name: Publish fallback gate status
+        if: always() && steps.publish-gate.outcome != 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GATE_CONTEXT: security-gate
+          GATE_DESCRIPTION: 'Scan infrastructure failure; the gate could not run. Maintainers: /security-override: <sha> <reason>'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data } = await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'failure',
+              context: process.env.GATE_CONTEXT,
+              description: process.env.GATE_DESCRIPTION,
+            });
+            core.info(`Published fallback ${data.context} status: ${data.state}`);
+
+      - name: Fail job on blocking verdict
+        if: steps.scan.outcome != 'success'
+        run: |
+          echo "Security scan reported a blocking verdict."
+          exit 1

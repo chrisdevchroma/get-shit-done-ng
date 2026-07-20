@@ -536,7 +536,7 @@ Plans verified and ready for execution.
 
 `{{COMMAND_PREFIX}}execute-phase {phase} --gaps-only`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ───────────────────────────────────────────────────────────────
 ```

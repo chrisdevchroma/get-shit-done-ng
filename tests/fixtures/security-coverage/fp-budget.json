@@ -1,0 +1,352 @@
+{
+  "_note": "Measured FP baseline. Counts may only DECREASE. Raising a number requires a documented justification in the same commit.",
+  "_generated_by": "scripts/fp-report.cjs, via the harness in tests/security-fp-corpus.test.cjs. Counts are measured, never hand-authored.",
+  "_entropy_note": "Entropy findings route to findings[] and never to blocked[], so they are advisory only and cannot hard-block an import or fail CI. Asserted by tests/security-fp-corpus.test.cjs. Threshold is H > 5.5 (security.cjs).",
+  "repo_walk": {
+    "corpus": {
+      "files": 220,
+      "generated": "2026-07-19",
+      "raised_from": 219,
+      "raised_justification": "hooks/gsd-hook-stdin.cjs entered a walk root when the stdin-timeout guard was deduplicated across six hooks. It scans tier clean; corpus size is the only figure that moved upward."
+    },
+    "pattern_fp": {
+      "AT-FILE-CREDENTIAL-PATH": {
+        "files": 2,
+        "class": "self-referential",
+        "justification": "Already documented as an accepted self-referential class in references/security-untrusted-content.md, which is why the rule was left at medium tier.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "AUTHORITY-ROLE-CLAIM": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "CTX-RESET-FROM-NOW": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "CTX-RESET-NEW-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "EXFIL-PROMPT-EXTRACT-EXT": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "HIDDEN-TAG-LLAMA": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "HIDDEN-TAG-ROLE": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "HIDDEN-TAG-SYSTEM": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "HTML-COMMENT-INJECT": {
+        "files": 4,
+        "class": "ordinary-prose",
+        "justification": "The only genuine over-trigger in the walk. The pattern is dotall and non-greedy, so any document containing an HTML comment plus one of ignore/override/system/instructions/execute matches across the whole file. Trips two ordinary templates (templates/phase-prompt.md, templates/project.md) and references/checkpoints-deep.md, none of which discuss this rule. Medium tier, so it is advisory only and cannot block. Recorded, deliberately not retuned in this plan.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/checkpoints-deep.md",
+          "gsd-ng/templates/phase-prompt.md"
+        ]
+      },
+      "INSTR-OVERRIDE-FORGET": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "INSTR-OVERRIDE-GENERAL": {
+        "files": 2,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "INSTR-OVERRIDE-IGNORE": {
+        "files": 2,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "INSTR-OVERRIDE-STOP": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "INSTR-OVERRIDE-SYSTEM": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "JAILBREAK-DAN": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "JAILBREAK-EXPLICIT": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "MD-LINK-DATA-SCHEME": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": ["gsd-ng/references/security-untrusted-content.md"]
+      },
+      "MD-LINK-JS-SCHEME": {
+        "files": 2,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "MD-LINK-TOKEN-IN-QUERY": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": ["gsd-ng/references/security-untrusted-content.md"]
+      },
+      "MD-LINK-USERINFO": {
+        "files": 2,
+        "class": "self-referential",
+        "justification": "Fires on the detector source and on references/security-untrusted-content.md, both of which quote this rule to explain it. Both files are exempt from CI blocking in ci-security-scan.cjs.",
+        "examples": [
+          "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/references/security-untrusted-content.md"
+        ]
+      },
+      "ML-AR-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-DE-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-ES-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-FR-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-HI-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-JA-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-KO-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-PT-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-RU-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ML-ZH-IGNORE-INSTR": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "OBFUSC-BASE64-EXEC": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      },
+      "ROLE-SUBST-NOW-CAPITALIZED": {
+        "files": 1,
+        "class": "self-referential",
+        "justification": "Fires only on gsd-ng/bin/lib/security.cjs, which enumerates this rule as its own definition. Documentation of a rule matches that rule.",
+        "examples": ["gsd-ng/bin/lib/security.cjs"]
+      }
+    },
+    "entropy_fp": {
+      "files": 1,
+      "max_H": 5.75,
+      "examples": [
+        {
+          "ref": "gsd-ng/bin/lib/security.cjs",
+          "max_H": 5.59,
+          "offsets": ["16000-16256", "17408-17664", "19072-19328"]
+        }
+      ],
+      "raised_from": 5.59,
+      "raised_justification": "Deleting 42 redundant English-prose comments from security.cjs raised that file byte entropy, since what remains is denser in regex literals. Still one file flagged; entropy routes to findings[] and can never block or fail CI."
+    }
+  },
+  "gsd_prose": {
+    "corpus": {
+      "entries": 49,
+      "generated": "2026-07-19"
+    },
+    "pattern_fp": {
+      "AUTHORITY-ROLE-CLAIM": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Architecture-document prose listing the authority-claim phrasings treated as high confidence.",
+        "examples": [
+          "authority-role-claim-01",
+          "authority-role-claim-02",
+          "authority-role-claim-03"
+        ]
+      },
+      "CTX-RESET-NEW-INSTR": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Requirement prose listing the recency prefixes that make up the context-reset family.",
+        "examples": [
+          "ctx-reset-new-instr-01",
+          "ctx-reset-new-instr-02",
+          "ctx-reset-new-instr-03"
+        ]
+      },
+      "HIDDEN-TAG-SYSTEM": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Plan text quoting the bracketed role marker as an example payload.",
+        "examples": [
+          "hidden-tag-system-01",
+          "hidden-tag-system-02",
+          "hidden-tag-system-03"
+        ]
+      },
+      "INSTR-OVERRIDE-GENERAL": {
+        "entries": 8,
+        "class": "self-referential",
+        "justification": "Requirement and roadmap prose enumerating the override verb set. Also matched by the four INSTR-OVERRIDE-IGNORE entries, whose text satisfies both rules — hence 8 rather than 4.",
+        "examples": [
+          "instr-override-ignore-01",
+          "instr-override-ignore-02",
+          "instr-override-ignore-03"
+        ]
+      },
+      "INSTR-OVERRIDE-IGNORE": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Requirement prose quoting the canonical override wording in order to require that it be detected.",
+        "examples": [
+          "instr-override-ignore-01",
+          "instr-override-ignore-02",
+          "instr-override-ignore-03"
+        ]
+      },
+      "JAILBREAK-EXPLICIT": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Roadmap success criteria and traceability notes naming the family the detector must recognise.",
+        "examples": [
+          "jailbreak-explicit-01",
+          "jailbreak-explicit-02",
+          "jailbreak-explicit-03"
+        ]
+      },
+      "ROLEPLAY-DAN-VARIANT": {
+        "entries": 4,
+        "class": "self-referential",
+        "justification": "Roadmap and research prose naming the two surviving roleplay constructions after the rule was narrowed.",
+        "examples": [
+          "roleplay-dan-variant-01",
+          "roleplay-dan-variant-02",
+          "roleplay-dan-variant-03"
+        ]
+      }
+    },
+    "entropy_fp": {
+      "entries": 5,
+      "max_H": 5.83,
+      "examples": [
+        {
+          "ref": "gsdprose-entropy-04",
+          "max_H": 5.52,
+          "offsets": ["0-149"]
+        },
+        {
+          "ref": "gsdprose-entropy-05",
+          "max_H": 5.55,
+          "offsets": ["0-173"]
+        },
+        {
+          "ref": "gsdprose-entropy-06",
+          "max_H": 5.53,
+          "offsets": ["0-166"]
+        },
+        {
+          "ref": "gsdprose-entropy-08",
+          "max_H": 5.57,
+          "offsets": ["0-156"]
+        },
+        {
+          "ref": "gsdprose-class-lockfile-hashes",
+          "max_H": 5.83,
+          "offsets": ["0-221"]
+        }
+      ]
+    },
+    "control_group_must_be_zero": true
+  }
+}

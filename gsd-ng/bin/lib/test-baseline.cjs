@@ -13,6 +13,48 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// Must stay distinct from 0 and from any real non-zero exit: compareBaseline
+// treats a 'fail' baseline as licence to suppress new-failure detection.
+const TIMEOUT_EXIT_CODE = -2;
+
+const DEFAULT_TIMEOUT_MS = 600000;
+
+function resolveTimeoutMs() {
+  const raw = process.env.GSD_TEST_TIMEOUT_MS;
+  if (!raw) return DEFAULT_TIMEOUT_MS;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+}
+
+/**
+ * Run one test command, distinguishing "exited non-zero" from "never exited".
+ *
+ * A timed-out execSync throws with `code: 'ETIMEDOUT'`, `signal: 'SIGTERM'`,
+ * `status: null`. `killed` is undefined, not true, so it cannot discriminate.
+ *
+ * @returns {{exitCode: number, output: string, timedOut: boolean}}
+ */
+function runTestCommand(command, runDir) {
+  try {
+    const output = execSync(command, {
+      cwd: runDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: resolveTimeoutMs(),
+    });
+    return { exitCode: 0, output, timedOut: false };
+  } catch (err) {
+    const timedOut =
+      err.code === 'ETIMEDOUT' ||
+      (err.signal === 'SIGTERM' && err.status == null);
+    return {
+      exitCode: timedOut ? TIMEOUT_EXIT_CODE : err.status || 1,
+      output: (err.stdout || '') + (err.stderr || ''),
+      timedOut,
+    };
+  }
+}
+
 /**
  * Capture test baselines — run discovered test commands and record TAP summary.
  *
@@ -26,19 +68,7 @@ function captureBaseline(entriesJson, outputFile) {
 
   for (const { dir, command } of entries) {
     const runDir = dir === '.' ? cwd : path.join(cwd, dir);
-    let exitCode = 0;
-    let output = '';
-    try {
-      output = execSync(command, {
-        cwd: runDir,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 120000,
-      });
-    } catch (err) {
-      exitCode = err.status || 1;
-      output = (err.stdout || '') + (err.stderr || '');
-    }
+    const { exitCode, output, timedOut } = runTestCommand(command, runDir);
     // Extract TAP summary lines (e.g., "# tests 1089", "# pass 1089", "# fail 0")
     const testsMatch = output.match(/^# tests (\d+)/m);
     const passMatch = output.match(/^# pass (\d+)/m);
@@ -51,7 +81,11 @@ function captureBaseline(entriesJson, outputFile) {
       pass: passMatch ? parseInt(passMatch[1]) : null,
       fail: failMatch ? parseInt(failMatch[1]) : null,
     };
-    const status = exitCode === 0 ? 'passing' : 'failing (pre-existing)';
+    const status = timedOut
+      ? 'unknown (timed out — recorded as unknown, not as failing)'
+      : exitCode === 0
+        ? 'passing'
+        : 'failing (pre-existing)';
     process.stderr.write('  ' + dir + ': ' + status + '\n');
   }
 
@@ -84,19 +118,7 @@ function compareBaseline(entriesJson, baselineFile) {
 
   for (const { dir, command } of entries) {
     const runDir = dir === '.' ? cwd : path.join(cwd, dir);
-    let exitCode = 0;
-    let output = '';
-    try {
-      output = execSync(command, {
-        cwd: runDir,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 120000,
-      });
-    } catch (err) {
-      exitCode = err.status || 1;
-      output = (err.stdout || '') + (err.stderr || '');
-    }
+    const { exitCode, output, timedOut } = runTestCommand(command, runDir);
 
     const baseline = baselines[dir] || { exit_code: -1 };
     const baselineStatus =
@@ -104,7 +126,9 @@ function compareBaseline(entriesJson, baselineFile) {
         ? 'pass'
         : baseline.exit_code === -1
           ? 'none'
-          : 'fail';
+          : baseline.exit_code === TIMEOUT_EXIT_CODE
+            ? 'unknown'
+            : 'fail';
     const postStatus = exitCode === 0 ? 'pass' : 'fail';
     const isNew = postStatus === 'fail' && baselineStatus !== 'fail';
     if (isNew) hasNewFailure = true;
@@ -124,6 +148,7 @@ function compareBaseline(entriesJson, baselineFile) {
       baseline: baselineStatus,
       post: postStatus,
       isNew,
+      timedOut,
       output: output.slice(-2000),
       baselineTests,
       postTests,
@@ -147,14 +172,14 @@ function compareBaseline(entriesJson, baselineFile) {
       pad('Directory', maxDir) +
       ' | ' +
       pad('Command', maxCmd) +
-      ' | Baseline | Pre-UAT  |',
+      ' | Baseline  | Pre-UAT  |',
   );
   console.log(
     '|' +
       '-'.repeat(maxDir + 2) +
       '|' +
       '-'.repeat(maxCmd + 2) +
-      '|----------|----------|',
+      '|-----------|----------|',
   );
   for (const r of results) {
     const bMark =
@@ -162,15 +187,21 @@ function compareBaseline(entriesJson, baselineFile) {
         ? '\u2713 pass'
         : r.baseline === 'none'
           ? '- none'
-          : '\u2717 fail';
-    const pMark = r.post === 'pass' ? '\u2713 pass' : '\u2717 fail';
+          : r.baseline === 'unknown'
+            ? '? unknown'
+            : '\u2717 fail';
+    const pMark = r.timedOut
+      ? '\u2717 t/out'
+      : r.post === 'pass'
+        ? '\u2713 pass'
+        : '\u2717 fail';
     console.log(
       '| ' +
         pad(r.dir, maxDir) +
         ' | ' +
         pad(r.command, maxCmd) +
         ' | ' +
-        pad(bMark, 8) +
+        pad(bMark, 9) +
         ' | ' +
         pad(pMark, 8) +
         ' |',
@@ -225,7 +256,16 @@ function compareBaseline(entriesJson, baselineFile) {
     console.log('NEW_FAILURES=true');
     for (const r of results.filter((x) => x.isNew)) {
       console.log('');
-      console.log('New failure in ' + r.dir + ':');
+      if (r.timedOut) {
+        console.log(
+          'Timed out in ' +
+            r.dir +
+            ' — the suite did not finish, so this is not a verdict. ' +
+            'Raise GSD_TEST_TIMEOUT_MS and re-run before triaging it as a regression.',
+        );
+      } else {
+        console.log('New failure in ' + r.dir + ':');
+      }
       console.log(r.output);
     }
   } else {

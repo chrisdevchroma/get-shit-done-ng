@@ -11,10 +11,18 @@ const crypto = require('crypto');
 const INSTALLER = path.resolve(__dirname, '..', 'bin', 'install.js');
 
 const { RUNTIMES } = require('../gsd-ng/bin/lib/template-processor.cjs');
+const {
+  normalizePermissionRules,
+  findUnmatchedPathRules,
+} = require('../gsd-ng/bin/lib/allowlist.cjs');
 
 // Resolve a writable temp base — sandbox sets TMPDIR=/tmp/claude which may not exist on disk
-const { resolveTmpDir, cleanup } = require('./helpers.cjs');
+const { resolveTmpDir, cleanup, cleanupSubdir } = require('./helpers.cjs');
 const BASE_TMPDIR = resolveTmpDir();
+
+const HAS_GH = spawnSync('gh', ['--version'], { timeout: 5000 }).status === 0;
+const NO_GH_SKIP =
+  'gh is not on PATH — the installer seeds no gh patterns to assert on';
 
 // ── global install uses tilde paths, not absolute home dir ──────────
 
@@ -208,14 +216,22 @@ test('PATH-04: install.js local install must not produce ./.claude/ paths in bas
   }
 });
 
-// ── settings-sandbox.json template contains Agent(*), canonical Edit(*)/Write(*)/Read(*),
-//            no deny rules, subshell builtins.
+// ── settings-sandbox.json template contains Agent(*), glob Edit(*)/Read(*),
+//            no unmatched path forms, no deny rules, subshell builtins.
 //
-//            Template uses canonical macOS forms (Edit(*), Write(*), Read(*)).
-//            install.js down-converts to bare forms on Linux via getReadEditWriteAllowRules().
-//            See 54-CONTEXT.md "Template allow canonicalisation" decision.
+//            Template uses glob macOS forms (Edit(*), Read(*)). install.js
+//            down-converts to bare forms on Linux via getReadEditWriteAllowRules().
+//            The template allow list is canonicalised, not left per-platform.
+//
+//            Write(*) is excluded. It is an unmatched path form:
+//            file permission checks consult only Edit(path)/Read(path), so Write(*)
+//            never matches, and since CC v2.1.210 it emits a startup warning on
+//            every macOS/Windows install. Edit(*) already governs every built-in
+//            file-editing tool, so the Write tool stays allowed. The two-sided
+//            contract is now: glob Edit(*)/Read(*) present, bare forms absent, and
+//            NO entry anywhere in the allow list in an unmatched Tool(path) form.
 
-test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(*)/Write(*)/Read(*), excludes bare Edit/Write/Read, no deny rules, subshell builtins', () => {
+test('PERM-06: settings-sandbox.json template contains Agent(*), glob Edit(*)/Read(*), no unmatched path forms, excludes bare Edit/Write/Read, no deny rules, subshell builtins', () => {
   const templatePath = path.resolve(
     __dirname,
     '..',
@@ -232,12 +248,22 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
     'template must include canonical Edit(*) (down-converted to bare Edit on Linux at install time)',
   );
   assert.ok(
-    allow.includes('Write(*)'),
-    'template must include canonical Write(*) (down-converted to bare Write on Linux at install time)',
+    !allow.includes('Write(*)'),
+    'template must NOT include Write(*) — an unmatched path form that never fires and ' +
+      'emits a CC >= 2.1.210 startup warning. Edit(*) already covers the Write tool.',
   );
   assert.ok(
     allow.includes('Read(*)'),
     'template must include canonical Read(*) (down-converted to bare Read on Linux at install time)',
+  );
+  // Whole-list guard: no allow entry may use an unmatched Tool(path) form.
+  const unmatchedAllow = findUnmatchedPathRules(allow);
+  assert.deepStrictEqual(
+    unmatchedAllow,
+    [],
+    'template.permissions.allow must contain no unmatched Tool(path) rules — ' +
+      'use Edit(<path>) for Write/NotebookEdit and Read(<path>) for Glob. Offending entries: ' +
+      unmatchedAllow.join(', '),
   );
   // Two-sided contract: bare forms must NOT be present in the template
   assert.ok(
@@ -246,7 +272,7 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
   );
   assert.ok(
     !allow.includes('Write'),
-    'template must NOT include bare Write — use Write(*)',
+    'template must NOT include bare Write — Edit(*) covers the Write tool',
   );
   assert.ok(
     !allow.includes('Read'),
@@ -277,9 +303,68 @@ test('PERM-06: settings-sandbox.json template contains Agent(*), canonical Edit(
   assert.ok(allow.includes('Bash(seq *)'), 'template must include Bash(seq *)');
 });
 
+// ── settings-sandbox.json allow/deny/ask must use effective forms, never Tool(<path>) ──
+//
+//            Claude Code's file permission checks match only Edit(path) and
+//            Read(path) rules. A Write(path), NotebookEdit(path) or Glob(path)
+//            rule is accepted by the parser but never matched — it reads as
+//            policy, never fires, and (CC >= 2.1.210) costs a startup warning.
+//            One Edit(path) entry governs every file-editing tool, so Edit(path)
+//            is the effective spelling; Read(path) replaces Glob(path).
+//
+//            This covers ALL THREE seeded sections — the startup warning fires
+//            for allow, deny and ask alike, and install.js runs each of them
+//            through normalizePermissionRules(). The assertion keeps
+//            the template itself honest so the mistake is caught at source rather
+//            than repaired at install time. It also rejects the Edit/Write *pair*
+//            shape — the Write half is decoration, not defence.
+//
+//            A BARE tool-name rule (e.g. deny 'Write') is NOT flagged: it matches
+//            the tool everywhere and emits no warning, so it is a valid construct.
+
+test('PERM-09: settings-sandbox.json allow/deny/ask rules use effective forms, never an unmatched Tool(path) form', () => {
+  const templatePath = path.resolve(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'templates',
+    'settings-sandbox.json',
+  );
+  const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+
+  for (const section of ['allow', 'deny', 'ask']) {
+    const entries = template.permissions[section] ?? [];
+    assert.ok(
+      Array.isArray(entries),
+      `template.permissions.${section} must be an array when present (PERM-09)`,
+    );
+
+    const unmatched = findUnmatchedPathRules(entries);
+    assert.deepStrictEqual(
+      unmatched,
+      [],
+      `template.permissions.${section} must not contain unmatched Tool(path) rules — they are ` +
+        'never matched by the file permission engine and warn at startup. Use Edit(<path>) for ' +
+        'Write/NotebookEdit and Read(<path>) for Glob (and keep Read(<path>) alongside Edit(<path>) ' +
+        'for secrets). Offending entries: ' +
+        unmatched.join(', ') +
+        ' (PERM-09)',
+    );
+
+    // Normalisation must be a no-op on a correctly authored template — proves the
+    // shipped list is already in the form install.js would seed.
+    assert.deepStrictEqual(
+      normalizePermissionRules(entries),
+      entries,
+      `template.permissions.${section} must already be in normalised form ` +
+        '(no unmatched path rules, no duplicates) (PERM-09)',
+    );
+  }
+});
+
 // ── install seeds granular platform CLI patterns, not blanket wildcards ──
 
-test('PERM-07: local install seeds granular gh subcommand patterns (not blanket Bash(gh *))', () => {
+test('PERM-07: local install seeds granular gh subcommand patterns (not blanket Bash(gh *))', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-js-perm07-'));
   try {
     const result = spawnSync(
@@ -302,45 +387,36 @@ test('PERM-07: local install seeds granular gh subcommand patterns (not blanket 
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     const allow = settings.permissions.allow;
 
-    // gh is typically installed in CI/dev environments
-    // If gh is installed, we should see granular patterns
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      // gh is installed -- verify granular patterns
-      assert.ok(
-        allow.includes('Bash(gh pr *)'),
-        'must include Bash(gh pr *) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh pr)'),
-        'must include Bash(gh pr) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh issue *)'),
-        'must include Bash(gh issue *) when gh is installed (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh *)'),
-        'must NOT include blanket Bash(gh *) (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh api *)'),
-        'must NOT include Bash(gh api *) (PERM-07)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh extension *)'),
-        'must NOT include Bash(gh extension *) (PERM-07)',
-      );
-    } catch {
-      // gh not installed -- just verify no blanket pattern leaked
-      assert.ok(
-        !allow.includes('Bash(gh *)'),
-        'must NOT include blanket Bash(gh *) even without gh installed (PERM-07)',
-      );
+    assert.ok(
+      !allow.includes('Bash(gh *)'),
+      'must NOT include blanket Bash(gh *) (PERM-07)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh api *)'),
+      'must NOT include Bash(gh api *) (PERM-07)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh extension *)'),
+      'must NOT include Bash(gh extension *) (PERM-07)',
+    );
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+
+    assert.ok(
+      allow.includes('Bash(gh pr *)'),
+      'must include Bash(gh pr *) when gh is installed (PERM-07)',
+    );
+    assert.ok(
+      allow.includes('Bash(gh pr)'),
+      'must include Bash(gh pr) when gh is installed (PERM-07)',
+    );
+    assert.ok(
+      allow.includes('Bash(gh issue *)'),
+      'must include Bash(gh issue *) when gh is installed (PERM-07)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -1023,7 +1099,6 @@ test('COPILOT-05: --local --copilot does NOT seed permissions or sandbox setting
       'No settings.json must exist in .github/ for Copilot install (COPILOT-05)',
     );
 
-    // Walk .github/ recursively — no file should contain "permissions" key
     function walkDir(dir) {
       if (!fs.existsSync(dir)) return [];
       const results = [];
@@ -1038,17 +1113,86 @@ test('COPILOT-05: --local --copilot does NOT seed permissions or sandbox setting
       return results;
     }
 
-    const jsonFiles = walkDir(githubDir);
-    for (const jsonFile of jsonFiles) {
+    // gsd-ng/ is the engine payload, copied verbatim on every runtime. Its
+    // templates are the installer's own input — the file permissions are seeded
+    // FROM on Claude — not configuration Copilot ever reads. Seeding means
+    // writing permissions into a config the agent consumes, so only the files
+    // outside the payload are in scope here.
+    const payloadDir = path.join(githubDir, 'gsd-ng');
+    const consumed = walkDir(githubDir).filter(
+      (f) => !f.startsWith(payloadDir + path.sep),
+    );
+    assert.ok(
+      consumed.length > 0,
+      'expected at least one consumed .json file under .github/ to inspect (COPILOT-05)',
+    );
+    for (const jsonFile of consumed) {
+      let data;
       try {
-        const data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-        assert.ok(
-          data.permissions === undefined,
-          `${jsonFile} must not contain "permissions" key in Copilot install (COPILOT-05)`,
+        data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+      } catch (err) {
+        assert.fail(
+          `${jsonFile} must be valid JSON in a Copilot install (COPILOT-05): ${err.message}`,
         );
-      } catch {
-        // JSON parse error — skip
       }
+      assert.ok(
+        data.permissions === undefined,
+        `${jsonFile} must not contain "permissions" key in Copilot install (COPILOT-05)`,
+      );
+    }
+
+    // The payload template is passed through untouched, not seeded into.
+    const sandboxTemplate = path.join(
+      payloadDir,
+      'templates',
+      'settings-sandbox.json',
+    );
+    assert.ok(
+      fs.existsSync(sandboxTemplate),
+      'the sandbox template ships as engine payload on Copilot too (COPILOT-05)',
+    );
+    assert.strictEqual(
+      fs.readFileSync(sandboxTemplate, 'utf8'),
+      fs.readFileSync(
+        path.resolve(__dirname, '..', 'gsd-ng', 'templates', 'settings-sandbox.json'),
+        'utf8',
+      ),
+      'the Copilot install must copy the sandbox template byte-for-byte from source, ' +
+        'never merge or seed into it (COPILOT-05)',
+    );
+
+    // The contrast that gives "does not seed" its meaning: the same flags on
+    // Claude do produce a permissions-bearing settings.json.
+    const claudeDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-js-copilot-ref-'));
+    try {
+      const ref = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: claudeDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+      assert.strictEqual(
+        ref.status,
+        0,
+        'reference Claude install must exit 0 (COPILOT-05)\nstderr: ' +
+          (ref.stderr || ''),
+      );
+      const refSettings = JSON.parse(
+        fs.readFileSync(path.join(claudeDir, '.claude', 'settings.json'), 'utf8'),
+      );
+      assert.ok(
+        refSettings.permissions &&
+          Array.isArray(refSettings.permissions.allow) &&
+          refSettings.permissions.allow.length > 0,
+        'the Claude runtime must seed permissions.allow — otherwise the Copilot ' +
+          'assertions above are vacuous (COPILOT-05)',
+      );
+    } finally {
+      cleanup(claudeDir);
     }
   } finally {
     cleanup(tmpDir);
@@ -1931,33 +2075,62 @@ test('RUNTIME-02: install.js --runtime copilot writes .runtime marker containing
 
 // ── env var rename — GSD_TEST_FORCE_PLATFORM is the test seam ────────
 
-test('ALLOW-18: install.js seeding block uses GSD_TEST_FORCE_PLATFORM (not GSD_FORCE_PLATFORM)', () => {
-  // Static code inspection: the source must not reference the old env var name
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  assert.ok(
-    !src.includes('GSD_FORCE_PLATFORM'),
-    'install.js must not reference GSD_FORCE_PLATFORM (old name) — use GSD_TEST_FORCE_PLATFORM (ALLOW-18)',
-  );
-  assert.ok(
-    src.includes('GSD_TEST_FORCE_PLATFORM'),
-    'install.js must reference GSD_TEST_FORCE_PLATFORM at least once (ALLOW-18)',
-  );
-});
+test('ALLOW-18: only GSD_TEST_FORCE_PLATFORM overrides platform detection — the old GSD_FORCE_PLATFORM name is inert', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-18-'));
+  try {
+    const allowFor = (label, extraEnv) => {
+      const dir = path.join(tmpDir, label);
+      fs.mkdirSync(dir, { recursive: true });
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: dir,
+          env: Object.assign(
+            {},
+            process.env,
+            { HOME: os.homedir() },
+            { GSD_TEST_FORCE_PLATFORM: undefined, GSD_FORCE_PLATFORM: undefined },
+            extraEnv,
+          ),
+        },
+      );
+      assert.strictEqual(
+        result.status,
+        0,
+        `install must exit 0 (${label}, ALLOW-18)\nstderr: ` +
+          (result.stderr || ''),
+      );
+      const settings = JSON.parse(
+        fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf8'),
+      );
+      return settings.permissions?.allow ?? [];
+    };
 
-// ── RW_FORMS imported from allowlist.cjs — no inline Set literal ──────
+    const baseline = allowFor('baseline', {});
+    const forcedOldName = allowFor('old-name', {
+      GSD_FORCE_PLATFORM: 'win32',
+    });
+    assert.deepStrictEqual(
+      forcedOldName,
+      baseline,
+      'GSD_FORCE_PLATFORM is the retired name and must have no effect on the seeded ' +
+        'allow list — only GSD_TEST_FORCE_PLATFORM is the test seam (ALLOW-18)',
+    );
 
-test('ALLOW-19: install.js imports RW_FORMS from allowlist.cjs and uses no inline rwForms Set literal', () => {
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  // Must import RW_FORMS in the destructure
-  assert.ok(
-    src.includes('RW_FORMS'),
-    'install.js must import and reference RW_FORMS from allowlist.cjs (ALLOW-19)',
-  );
-  // Must not define an inline Set containing these canonical forms
-  assert.ok(
-    !src.includes("new Set(['Edit', 'Write', 'Read'"),
-    'install.js must not define an inline rwForms Set literal — use imported RW_FORMS (ALLOW-19)',
-  );
+    const forcedNewName = allowFor('new-name', {
+      GSD_TEST_FORCE_PLATFORM: 'win32',
+    });
+    assert.ok(
+      forcedNewName.includes('Edit(*)') && !forcedNewName.includes('Write'),
+      'GSD_TEST_FORCE_PLATFORM=win32 must drive platform detection: canonical glob ' +
+        'forms, no bare Write (ALLOW-18)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });
 
 // ── GSD_TEST_FORCE_PLATFORM seam works at runtime ─────────────────────
@@ -1999,27 +2172,6 @@ test('ALLOW-19: GSD_TEST_FORCE_PLATFORM env var controls platform detection in s
   } finally {
     cleanup(tmpDir);
   }
-});
-
-// ── syncSection uses Set.has() for O(1) membership ─────────────────
-
-test('ALLOW-20: install.js syncSection uses Set.has() — not Array.includes() — for membership check', () => {
-  const src = fs.readFileSync(INSTALLER, 'utf8');
-  // New implementation: must use Set.has()
-  assert.ok(
-    src.includes('existingSet.has(e)'),
-    'syncSection must use existingSet.has(e) for membership check (ALLOW-20)',
-  );
-  // Old implementation: must not use Array.includes()
-  assert.ok(
-    !src.includes('existing.includes(e)'),
-    'syncSection must not use existing.includes(e) — replaced by Set.has() (ALLOW-20)',
-  );
-  // Return shape: merged and added fields must still be present
-  assert.ok(
-    src.includes('merged: [...existing, ...toAdd]'),
-    'syncSection must keep merged: [...existing, ...toAdd] return shape (ALLOW-20)',
-  );
 });
 
 test('RUNTIME-03: install.js preserves existing config.json values and writes .runtime marker', () => {
@@ -2686,9 +2838,9 @@ test('MANIFEST-V2-04: reportLocalPatches skipped after migration run', () => {
   }
 });
 
-// ── --clean flag wipes managed dirs before install and produces fresh v2 manifest ──
+// ── --clean discards a corrupted manifest and rebuilds it to match the tree ──
 
-test('CLEAN-01: --clean flag wipes managed dirs before install and produces fresh v2 manifest', () => {
+test('CLEAN-01: --clean discards a corrupted manifest and writes a fresh v2 whose every entry exists on disk', () => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-clean-01-'));
   try {
     const runInstall = (extraArgs = []) =>
@@ -2708,15 +2860,16 @@ test('CLEAN-01: --clean flag wipes managed dirs before install and produces fres
       0,
       'first install must exit 0\nstderr: ' + (r1.stderr || ''),
     );
-    // Corrupt the manifest
     const mPath = path.join(tmpDir, '.claude', 'gsd-file-manifest.json');
     fs.writeFileSync(mPath, '{"corrupted":true}');
+
     const r2 = runInstall(['--clean']);
     assert.strictEqual(
       r2.status,
       0,
       '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
     );
+
     const manifest = JSON.parse(fs.readFileSync(mPath, 'utf8'));
     assert.strictEqual(
       manifest.schema_version,
@@ -2727,6 +2880,14 @@ test('CLEAN-01: --clean flag wipes managed dirs before install and produces fres
       manifest.files && Object.keys(manifest.files).length > 0,
       'manifest.files must be non-empty after --clean install',
     );
+    for (const rel of Object.keys(manifest.files)) {
+      assert.ok(
+        fs.existsSync(path.join(tmpDir, '.claude', rel)),
+        'every file the fresh manifest records must exist on disk after --clean ' +
+          '(a wipe running after the install would leave these recorded but gone): ' +
+          rel,
+      );
+    }
   } finally {
     cleanup(tmpDir);
   }
@@ -2842,6 +3003,729 @@ test('CLEAN-04: --help output documents --clean', () => {
       /Wipe/.test(r.stdout || ''),
       '--help must include descriptive copy for --clean (containing "Wipe"). stdout:\n' +
         (r.stdout || ''),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean preserves user-owned content ───────────────────────────
+
+test('CLEANEV-01: --clean preserves user-owned content on the Claude runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-01-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // User-owned content the wipe must never touch. Deliberately NOT gsd-prefixed:
+    // gsd-*.md agents and the six named gsd hook files are deleted by design.
+    const planted = [
+      [path.join(claudeDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(claudeDir, 'hooks', 'zz-user-hook.js'), 'zz-user-hook-body'],
+      [path.join(claudeDir, 'commands', 'zz-user-cmd.md'), 'zz-user-cmd-body'],
+      [
+        path.join(claudeDir, 'commands', 'zz-user-dir', 'nested.md'),
+        'zz-user-nested-body',
+      ],
+      [
+        path.join(claudeDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Stale-wipe witness. This is the ONE path on the Claude runtime where the
+    // wipe is observable: it is in the wipe's six-name hook list, but no file of
+    // this name ships in the source hooks/ dir, and the ordinary install's hook
+    // step only copies files in — it never deletes. So a plain reinstall leaves
+    // it alone and only a real wipe removes it. Every other location the wipe
+    // touches (commands/gsd, gsd-ng/, agents/gsd-*.md) is also cleared by the
+    // ordinary install, so absence there would prove nothing.
+    const staleWitness = path.join(claudeDir, 'hooks', 'gsd-check-update.sh');
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    const settingsBefore = fs.existsSync(settingsPath)
+      ? fs.readFileSync(settingsPath, 'utf8')
+      : null;
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after --clean: ' + filePath,
+      );
+    }
+
+    if (settingsBefore !== null) {
+      assert.ok(
+        fs.existsSync(settingsPath),
+        'settings.json must survive --clean',
+      );
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, 'utf8'),
+        settingsBefore,
+        'settings.json content must be unchanged by --clean',
+      );
+    }
+
+    // The wipe actually ran: a stale GSD-owned file the installer never writes
+    // back is gone. This is the assertion a no-op --clean fails; the refresh
+    // checks below only prove that an install ran.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(claudeDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(claudeDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── uninstall leaves nothing GSD installed ─────────────────────────
+
+// Recursively list files under `dir`, relative to it. Absent dir -> [].
+function listFilesRelative(dir, base) {
+  base = base || dir;
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFilesRelative(full, base));
+    else out.push(path.relative(base, full).replace(/\\/g, '/'));
+  }
+  return out.sort();
+}
+
+// settings.json is the runtime's own config file, not a GSD artifact: GSD merges
+// entries into whatever is already there and strips them again on uninstall, so
+// the file surviving is the documented contract rather than a leak.
+const UNINSTALL_SURVIVORS = new Set(['settings.json']);
+
+test('UNINST-CLEAN-01: uninstall leaves no GSD-installed file behind on the Claude runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-01-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = run();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // Positive control. The install ran into an empty directory, so every file
+    // now present was written by GSD — the leftover set below is measured
+    // against that, not against a guessed inventory. Naming two of them
+    // explicitly keeps the test honest if the install stops producing them:
+    // an absent file would otherwise make the removal assertion vacuous.
+    const installed = listFilesRelative(claudeDir);
+    assert.ok(installed.length > 0, 'install must write files into .claude');
+    for (const expected of [
+      'hooks/bash-safety-hook.cjs',
+      'gsd-file-manifest.json',
+    ]) {
+      assert.ok(
+        installed.includes(expected),
+        'install must write ' +
+          expected +
+          ' for its removal to be meaningful. Installed:\n' +
+          installed.join('\n'),
+      );
+    }
+
+    const r2 = run(['--uninstall']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const leftover = listFilesRelative(claudeDir).filter(
+      (f) => !UNINSTALL_SURVIVORS.has(f),
+    );
+    assert.deepStrictEqual(
+      leftover,
+      [],
+      'uninstall must remove every file GSD installed. Left behind:\n' +
+        leftover.join('\n'),
+    );
+
+    // A hook file removed from disk must not keep a settings.json entry
+    // pointing at it, or the runtime fails on every matching tool call.
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const settingsText = fs.readFileSync(settingsPath, 'utf8');
+      for (const hook of [
+        'bash-safety-hook.cjs',
+        'gsd-guardrail.js',
+        'gsd-sandbox-detect.js',
+        'gsd-statusline.js',
+        'gsd-check-update.js',
+        'gsd-context-monitor.js',
+      ]) {
+        assert.ok(
+          !settingsText.includes(hook),
+          'settings.json must not reference removed hook ' +
+            hook +
+            ' after uninstall. settings.json:\n' +
+            settingsText,
+        );
+      }
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('UNINST-CLEAN-02: uninstall leaves no GSD-installed file behind on the Copilot runtime', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-02-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = run();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const githubDir = path.join(tmpDir, '.github');
+    const installed = listFilesRelative(githubDir);
+    assert.ok(
+      installed.includes('gsd-file-manifest.json'),
+      'install must write the manifest for its removal to be meaningful',
+    );
+    assert.ok(
+      installed.includes('hooks/gsd-hooks.json'),
+      'install must write the hook descriptor for its removal to be meaningful',
+    );
+
+    const r2 = run(['--uninstall']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const leftover = listFilesRelative(githubDir);
+    assert.deepStrictEqual(
+      leftover,
+      [],
+      'uninstall must remove every file GSD installed. Left behind:\n' +
+        leftover.join('\n'),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── retired hooks are removed, not stranded ────────────────────────
+
+test('UNINST-CLEAN-03: a hook installed by an earlier release but no longer shipped is removed by --clean', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-03-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    assert.strictEqual(run().status, 0, 'baseline install must exit 0');
+
+    const claudeDir = path.join(tmpDir, '.claude');
+    const manifestPath = path.join(claudeDir, 'gsd-file-manifest.json');
+    const retiredHook = path.join(claudeDir, 'hooks', 'gsd-legacy-probe.js');
+
+    // Fixture for a hook some earlier release shipped and this one does not.
+    // Its name is deliberately absent from the package's hooks/ dir, so the only
+    // thing that can identify it as GSD-owned is the install's own record of
+    // what it wrote.
+    const plantRetiredHook = () => {
+      fs.writeFileSync(retiredHook, 'retired-gsd-hook-body');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      manifest.installed_hooks = [
+        ...(manifest.installed_hooks || []),
+        'gsd-legacy-probe.js',
+      ];
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    };
+
+    plantRetiredHook();
+
+    // Positive control: the ordinary install copies hooks in and never deletes,
+    // so a plain reinstall must leave the fixture alone. Without this, the
+    // fixture's absence after --clean would not distinguish the wipe from any
+    // other step in the install.
+    assert.strictEqual(run().status, 0, 'control reinstall must exit 0');
+    assert.ok(
+      fs.existsSync(retiredHook),
+      'ordinary install must not delete the retired hook — otherwise its ' +
+        'absence after --clean proves nothing about the wipe',
+    );
+
+    // The control reinstall rewrote the manifest from the shipped hook set,
+    // dropping the fixture's record. Re-plant so --clean sees the state a real
+    // upgrade from the earlier release would present.
+    plantRetiredHook();
+
+    const r = run(['--clean']);
+    assert.strictEqual(
+      r.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    assert.ok(
+      !fs.existsSync(retiredHook),
+      'a hook recorded as installed but no longer shipped must be removed by ' +
+        '--clean, not stranded: ' + retiredHook,
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── user hooks are never deletion candidates ───────────────────────
+
+test('UNINST-CLEAN-04: uninstall preserves user hooks, including gsd-prefixed ones GSD never installed', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-uninst-clean-04-'));
+  try {
+    const run = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    assert.strictEqual(run().status, 0, 'install must exit 0');
+
+    const claudeDir = path.join(tmpDir, '.claude');
+
+    // The second name is the load-bearing one: it guards against widening the
+    // removal set to a gsd-* glob over hooks/, which would satisfy every other
+    // assertion here while quietly deleting a user's file.
+    const userHooks = [
+      [path.join(claudeDir, 'hooks', 'zz-user-hook.js'), 'zz-user-hook-body'],
+      [
+        path.join(claudeDir, 'hooks', 'gsd-user-owned-hook.js'),
+        'gsd-prefixed-but-user-owned-body',
+      ],
+    ];
+    for (const [filePath, body] of userHooks) {
+      fs.writeFileSync(filePath, body);
+    }
+
+    const r = run(['--uninstall']);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    for (const [filePath, body] of userHooks) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user hook must survive uninstall: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user hook must be byte-identical after uninstall: ' + filePath,
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean on the Copilot runtime ─────────────────────────────────
+
+test('CLEANEV-02: --clean on the Copilot runtime wipes the managed tree and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-02-'));
+  try {
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--local', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const configDir = path.join(tmpDir, '.github');
+
+    // Copilot-side user content. Non-gsd-prefixed on purpose: the wipe deletes
+    // only gsd-*.agent.md files and skills/gsd-* directories.
+    const planted = [
+      [path.join(configDir, 'agents', 'zz-user.agent.md'), 'zz-user-agent-body'],
+      [
+        path.join(configDir, 'skills', 'zz-user-skill', 'SKILL.md'),
+        'zz-user-skill-body',
+      ],
+      [
+        path.join(configDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Why this LOCAL test has no stale-wipe witness: for a local Copilot
+    // install every location the wipe touches is ALSO cleared by the ordinary
+    // install that follows it — skills/gsd-* and agents/gsd-*.agent.md are
+    // deleted by the same wildcard predicates (so even a name from an older
+    // release that no longer ships is removed), gsd-ng/ is removed before it is
+    // re-copied, and hooks/gsd-hooks.json is rewritten unconditionally. The
+    // equivalence is real but scoped to --local: on --global the installer
+    // skips the hooks step entirely, so hooks/gsd-hooks.json is wiped and never
+    // written back. The global Copilot test below witnesses that.
+    //
+    // TRIPWIRE: if the assertion below starts failing, a plain reinstall has
+    // stopped clearing stale gsd- skills and the wipe has become load-bearing
+    // for local installs too. Do not delete the assertion — give this test a
+    // real absence witness instead.
+    const staleSkill = path.join(configDir, 'skills', 'gsd-zz-stale', 'SKILL.md');
+    fs.mkdirSync(path.dirname(staleSkill), { recursive: true });
+    fs.writeFileSync(staleSkill, 'stale-gsd-owned-file');
+
+    const rPlain = runInstall();
+    assert.strictEqual(
+      rPlain.status,
+      0,
+      'plain copilot reinstall must exit 0\nstderr: ' + (rPlain.stderr || ''),
+    );
+    assert.ok(
+      !fs.existsSync(staleSkill),
+      'a plain copilot reinstall already removes stale gsd- skills, so --clean ' +
+        'has no observable witness on this runtime: ' +
+        staleSkill,
+    );
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive copilot --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after copilot --clean: ' +
+          filePath,
+      );
+    }
+
+    // Proves an install ran and the user content above survived it. It does NOT
+    // prove a wipe ran — see the note above.
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'gsd-ng')),
+      'gsd-ng/ must be re-installed after copilot --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'copilot manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean --global targets CLAUDE_CONFIG_DIR, not the real home ──
+
+test('CLEANEV-03: --clean --global operates on CLAUDE_CONFIG_DIR and preserves user content', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-03-'));
+  try {
+    const cfgDir = path.join(tmpDir, 'fakehome', '.claude');
+    fs.mkdirSync(cfgDir, { recursive: true });
+
+    // SAFETY: CLAUDE_CONFIG_DIR is set on EVERY invocation below. getGlobalDir
+    // reads it ahead of the home directory, so the global target stays inside
+    // tmpDir. A single call missing it would target the real user config dir.
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--global', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            CLAUDE_CONFIG_DIR: cfgDir,
+          }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline global install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Containment gate — must hold before any --clean run. If the redirect is
+    // not honored the install landed elsewhere and this test must stop here.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'global install must land in the redirected config dir, not the real home',
+    );
+
+    const planted = [
+      [path.join(cfgDir, 'agents', 'zz-user-agent.md'), 'zz-user-agent-body'],
+      [path.join(cfgDir, 'CLAUDE.md'), 'zz-user-memory-body'],
+      [
+        path.join(cfgDir, 'gsd-local-patches', 'sentinel.txt'),
+        'zz-user-patch-body',
+      ],
+    ];
+    for (const [filePath, body] of planted) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+    }
+
+    // Stale-wipe witness — see the Claude local test for why this specific name
+    // is the only observable one: it is in the wipe's hook list but ships in no
+    // source dir, and the ordinary install never deletes from hooks/.
+    const staleWitness = path.join(cfgDir, 'hooks', 'gsd-check-update.sh');
+    fs.mkdirSync(path.dirname(staleWitness), { recursive: true });
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'global --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      /Wiped managed tree/.test(r2.stdout || ''),
+      'global --clean must report the wipe. stdout:\n' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+
+    for (const [filePath, body] of planted) {
+      assert.ok(
+        fs.existsSync(filePath),
+        'user-owned file must survive global --clean: ' + filePath,
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf8'),
+        body,
+        'user-owned file must be byte-identical after global --clean: ' +
+          filePath,
+      );
+    }
+
+    // The wipe actually ran. The stdout line above is printed by the caller of
+    // removeGsdFiles and is ungated on any deletion, so it is not evidence on
+    // its own; this absence check is.
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned file must be deleted by global --clean: ' + staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'commands', 'gsd')),
+      'commands/gsd/ must be re-installed after global --clean',
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(cfgDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    assert.strictEqual(
+      manifest.schema_version,
+      2,
+      'global manifest must be freshly written with schema_version: 2 after --clean',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean --global on Copilot has an observable wipe witness ─────
+
+test('CLEANEV-04: --clean --global on the Copilot runtime deletes a hook file a plain reinstall leaves behind', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-cleanev-04-'));
+  try {
+    const cfgDir = path.join(tmpDir, 'fakehome', '.copilot');
+    fs.mkdirSync(cfgDir, { recursive: true });
+
+    // SAFETY: COPILOT_CONFIG_DIR is set on EVERY invocation below. getGlobalDir
+    // reads it ahead of the home directory, so the global target stays inside
+    // tmpDir. A single call missing it would target the real ~/.copilot.
+    const runInstall = (extraArgs = []) =>
+      spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'copilot', '--global', ...extraArgs],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            COPILOT_CONFIG_DIR: cfgDir,
+          }),
+        },
+      );
+
+    const r1 = runInstall();
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline global copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Containment gate — must hold before any --clean run. If the redirect is
+    // not honored the install landed elsewhere and this test must stop here.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'gsd-ng')),
+      'global copilot install must land in the redirected config dir, not the real home',
+    );
+
+    // Stale-wipe witness. hooks/gsd-hooks.json is GSD-owned and is in the
+    // wipe's delete list for this runtime, but the installer writes it only for
+    // local installs (global Copilot hooks are unsupported by the CLI). So on
+    // --global nothing recreates it and nothing else deletes it — exactly the
+    // shape that makes a wipe observable. This models version drift: a file a
+    // previous release wrote to a location the current release no longer
+    // manages.
+    const staleWitness = path.join(cfgDir, 'hooks', 'gsd-hooks.json');
+    fs.mkdirSync(path.dirname(staleWitness), { recursive: true });
+    fs.writeFileSync(staleWitness, 'stale-gsd-owned-file');
+
+    // Half of the proof: the ordinary install path cannot remove it.
+    const rPlain = runInstall();
+    assert.strictEqual(
+      rPlain.status,
+      0,
+      'plain global copilot reinstall must exit 0\nstderr: ' + (rPlain.stderr || ''),
+    );
+    assert.ok(
+      fs.existsSync(staleWitness),
+      'a plain global copilot reinstall must NOT remove the stale hook file — ' +
+        'if it does, this witness is no longer wipe-specific and the test is ' +
+        'proving nothing: ' +
+        staleWitness,
+    );
+
+    // Other half: --clean does remove it. Together these show the wipe on the
+    // Copilot runtime is not observationally equivalent to a plain reinstall.
+    const r2 = runInstall(['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'global copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      !fs.existsSync(staleWitness),
+      'stale GSD-owned hook file must be deleted by global copilot --clean: ' +
+        staleWitness,
+    );
+
+    // The tree was reinstalled after the wipe, not merely emptied.
+    assert.ok(
+      fs.existsSync(path.join(cfgDir, 'gsd-ng')),
+      'gsd-ng/ must be re-installed after global copilot --clean',
     );
   } finally {
     cleanup(tmpDir);
@@ -2975,6 +3859,7 @@ test('ALLOW-07: install.js --local on Linux writes bare Edit/Write/Read forms', 
     const allow = settings.permissions?.allow ?? [];
 
     assert.ok(allow.includes('Edit'), 'Linux must include bare Edit');
+    // Bare Write is an effective, warning-free tool-name rule — retained on Linux.
     assert.ok(allow.includes('Write'), 'Linux must include bare Write');
     assert.ok(allow.includes('Read'), 'Linux must include bare Read');
     assert.ok(
@@ -2994,9 +3879,65 @@ test('ALLOW-07: install.js --local on Linux writes bare Edit/Write/Read forms', 
   }
 });
 
-// ── install.js writes canonical Edit(*)/Write(*)/Read(*) on macOS ──
+// ── seeded settings.json carries no unmatched Tool(path) rule, on any platform ──
+//
+// The end-to-end guard for the defect the unit tests only approximate: seeding
+// Write(*) into permissions.allow on a macOS/Windows install, which
+// CC >= 2.1.210 reports as a startup warning. Asserting on the
+// file install.js actually writes — across all three seeded sections and every
+// platform branch — is what keeps a regression from shipping, since the template
+// and the platform allow list are separate sources that both feed this output.
 
-test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => {
+test('PERM-10: install.js seeds no unmatched Tool(path) rule into allow/deny/ask on any platform', () => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, `gsd-perm10-${platform}-`));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', 'claude', '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, {
+            HOME: os.homedir(),
+            GSD_TEST_FORCE_PLATFORM: platform,
+          }),
+        },
+      );
+      assert.strictEqual(result.status, 0, `install.js failed on ${platform}: ${result.stderr}`);
+
+      const settings = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, '.claude', 'settings.json'), 'utf8'),
+      );
+      for (const section of ['allow', 'deny', 'ask']) {
+        const entries = settings.permissions?.[section] ?? [];
+        const unmatched = findUnmatchedPathRules(entries);
+        assert.deepStrictEqual(
+          unmatched,
+          [],
+          `${platform}: seeded permissions.${section} must contain no unmatched Tool(path) rule ` +
+            `(never matched by the file permission engine; warns at startup on CC >= 2.1.210). ` +
+            `Offending entries: ${unmatched.join(', ')}`,
+        );
+      }
+
+      // The Write tool must still be granted — by the effective spelling for the
+      // platform, not withdrawn. Linux keeps bare Write; macOS/Windows rely on Edit(*).
+      const allow = settings.permissions?.allow ?? [];
+      assert.ok(
+        platform === 'linux' ? allow.includes('Write') : allow.includes('Edit(*)'),
+        `${platform}: file-editing must still be allowed after dropping the unmatched form`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  }
+});
+
+// ── install.js writes glob Edit(*)/Read(*) on macOS (no unmatched Write(*)) ──
+
+test('ALLOW-08: install.js --local on macOS writes canonical glob forms', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-08-'));
   try {
     const result = spawnSync(
@@ -3019,34 +3960,31 @@ test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => 
     );
     const allow = settings.permissions?.allow ?? [];
     assert.ok(allow.includes('Edit(*)'));
-    assert.ok(allow.includes('Write(*)'));
+    assert.ok(!allow.includes('Write(*)'),
+      'macOS must NOT carry Write(*) — unmatched path form; Edit(*) covers the Write tool');
     assert.ok(allow.includes('Read(*)'));
     assert.ok(!allow.includes('Edit'), 'macOS must not carry bare Edit');
-    // Narrowed verbs land — gated on gh presence on host
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      assert.ok(
-        allow.includes('Bash(gh repo view *)'),
-        'narrowed repo view must land',
-      );
-      assert.ok(
-        allow.includes('Bash(gh label create *)'),
-        'narrowed label create must land',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'broad gh repo must NOT land (narrowed)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh label *)'),
-        'broad gh label must NOT land (narrowed)',
-      );
-    } catch {
-      /* gh not installed — skip narrow-verb assertions */
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view must land',
+    );
+    assert.ok(
+      allow.includes('Bash(gh label create *)'),
+      'narrowed label create must land',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'broad gh repo must NOT land (narrowed)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh label *)'),
+      'broad gh label must NOT land (narrowed)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -3054,7 +3992,7 @@ test('ALLOW-08: install.js --local on macOS writes canonical glob forms', () => 
 
 // ── install.js writes canonical forms + narrowed CLI verbs on win32 ──
 
-test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narrowed CLI verbs', () => {
+test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narrowed CLI verbs', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-16-'));
   try {
     const result = spawnSync(
@@ -3083,8 +4021,8 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
       'win32 must include canonical Edit(*)',
     );
     assert.ok(
-      allow.includes('Write(*)'),
-      'win32 must include canonical Write(*)',
+      !allow.includes('Write(*)'),
+      'win32 must NOT include Write(*) — unmatched path form; Edit(*) covers the Write tool',
     );
     assert.ok(
       allow.includes('Read(*)'),
@@ -3096,31 +4034,26 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
     assert.ok(!allow.includes('Write'), 'win32 must NOT carry bare Write');
     assert.ok(!allow.includes('Read'), 'win32 must NOT carry bare Read');
 
-    // Narrowed verbs land — gated on gh presence on host
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      assert.ok(
-        allow.includes('Bash(gh repo view *)'),
-        'narrowed repo view must land',
-      );
-      assert.ok(
-        allow.includes('Bash(gh label create *)'),
-        'narrowed label create must land',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'broad gh repo must NOT land (narrowed)',
-      );
-      assert.ok(
-        !allow.includes('Bash(gh label *)'),
-        'broad gh label must NOT land (narrowed)',
-      );
-    } catch {
-      /* gh not installed — skip narrow-verb assertions */
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view must land',
+    );
+    assert.ok(
+      allow.includes('Bash(gh label create *)'),
+      'narrowed label create must land',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'broad gh repo must NOT land (narrowed)',
+    );
+    assert.ok(
+      !allow.includes('Bash(gh label *)'),
+      'broad gh label must NOT land (narrowed)',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -3128,7 +4061,7 @@ test('ALLOW-16: install.js --local on win32 writes canonical glob forms and narr
 
 // ── allow section sync union preserves user entries + logs per-section count ──
 
-test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allow entries"', () => {
+test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allow entries"', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-allow-09-'));
   try {
     const configDir = path.join(tmpDir, '.claude');
@@ -3173,24 +4106,20 @@ test('ALLOW-09: allow-section sync preserves user entries and logs "Added N allo
       /Added \d+ allow entries/,
       'must log per-section allow count',
     );
-    // Narrowed-verb check — gated on gh presence
-    try {
-      require('child_process').execSync('which gh', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-      const allow = settings.permissions?.allow ?? [];
-      assert.ok(
-        !allow.includes('Bash(gh repo *)'),
-        'linux install must not land broad gh repo (narrowed)',
-      );
-      assert.ok(
-        allow.includes('Bash(gh repo view *)') || allow.length === 0,
-        'narrowed repo view lands when gh present',
-      );
-    } catch {
-      /* gh not installed */
+    const allow = settings.permissions?.allow ?? [];
+    assert.ok(
+      !allow.includes('Bash(gh repo *)'),
+      'linux install must not land broad gh repo (narrowed)',
+    );
+
+    if (!HAS_GH) {
+      t.skip(NO_GH_SKIP);
+      return;
     }
+    assert.ok(
+      allow.includes('Bash(gh repo view *)'),
+      'narrowed repo view lands when gh present',
+    );
   } finally {
     cleanup(tmpDir);
   }
@@ -3275,14 +4204,9 @@ test('ALLOW-11: second install logs "Permissions already up to date" (no per-sec
   }
 });
 
-// ── source seed-memories.md exists (relaxed in 49.1-01) ──
-// History: plan 49-04 added a token assertion on the seed-memories source file.
-// 49.1-01 relaxes this: per CONTEXT.md decision, plan 49.1-02 will rewrite the skill to use
-// skill-time prose detection (no template variable). The original token assertion would then
-// fail. The companion test still asserts the token in new-project.md (kept in unified flow).
-// This test now only asserts source presence — a tombstone preserving the original assertion.
+// ── seed-memories resolves the project rules file per runtime ──
 
-test('F-RULES-01: source seed-memories.md exists (assertion relaxed in 49.1-01 — skill-time detection moved to prose)', () => {
+test('F-RULES-01: seed-memories.md uses {{PROJECT_RULES_FILE}} and installs resolved per runtime', () => {
   const seedMemoriesSrc = path.resolve(
     __dirname,
     '..',
@@ -3294,8 +4218,76 @@ test('F-RULES-01: source seed-memories.md exists (assertion relaxed in 49.1-01 �
     fs.existsSync(seedMemoriesSrc),
     'commands/gsd/seed-memories.md must exist in source (F-RULES-01)',
   );
-  // {{PROJECT_RULES_FILE}} assertion removed — file will use skill-time prose detection
-  // per CONTEXT.md; the companion test covers new-project.md unified flow.
+  assert.ok(
+    fs.readFileSync(seedMemoriesSrc, 'utf8').includes('{{PROJECT_RULES_FILE}}'),
+    'seed-memories.md source must use {{PROJECT_RULES_FILE}} rather than a hardcoded rules ' +
+      'file name, so the same source serves every runtime (F-RULES-01)',
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-f-rules-01-'));
+  try {
+    const install = (runtime) => {
+      const dir = path.join(tmpDir, runtime);
+      fs.mkdirSync(dir, { recursive: true });
+      const result = spawnSync(
+        process.execPath,
+        [INSTALLER, '--runtime', runtime, '--local'],
+        {
+          encoding: 'utf8',
+          timeout: 15000,
+          cwd: dir,
+          env: Object.assign({}, process.env, { HOME: os.homedir() }),
+        },
+      );
+      assert.strictEqual(
+        result.status,
+        0,
+        `${runtime} install must exit 0 (F-RULES-01)\nstderr: ` +
+          (result.stderr || ''),
+      );
+      return dir;
+    };
+
+    const claudeSeed = fs.readFileSync(
+      path.join(
+        install('claude'),
+        '.claude',
+        'commands',
+        'gsd',
+        'seed-memories.md',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      claudeSeed.includes('CLAUDE.md'),
+      'claude install must resolve {{PROJECT_RULES_FILE}} to CLAUDE.md (F-RULES-01)',
+    );
+    assert.ok(
+      !claudeSeed.includes('copilot-instructions.md'),
+      'claude install must not carry the copilot rules file path (F-RULES-01)',
+    );
+
+    const copilotSeed = fs.readFileSync(
+      path.join(
+        install('copilot'),
+        '.github',
+        'skills',
+        'gsd-seed-memories',
+        'SKILL.md',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      copilotSeed.includes('.github/copilot-instructions.md'),
+      'copilot install must resolve {{PROJECT_RULES_FILE}} to .github/copilot-instructions.md (F-RULES-01)',
+    );
+    assert.ok(
+      !copilotSeed.includes('CLAUDE.md'),
+      'copilot install must not carry the claude rules file path (F-RULES-01)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });
 
 test('F-RULES-02: source new-project.md workflow uses {{PROJECT_RULES_FILE}} in Step 9', () => {
@@ -3378,4 +4370,708 @@ test('COPILOT-RT: runtime-comparison prose survives Copilot conversion intact', 
     output.includes('`.github/copilot-instructions.md` for Copilot'),
     `COPILOT-RT: expected '\`.github/copilot-instructions.md\` for Copilot' to survive verbatim, got: ${output}`,
   );
+});
+
+// ── GSD's own agent-frontmatter sync is not a "local modification" ──
+
+function runLocalInstall(tmpDir) {
+  return spawnSync(process.execPath, [INSTALLER, '--runtime', 'claude', '--local'], {
+    encoding: 'utf8',
+    timeout: 15000,
+    cwd: tmpDir,
+    env: Object.assign({}, process.env, { HOME: os.homedir() }),
+  });
+}
+
+// Reproduces what /gsd:set-profile and `config-set effort_overrides.*` do to the
+// deployed agent files: write a profile, then run the real sync helper.
+function applyProfileSync(tmpDir, profile) {
+  const {
+    syncAgentEffortFrontmatter,
+  } = require('../gsd-ng/bin/lib/effort-sync.cjs');
+  fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'),
+    JSON.stringify({ model_profile: profile }),
+  );
+  return syncAgentEffortFrontmatter(
+    tmpDir,
+    path.join(tmpDir, '.claude', 'agents'),
+  );
+}
+
+test('MANIFEST-SYNC-01: agent files rewritten by GSD\'s own effort sync are NOT reported as locally modified', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-01-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-01)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const synced = applyProfileSync(tmpDir, 'quality');
+    assert.ok(
+      synced.changes.length > 0,
+      'profile switch must rewrite at least one agent file, else the test proves nothing (MANIFEST-SYNC-01)',
+    );
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-01)\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const r2Stdout = r2.stdout || '';
+    assert.ok(
+      !/Found \d+ locally modified GSD file/.test(r2Stdout),
+      'config-driven effort frontmatter must NOT be reported as a local modification (MANIFEST-SYNC-01).\n' +
+        'stdout: ' +
+        r2Stdout.slice(0, 2000),
+    );
+
+    const patchesDir = path.join(tmpDir, '.claude', 'gsd-local-patches');
+    if (fs.existsSync(patchesDir)) {
+      const entries = fs.readdirSync(patchesDir).filter((e) => e !== '.gitkeep');
+      assert.strictEqual(
+        entries.length,
+        0,
+        'gsd-local-patches/ must stay empty after a profile switch (MANIFEST-SYNC-01). Entries: ' +
+          entries.join(', '),
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('MANIFEST-SYNC-02: a real body edit is still detected when GSD also rewrote the same file\'s frontmatter', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-02-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-02)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Hand-edit the body of ONE agent, then let GSD's sync rewrite the managed
+    // frontmatter of ALL of them on top. Only the hand-edited one is a patch.
+    const editedAgent = path.join(tmpDir, '.claude', 'agents', 'gsd-planner.md');
+    const marker = '<!-- local body edit -->';
+    fs.appendFileSync(editedAgent, '\n' + marker + '\n');
+    applyProfileSync(tmpDir, 'quality');
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-02)\nstderr: ' + (r2.stderr || ''),
+    );
+
+    const r2Stdout = r2.stdout || '';
+    assert.ok(
+      /Found 1 locally modified GSD file/.test(r2Stdout),
+      'exactly one file (the hand-edited agent) must be reported (MANIFEST-SYNC-02).\n' +
+        'stdout: ' +
+        r2Stdout.slice(0, 2000),
+    );
+
+    const backup = path.join(
+      tmpDir,
+      '.claude',
+      'gsd-local-patches',
+      'agents',
+      'gsd-planner.md',
+    );
+    assert.ok(
+      fs.existsSync(backup),
+      'hand-edited agent must be backed up to gsd-local-patches/ (MANIFEST-SYNC-02)',
+    );
+    assert.ok(
+      fs.readFileSync(backup, 'utf8').includes(marker),
+      'the backed-up copy must retain the user body edit (MANIFEST-SYNC-02)',
+    );
+
+    const meta = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpDir, '.claude', 'gsd-local-patches', 'backup-meta.json'),
+        'utf8',
+      ),
+    );
+    assert.deepStrictEqual(
+      meta.files,
+      ['agents/gsd-planner.md'],
+      'backup-meta.json must list only the hand-edited agent (MANIFEST-SYNC-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash comparison', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-manifest-sync-03-'));
+  try {
+    const r1 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r1.status,
+      0,
+      'first install must exit 0 (MANIFEST-SYNC-03)\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // Simulate a manifest written before files_normalized existed: raw hashes only.
+    const manifestPath = path.join(tmpDir, '.claude', 'gsd-file-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.ok(
+      manifest.files_normalized &&
+        manifest.files_normalized['agents/gsd-planner.md'],
+      'fresh manifest must carry a normalized hash for agent files (MANIFEST-SYNC-03)',
+    );
+    delete manifest.files_normalized;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    applyProfileSync(tmpDir, 'quality');
+
+    const r2 = runLocalInstall(tmpDir);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'second install must exit 0 (MANIFEST-SYNC-03)\nstderr: ' + (r2.stderr || ''),
+    );
+    assert.ok(
+      /Found \d+ locally modified GSD file/.test(r2.stdout || ''),
+      'legacy manifest must keep the old raw-hash verdict rather than silently trusting the file (MANIFEST-SYNC-03).\n' +
+        'stdout: ' +
+        (r2.stdout || '').slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── uninstall prunes GSD hooks without taking co-located user hooks ──
+
+function runUninstallIn(tmpDir) {
+  return spawnSync(
+    process.execPath,
+    [INSTALLER, '--runtime', 'claude', '--local', '--uninstall'],
+    {
+      encoding: 'utf8',
+      timeout: 15000,
+      cwd: tmpDir,
+      env: Object.assign({}, process.env, { HOME: os.homedir() }),
+    },
+  );
+}
+
+const USER_HOOK = 'node /home/me/my-own-pretooluse-hook.js';
+
+test('HOOKENTRY-01: uninstall keeps a user command sharing a PreToolUse entry with a GSD hook', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-01-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-guardrail.js' },
+                  { type: 'command', command: USER_HOOK },
+                ],
+              },
+              {
+                matcher: 'Write',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-sandbox-detect.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    const entries = (after.hooks && after.hooks.PreToolUse) || [];
+    const commands = entries.flatMap((e) =>
+      (e.hooks || []).map((h) => h.command),
+    );
+
+    assert.ok(
+      commands.includes(USER_HOOK),
+      'a user command co-located with a GSD hook must survive uninstall (HOOKENTRY-01).\n' +
+        'Remaining PreToolUse: ' +
+        JSON.stringify(entries),
+    );
+    assert.ok(
+      !commands.some((c) => c.includes('gsd-guardrail')),
+      'the GSD hook must still be removed from the shared entry (HOOKENTRY-01)',
+    );
+    // The Write entry held nothing but a GSD hook, so it must go entirely
+    // rather than linger as an entry with an empty hooks array.
+    assert.ok(
+      !commands.some((c) => c.includes('gsd-sandbox-detect')),
+      'a GSD-only entry must still be removed (HOOKENTRY-01)',
+    );
+    assert.strictEqual(
+      entries.length,
+      1,
+      'the emptied entry must be dropped, not left with an empty hooks array (HOOKENTRY-01).\n' +
+        'Remaining: ' +
+        JSON.stringify(entries),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('HOOKENTRY-02: uninstall keeps user commands sharing SessionStart and PostToolUse entries', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-02-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-check-update.js' },
+                  { type: 'command', command: 'node /home/me/session-hook.js' },
+                ],
+              },
+            ],
+            PostToolUse: [
+              {
+                matcher: 'Edit',
+                hooks: [
+                  {
+                    type: 'command',
+                    command: 'node /x/gsd-context-monitor.js',
+                  },
+                  { type: 'command', command: 'node /home/me/post-hook.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    const commandsFor = (event) =>
+      ((after.hooks && after.hooks[event]) || []).flatMap((e) =>
+        (e.hooks || []).map((h) => h.command),
+      );
+
+    assert.ok(
+      commandsFor('SessionStart').includes('node /home/me/session-hook.js'),
+      'user SessionStart command must survive uninstall (HOOKENTRY-02).\nGot: ' +
+        JSON.stringify(commandsFor('SessionStart')),
+    );
+    assert.ok(
+      !commandsFor('SessionStart').some((c) => c.includes('gsd-check-update')),
+      'GSD SessionStart hook must be removed (HOOKENTRY-02)',
+    );
+    assert.ok(
+      commandsFor('PostToolUse').includes('node /home/me/post-hook.js'),
+      'user PostToolUse command must survive uninstall (HOOKENTRY-02).\nGot: ' +
+        JSON.stringify(commandsFor('PostToolUse')),
+    );
+    assert.ok(
+      !commandsFor('PostToolUse').some((c) => c.includes('gsd-context-monitor')),
+      'GSD PostToolUse hook must be removed (HOOKENTRY-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('HOOKENTRY-03: an event left with no entries is removed, not left as an empty array', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hookentry-03-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [
+                  { type: 'command', command: 'node /x/gsd-guardrail.js' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runUninstallIn(tmpDir);
+    assert.strictEqual(
+      r.status,
+      0,
+      'uninstall must exit 0\nstderr: ' + (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.ok(
+      !(after.hooks && 'PreToolUse' in after.hooks),
+      'an event with nothing left in it must be deleted, not left as [] (HOOKENTRY-03).\n' +
+        'Got hooks: ' +
+        JSON.stringify(after.hooks),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── an unreadable settings.json must never be silently replaced ──
+
+function readSettingsFile(tmpDir) {
+  return fs.readFileSync(
+    path.join(tmpDir, '.claude', 'settings.json'),
+    'utf8',
+  );
+}
+
+function seedSettings(tmpDir, body) {
+  const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, body);
+  return settingsPath;
+}
+
+test('SETTINGS-01: JSONC settings.json keeps model/env/permissions and the original is backed up', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-01-'));
+  try {
+    // A comment and a trailing comma — strict JSON.parse rejects both, and this
+    // is what settings authors demonstrably hand-write.
+    const original = [
+      '{',
+      '  // my preferred model',
+      '  "model": "opus",',
+      '  "env": { "MY_VAR": "my-value" },',
+      '  "permissions": {',
+      '    "allow": ["Bash(my-tool:*)"],',
+      '  },',
+      '}',
+      '',
+    ].join('\n');
+    seedSettings(tmpDir, original);
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r.status,
+      0,
+      'install over a JSONC settings.json must exit 0\nstderr: ' +
+        (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.strictEqual(
+      after.model,
+      'opus',
+      'user model must survive install over JSONC settings (SETTINGS-01)',
+    );
+    assert.deepStrictEqual(
+      after.env,
+      { MY_VAR: 'my-value' },
+      'user env must survive install over JSONC settings (SETTINGS-01)',
+    );
+    assert.ok(
+      Array.isArray(after.permissions && after.permissions.allow) &&
+        after.permissions.allow.includes('Bash(my-tool:*)'),
+      'user permissions.allow entry must survive install over JSONC settings (SETTINGS-01).\n' +
+        'Got: ' +
+        JSON.stringify(after.permissions),
+    );
+
+    // Recovery path: the write is a reformat that drops their comments, so the
+    // original text must still exist somewhere on disk.
+    const backups = fs
+      .readdirSync(path.join(tmpDir, '.claude'))
+      .filter((f) => f.startsWith('settings.json.gsd-backup'));
+    assert.strictEqual(
+      backups.length,
+      1,
+      'exactly one backup of the original settings.json must be written (SETTINGS-01). Found: ' +
+        JSON.stringify(backups),
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.claude', backups[0]), 'utf8'),
+      original,
+      'the backup must be the byte-identical original, comments included (SETTINGS-01)',
+    );
+    assert.ok(
+      /settings\.json/.test(r.stdout || '') &&
+        /backed up|backup/i.test(r.stdout || ''),
+      'the reformat must be reported, not silent (SETTINGS-01).\nstdout: ' +
+        (r.stdout || '').slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('SETTINGS-02: an unrecoverable settings.json is refused, not overwritten', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-02-'));
+  try {
+    const original = '{ "model": "opus", "env": { "MY_VAR": "my-value" }';
+    seedSettings(tmpDir, original);
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.notStrictEqual(
+      r.status,
+      0,
+      'install must refuse rather than proceed over an unparseable settings.json (SETTINGS-02).\n' +
+        'stdout: ' +
+        (r.stdout || '').slice(0, 2000),
+    );
+    assert.strictEqual(
+      readSettingsFile(tmpDir),
+      original,
+      'an unparseable settings.json must be left byte-identical (SETTINGS-02)',
+    );
+    const message = (r.stderr || '') + (r.stdout || '');
+    assert.ok(
+      /settings\.json/.test(message),
+      'the refusal must name the offending file (SETTINGS-02).\nOutput: ' +
+        message.slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// Control for the JSONC test above: strict-valid settings must take the
+// ordinary path — no backup file, no warning, user keys intact.
+test('SETTINGS-03: a valid settings.json round-trips without a backup', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-settings-03-'));
+  try {
+    seedSettings(
+      tmpDir,
+      JSON.stringify(
+        {
+          model: 'opus',
+          env: { MY_VAR: 'my-value' },
+          permissions: { allow: ['Bash(my-tool:*)'] },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const r = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r.status,
+      0,
+      'install over a valid settings.json must exit 0\nstderr: ' +
+        (r.stderr || ''),
+    );
+
+    const after = JSON.parse(readSettingsFile(tmpDir));
+    assert.strictEqual(after.model, 'opus', 'user model must survive install');
+    assert.deepStrictEqual(
+      after.env,
+      { MY_VAR: 'my-value' },
+      'user env must survive install',
+    );
+    assert.ok(
+      after.permissions.allow.includes('Bash(my-tool:*)'),
+      'user permissions.allow entry must survive install',
+    );
+
+    const backups = fs
+      .readdirSync(path.join(tmpDir, '.claude'))
+      .filter((f) => f.startsWith('settings.json.gsd-backup'));
+    assert.deepStrictEqual(
+      backups,
+      [],
+      'a valid settings.json must not trigger a backup (SETTINGS-03). Found: ' +
+        JSON.stringify(backups),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean must not delete through a symlinked managed directory ──
+
+function runInstallIn(tmpDir, rt, extraArgs = []) {
+  return spawnSync(
+    process.execPath,
+    [INSTALLER, '--runtime', rt, '--local', ...extraArgs],
+    {
+      encoding: 'utf8',
+      timeout: 15000,
+      cwd: tmpDir,
+      env: Object.assign({}, process.env, { HOME: os.homedir() }),
+    },
+  );
+}
+
+test('SYMLINK-01: --clean does not delete gsd-* agents through a symlinked agents/ dir', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-01-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline local install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // The escape target lives OUTSIDE the managed tree entirely.
+    const outside = path.join(tmpDir, 'outside-shared-agents');
+    fs.mkdirSync(outside, { recursive: true });
+    const victim = path.join(outside, 'gsd-shared-user-agent.md');
+    fs.writeFileSync(victim, 'user-owned-shared-agent');
+
+    const agentsDir = path.join(tmpDir, '.claude', 'agents');
+    cleanupSubdir(tmpDir, '.claude', 'agents');
+    fs.symlinkSync(outside, agentsDir, 'dir');
+
+    const r2 = runInstallIn(tmpDir, 'claude', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      fs.existsSync(victim),
+      'file inside a symlink target must survive --clean (SYMLINK-01): ' +
+        victim +
+        '\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+    assert.strictEqual(
+      fs.readFileSync(victim, 'utf8'),
+      'user-owned-shared-agent',
+      'file inside a symlink target must be byte-identical after --clean (SYMLINK-01)',
+    );
+    // Silence would leave the user with an unmanaged agents/ dir and no idea why.
+    assert.ok(
+      /Skipped .*agents.*symlinked directory/.test(r2.stdout || ''),
+      'skipping a symlinked dir must be reported, not silent (SYMLINK-01).\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('SYMLINK-02: --clean does not recursively delete gsd-* skills through a symlinked skills/ dir', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-02-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'copilot');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const outside = path.join(tmpDir, 'outside-shared-skills');
+    const victimDir = path.join(outside, 'gsd-shared-user-skill');
+    fs.mkdirSync(victimDir, { recursive: true });
+    const victim = path.join(victimDir, 'SKILL.md');
+    fs.writeFileSync(victim, 'user-owned-shared-skill');
+
+    const skillsDir = path.join(tmpDir, '.github', 'skills');
+    cleanupSubdir(tmpDir, '.github', 'skills');
+    fs.mkdirSync(path.dirname(skillsDir), { recursive: true });
+    fs.symlinkSync(outside, skillsDir, 'dir');
+
+    const r2 = runInstallIn(tmpDir, 'copilot', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      fs.existsSync(victim),
+      'directory tree inside a symlink target must survive --clean (SYMLINK-02): ' +
+        victim +
+        '\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+    assert.strictEqual(
+      fs.readFileSync(victim, 'utf8'),
+      'user-owned-shared-skill',
+      'file inside a symlink target must be byte-identical after --clean (SYMLINK-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// Control for the two symlink tests above: the refusal must be scoped to
+// symlinks only. A real managed directory is still wiped, so a guard that
+// over-refuses fails here.
+test('SYMLINK-03: --clean still removes GSD-owned files from real (non-symlink) dirs', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-03-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline local install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // GSD-namespaced but shipped by no release, so only the wipe can remove it.
+    const staleAgent = path.join(
+      tmpDir,
+      '.claude',
+      'agents',
+      'gsd-retired-agent.md',
+    );
+    fs.writeFileSync(staleAgent, 'stale-gsd-owned-agent');
+    const userAgent = path.join(tmpDir, '.claude', 'agents', 'zz-user.md');
+    fs.writeFileSync(userAgent, 'user-owned-agent');
+
+    const r2 = runInstallIn(tmpDir, 'claude', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      !fs.existsSync(staleAgent),
+      'stale GSD-owned agent in a real dir must still be deleted by --clean (SYMLINK-03)',
+    );
+    assert.strictEqual(
+      fs.readFileSync(userAgent, 'utf8'),
+      'user-owned-agent',
+      'user agent in a real dir must survive --clean (SYMLINK-03)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
 });

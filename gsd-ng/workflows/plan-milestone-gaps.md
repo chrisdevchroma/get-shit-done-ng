@@ -167,7 +167,7 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(roadmap): add gap clo
 
 `{{COMMAND_PREFIX}}plan-phase {N}`
 
-<sub>`/clear` first → fresh context window</sub>
+*`/clear` first → fresh context window*
 
 ---
 

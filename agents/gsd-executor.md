@@ -392,7 +392,7 @@ Do NOT skip. Do NOT proceed to state updates if self-check fails.
 After SUMMARY.md, update STATE.md using gsd-tools:
 
 ```bash
-# Advance plan counter (handles edge cases automatically)
+# Recalculate plan position from disk (handles edge cases automatically)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state advance-plan
 
 # Recalculate progress bar from disk state
@@ -417,22 +417,22 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-session \
 ```bash
 # Update ROADMAP.md progress for this phase (plan counts, status)
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" roadmap update-plan-progress "${PHASE_NUMBER}"
-
-# Mark completed requirements from PLAN.md frontmatter
-# Extract the `requirements` array from the plan's frontmatter, then mark each complete
-node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" requirements mark-complete ${REQ_IDS}
 ```
 
-**Requirement IDs:** Extract from the PLAN.md frontmatter `requirements:` field (e.g., `requirements: [AUTH-01, AUTH-02]`). Pass all IDs to `requirements mark-complete`. If the plan has no requirements field, skip this step.
+**Do NOT mark requirements complete here.** Requirement closure is a phase-close
+action, handled by `gsd-tools phase complete` once the verifier has assessed the
+phase. A plan finishing does not mean the requirements it declares are satisfied
+— several plans in a phase routinely share one ID, and closing per-plan marked
+the ID Complete as soon as the *first* of them finished. Leave the plan's
+`requirements:` frontmatter as the declaration it is; `phase complete` reads it.
 
 **State command behaviors:**
-- `state advance-plan`: Increments Current Plan, detects last-plan edge case, sets status
+- `state advance-plan`: Recalculates Current Plan from SUMMARY.md counts on disk, detects last-plan edge case, sets status. Idempotent — safe to run concurrently from parallel waves and safe to re-run after a failure. Because the position comes from disk rather than from the stored counter, it can land *behind* the stored value when STATE.md claims more progress than the summaries support. That is a **rewind**: the command prints `rewound` instead of `true` (`--json`: `advanced: false`, `rewound: true`, `reason: "rewound"`). The new position is the correct one, but a rewind means STATE.md and the phase directory disagreed — do not treat it as forward progress. Check whether summaries are missing for plans that really did complete (a SUMMARY never written, or written outside the phase directory) before continuing; if plans were genuinely completed without summaries, stop and report it rather than re-executing them. It can also land *exactly on* the stored value, when a retried call recomputes the position already written: that moved nothing, so it prints `unchanged` (`--json`: `advanced: false`, `rewound: false`, `reason: "idempotent"`). `advanced: true` means forward movement and nothing else
 - `state update-progress`: Recalculates progress bar from SUMMARY.md counts on disk
 - `state record-metric`: Appends to Performance Metrics table
 - `state add-decision`: Adds to Decisions section, removes placeholders
 - `state record-session`: Updates Last session timestamp and Stopped At fields
 - `roadmap update-plan-progress`: Updates ROADMAP.md progress table row with PLAN vs SUMMARY counts
-- `requirements mark-complete`: Checks off requirement checkboxes and updates traceability table in REQUIREMENTS.md
 
 **Extract decisions from SUMMARY.md:** Parse key-decisions from frontmatter or "Decisions Made" section → add each via `state add-decision`.
 
