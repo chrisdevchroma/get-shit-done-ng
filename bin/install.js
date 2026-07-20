@@ -734,9 +734,11 @@ const MANIFEST_NAME = 'gsd-file-manifest.json';
  *  - RETIRED_GSD_HOOKS, covering names already retired by the time the manifest
  *    began recording hooks.
  *
- * Membership is by exact filename throughout — never a prefix or glob. A user's
- * own hook can therefore never become a deletion candidate, whatever it is
- * named, including a name that happens to start with `gsd-`.
+ * Membership is by exact filename throughout — never a prefix or glob, so under
+ * hooks/ a user file is a deletion candidate only if its name collides exactly
+ * with a GSD hook. This says nothing about other directories: agents/ and
+ * skills/ are cleaned by `gsd-` prefix match, where a user file so named is
+ * removed.
  */
 function gsdOwnedHookNames(targetDir, rt) {
   const names = new Set(shippedHookNames(rt));
@@ -1032,8 +1034,32 @@ function applyMigrations(configDir) {
 }
 
 /**
+ * Gate for the deletion loops that enumerate a directory's entries.
+ *
+ * `fs.rmSync` on a symlinked directory unlinks the link and leaves the target
+ * alone, but `readdirSync` + `unlinkSync`/`rmSync` on the joined paths resolves
+ * through the link and deletes inside the target. GSD does not own whatever is
+ * on the other side of a link the user made, so the loop is skipped rather than
+ * resolved. `fs.existsSync` follows links, so it cannot serve as this gate.
+ */
+function isEnumerableManagedDir(dir) {
+  let st;
+  try {
+    st = fs.lstatSync(dir);
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink()) {
+    console.log(`  ${yellow}!${reset}  Skipped ${dir} — symlinked directory, GSD does not remove files through it`);
+    return false;
+  }
+  return st.isDirectory();
+}
+
+/**
  * Remove GSD-owned files under targetDir for the given runtime.
- * Pure fs operations — no console output, no settings cleanup.
+ * Pure fs operations, apart from a warning when a symlinked directory is
+ * skipped. No settings cleanup.
  * Called by both wipeManagedTree (--clean) and uninstall().
  */
 function removeGsdFiles(targetDir, runtime) {
@@ -1054,7 +1080,7 @@ function removeGsdFiles(targetDir, runtime) {
 
     // 3. Remove GSD agents (gsd-*.md files only, preserve user agents)
     const agentsDir = path.join(targetDir, 'agents');
-    if (fs.existsSync(agentsDir)) {
+    if (isEnumerableManagedDir(agentsDir)) {
       for (const file of fs.readdirSync(agentsDir)) {
         if (file.startsWith('gsd-') && file.endsWith('.md')) {
           fs.unlinkSync(path.join(agentsDir, file));
@@ -1064,7 +1090,7 @@ function removeGsdFiles(targetDir, runtime) {
 
     // 4. Remove GSD-owned hook files
     const hooksDir = path.join(targetDir, 'hooks');
-    if (fs.existsSync(hooksDir)) {
+    if (isEnumerableManagedDir(hooksDir)) {
       for (const hook of gsdOwnedHookNames(targetDir, runtime)) {
         const hookPath = path.join(hooksDir, hook);
         if (fs.existsSync(hookPath)) {
@@ -1075,7 +1101,7 @@ function removeGsdFiles(targetDir, runtime) {
   } else {
     // Non-Claude runtime: remove skills/gsd-* dirs (preserve user skills)
     const skillsDir = path.join(targetDir, 'skills');
-    if (fs.existsSync(skillsDir)) {
+    if (isEnumerableManagedDir(skillsDir)) {
       for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
         if (entry.isDirectory() && entry.name.startsWith('gsd-')) {
           fs.rmSync(path.join(skillsDir, entry.name), { recursive: true, force: true });
@@ -1091,7 +1117,7 @@ function removeGsdFiles(targetDir, runtime) {
 
     // Non-Claude runtime: remove only gsd-*.agent.md files (preserve user agents)
     const agentsDir = path.join(targetDir, 'agents');
-    if (fs.existsSync(agentsDir)) {
+    if (isEnumerableManagedDir(agentsDir)) {
       for (const file of fs.readdirSync(agentsDir)) {
         if (file.startsWith('gsd-') && file.endsWith('.agent.md')) {
           fs.unlinkSync(path.join(agentsDir, file));
@@ -1111,7 +1137,7 @@ function removeGsdFiles(targetDir, runtime) {
     // — so on a global target nothing else ever deletes this file. Removing
     // this line would silently strand it.
     const copilotHooksDir = path.join(targetDir, 'hooks');
-    if (fs.existsSync(copilotHooksDir)) {
+    if (isEnumerableManagedDir(copilotHooksDir)) {
       for (const hook of gsdOwnedHookNames(targetDir, runtime)) {
         const hookPath = path.join(copilotHooksDir, hook);
         if (fs.existsSync(hookPath)) {
@@ -1417,7 +1443,7 @@ function install(isGlobal) {
       fs.mkdirSync(agentsDest, { recursive: true });
 
       // Remove old GSD agents (gsd-*.md) before copying new ones
-      if (fs.existsSync(agentsDest)) {
+      if (isEnumerableManagedDir(agentsDest)) {
         for (const file of fs.readdirSync(agentsDest)) {
           if (file.startsWith('gsd-') && file.endsWith('.md')) {
             fs.unlinkSync(path.join(agentsDest, file));
@@ -1864,7 +1890,7 @@ function install(isGlobal) {
     const skillsDir = path.join(targetDir, 'skills');
     if (fs.existsSync(commandsSrc)) {
       // Clean existing GSD skills
-      if (fs.existsSync(skillsDir)) {
+      if (isEnumerableManagedDir(skillsDir)) {
         for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
           if (entry.isDirectory() && entry.name.startsWith('gsd-')) {
             fs.rmSync(path.join(skillsDir, entry.name), { recursive: true });
@@ -1898,7 +1924,7 @@ function install(isGlobal) {
     if (fs.existsSync(agentsSrc)) {
       const agentsDest = path.join(targetDir, 'agents');
       // Clean existing GSD agents
-      if (fs.existsSync(agentsDest)) {
+      if (isEnumerableManagedDir(agentsDest)) {
         for (const file of fs.readdirSync(agentsDest)) {
           if (file.startsWith('gsd-') && file.endsWith('.agent.md')) {
             fs.unlinkSync(path.join(agentsDest, file));

@@ -17,7 +17,7 @@ const {
 } = require('../gsd-ng/bin/lib/allowlist.cjs');
 
 // Resolve a writable temp base — sandbox sets TMPDIR=/tmp/claude which may not exist on disk
-const { resolveTmpDir, cleanup } = require('./helpers.cjs');
+const { resolveTmpDir, cleanup, cleanupSubdir } = require('./helpers.cjs');
 const BASE_TMPDIR = resolveTmpDir();
 
 const HAS_GH = spawnSync('gh', ['--version'], { timeout: 5000 }).status === 0;
@@ -4544,6 +4544,161 @@ test('MANIFEST-SYNC-03: manifest without files_normalized falls back to raw-hash
       'legacy manifest must keep the old raw-hash verdict rather than silently trusting the file (MANIFEST-SYNC-03).\n' +
         'stdout: ' +
         (r2.stdout || '').slice(0, 2000),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ── --clean must not delete through a symlinked managed directory ──
+
+function runInstallIn(tmpDir, rt, extraArgs = []) {
+  return spawnSync(
+    process.execPath,
+    [INSTALLER, '--runtime', rt, '--local', ...extraArgs],
+    {
+      encoding: 'utf8',
+      timeout: 15000,
+      cwd: tmpDir,
+      env: Object.assign({}, process.env, { HOME: os.homedir() }),
+    },
+  );
+}
+
+test('SYMLINK-01: --clean does not delete gsd-* agents through a symlinked agents/ dir', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-01-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline local install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // The escape target lives OUTSIDE the managed tree entirely.
+    const outside = path.join(tmpDir, 'outside-shared-agents');
+    fs.mkdirSync(outside, { recursive: true });
+    const victim = path.join(outside, 'gsd-shared-user-agent.md');
+    fs.writeFileSync(victim, 'user-owned-shared-agent');
+
+    const agentsDir = path.join(tmpDir, '.claude', 'agents');
+    cleanupSubdir(tmpDir, '.claude', 'agents');
+    fs.symlinkSync(outside, agentsDir, 'dir');
+
+    const r2 = runInstallIn(tmpDir, 'claude', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      fs.existsSync(victim),
+      'file inside a symlink target must survive --clean (SYMLINK-01): ' +
+        victim +
+        '\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+    assert.strictEqual(
+      fs.readFileSync(victim, 'utf8'),
+      'user-owned-shared-agent',
+      'file inside a symlink target must be byte-identical after --clean (SYMLINK-01)',
+    );
+    // Silence would leave the user with an unmanaged agents/ dir and no idea why.
+    assert.ok(
+      /Skipped .*agents.*symlinked directory/.test(r2.stdout || ''),
+      'skipping a symlinked dir must be reported, not silent (SYMLINK-01).\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('SYMLINK-02: --clean does not recursively delete gsd-* skills through a symlinked skills/ dir', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-02-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'copilot');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline copilot install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    const outside = path.join(tmpDir, 'outside-shared-skills');
+    const victimDir = path.join(outside, 'gsd-shared-user-skill');
+    fs.mkdirSync(victimDir, { recursive: true });
+    const victim = path.join(victimDir, 'SKILL.md');
+    fs.writeFileSync(victim, 'user-owned-shared-skill');
+
+    const skillsDir = path.join(tmpDir, '.github', 'skills');
+    cleanupSubdir(tmpDir, '.github', 'skills');
+    fs.mkdirSync(path.dirname(skillsDir), { recursive: true });
+    fs.symlinkSync(outside, skillsDir, 'dir');
+
+    const r2 = runInstallIn(tmpDir, 'copilot', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      'copilot --clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      fs.existsSync(victim),
+      'directory tree inside a symlink target must survive --clean (SYMLINK-02): ' +
+        victim +
+        '\nstdout: ' +
+        (r2.stdout || '').slice(0, 1500),
+    );
+    assert.strictEqual(
+      fs.readFileSync(victim, 'utf8'),
+      'user-owned-shared-skill',
+      'file inside a symlink target must be byte-identical after --clean (SYMLINK-02)',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// Control for the two symlink tests above: the refusal must be scoped to
+// symlinks only. A real managed directory is still wiped, so a guard that
+// over-refuses fails here.
+test('SYMLINK-03: --clean still removes GSD-owned files from real (non-symlink) dirs', () => {
+  const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-symlink-03-'));
+  try {
+    const r1 = runInstallIn(tmpDir, 'claude');
+    assert.strictEqual(
+      r1.status,
+      0,
+      'baseline local install must exit 0\nstderr: ' + (r1.stderr || ''),
+    );
+
+    // GSD-namespaced but shipped by no release, so only the wipe can remove it.
+    const staleAgent = path.join(
+      tmpDir,
+      '.claude',
+      'agents',
+      'gsd-retired-agent.md',
+    );
+    fs.writeFileSync(staleAgent, 'stale-gsd-owned-agent');
+    const userAgent = path.join(tmpDir, '.claude', 'agents', 'zz-user.md');
+    fs.writeFileSync(userAgent, 'user-owned-agent');
+
+    const r2 = runInstallIn(tmpDir, 'claude', ['--clean']);
+    assert.strictEqual(
+      r2.status,
+      0,
+      '--clean install must exit 0\nstderr: ' + (r2.stderr || ''),
+    );
+
+    assert.ok(
+      !fs.existsSync(staleAgent),
+      'stale GSD-owned agent in a real dir must still be deleted by --clean (SYMLINK-03)',
+    );
+    assert.strictEqual(
+      fs.readFileSync(userAgent, 'utf8'),
+      'user-owned-agent',
+      'user agent in a real dir must survive --clean (SYMLINK-03)',
     );
   } finally {
     cleanup(tmpDir);
