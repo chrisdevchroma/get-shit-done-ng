@@ -178,6 +178,38 @@ function shouldScan(filename) {
   return SCAN_PATHS.some((prefix) => filename.startsWith(prefix));
 }
 
+/**
+ * Rebuild the post-change file text from a unified diff hunk.
+ *
+ * Detector patterns join words with `\s+`, and `\s` matches a newline, so a
+ * payload wrapped across lines matches in ordinary file text. In raw diff text
+ * it does not: the `+` that prefixes each continuation line interrupts the
+ * whitespace run. Scanning the raw patch therefore misses any payload split
+ * over two added lines.
+ *
+ * Removed lines are dropped rather than stripped, so deleting an injection
+ * does not report the deletion as the attack.
+ *
+ * @param {string} patch - unified diff hunk text
+ * @returns {string} the added and context lines, prefixes removed
+ */
+function reconstructFromPatch(patch) {
+  if (typeof patch !== 'string' || patch === '') return '';
+
+  const kept = [];
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('@@')) continue;
+    if (line.startsWith('\\ ')) continue;
+    if (line.startsWith('-')) continue;
+    if (line.startsWith('+') || line.startsWith(' ')) {
+      kept.push(line.slice(1));
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
 // Exact-path membership. Never a prefix or glob test — a prefix exemption on
 // a directory would silently cover files added to it later.
 function isBlockExempt(filename) {
@@ -212,13 +244,14 @@ async function analyzePullRequestFiles(files, opts = {}) {
   let blobScannedCount = 0;
 
   for (const file of scannable) {
-    let content = file.patch;
+    const hasPatch = typeof file.patch === 'string' && file.patch !== '';
+    let content = hasPatch ? reconstructFromPatch(file.patch) : '';
 
     // No diff hunk. The API omits `patch` for oversized and binary-classified
     // files, so skipping here would let an attacker pad a file past the limit
     // to slip content through unscanned. Read the full blob instead, and fail
     // closed if even that is unavailable.
-    if (!content) {
+    if (!hasPatch) {
       const blob = await getContent(file);
       if (blob === null || blob === undefined) {
         hasBlocking = true;
@@ -351,6 +384,7 @@ module.exports = {
   fetchPRFiles,
   fetchFileContent,
   shouldScan,
+  reconstructFromPatch,
   isBlockExempt,
   formatAnnotation,
   analyzePullRequestFiles,
