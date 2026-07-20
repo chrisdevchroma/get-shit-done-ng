@@ -12,7 +12,11 @@
 // green artifact cannot be produced from a run that did not happen.
 //
 // Usage:
+//   npm run evidence:clean-path
 //   node scripts/capture-clean-path-evidence.cjs [--out-dir <path>] [--test-file <path>]
+//
+// Writes to evidence/ by default. Pass --out-dir to place the artifacts
+// alongside the phase record that cites them.
 //
 // Env:
 //   GSD_EVIDENCE_SANDBOX = enabled | disabled   (default: unknown)
@@ -43,16 +47,11 @@ const ROSTER = [
   'CLEANEV-01',
   'CLEANEV-02',
   'CLEANEV-03',
+  'CLEANEV-04',
 ];
 
 const ARTIFACT_BASENAME = '63-clean-path-evidence';
-const DEFAULT_OUT_DIR = path.join(
-  REPO_ROOT,
-  '..',
-  '.planning',
-  'phases',
-  '63-installer-clean-path-hardening',
-);
+const DEFAULT_OUT_DIR = path.join(REPO_ROOT, 'evidence');
 const DEFAULT_TEST_FILE = 'tests/install-js.test.cjs';
 
 function escapeRegex(str) {
@@ -222,4 +221,8 @@ function main() {
   process.exit(0);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { ROSTER, DEFAULT_OUT_DIR, DEFAULT_TEST_FILE };

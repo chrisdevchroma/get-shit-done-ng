@@ -46,6 +46,7 @@
     "test:e2e": "node --test tests/e2e/smoke.test.cjs",
     "test:coverage": "c8 --reporter=text --reporter=json-summary --include 'gsd-ng/bin/lib/*.cjs' --exclude 'tests/**' --all node scripts/run-tests.cjs && node scripts/coverage-gate.cjs",
     "lint:actions": "node scripts/run-actionlint.cjs",
-    "fp:report": "node scripts/fp-report.cjs"
+    "fp:report": "node scripts/fp-report.cjs",
+    "evidence:clean-path": "node scripts/capture-clean-path-evidence.cjs"
   }
 }
