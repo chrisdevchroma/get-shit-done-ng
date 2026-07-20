@@ -655,6 +655,8 @@ the deliberate override.)
 Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
 `requirements_closed`, `requirements_blocked_by`, `requirements_blocked_hint`,
 `requirements_blocked_rows`, `requirements_unreadable_rows`,
+`requirements_unreadable_summaries`, `requirements_empty_summaries`,
+`requirements_narrowed_summaries`,
 `requirements_other_phase`, `requirements_unmapped`,
 `requirements_undeclared`, `verification_stale`, `verification_stale_summaries`.
 
@@ -672,6 +674,16 @@ it, so say which IDs were skipped rather than letting them look delivered.
 code does not recognise, so closure refused to act on it rather than guessing. The
 remedy is to correct the word in `.planning/REQUIREMENTS.md` to one of Pending,
 In Progress, Complete or Blocked.
+`requirements_unreadable_summaries` names summary files that could not be read or
+that end mid-frontmatter. Closure is withheld for those plans — repair or
+regenerate the summary rather than re-running closure against it.
+`requirements_empty_summaries` names summaries whose `requirements-completed` is
+explicitly empty. The plan ran and recorded delivering nothing, so its declared IDs
+stay Pending; that is a claim to check, not a bug to route around.
+`requirements_narrowed_summaries` names a plan that delivered less than it declared,
+with the IDs it did not record. Those stay Pending, and the phase-level roadmap line
+is withheld for the whole phase — a phase-level declaration cannot be trusted to
+close IDs when the per-plan records show work that did not land.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md
