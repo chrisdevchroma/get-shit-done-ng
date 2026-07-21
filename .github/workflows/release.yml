@@ -96,5 +96,4 @@ jobs:
           TAG: ${{ steps.resolve.outputs.ref }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id")
-          gh api "repos/${{ github.repository }}/releases/${RELEASE_ID}" --method PATCH -f draft=false
+          gh release edit "${TAG}" --draft=false
