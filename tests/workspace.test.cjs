@@ -1031,6 +1031,29 @@ describe('resolveGitContext', () => {
     );
   });
 
+  test('Test 11b: flat top-level target_branch is honoured in the submodule path', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    const configPath = path.join(workspaceDir, '.planning', 'config.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ target_branch: 'staging' }, null, 2),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(
+      result.target_branch,
+      'staging',
+      'legacy flat target_branch should resolve the same as git.target_branch',
+    );
+  });
+
   test('Test 12: per-submodule branching_strategy exposed in resolveGitContext result', () => {
     const { workspaceDir } = createSubmoduleWorkspace([
       {

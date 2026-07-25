@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `divergence --branch` no longer ignores the configured integration branch. `loadConfig()` normalizes the config's `git` block onto the top level, so a loaded config carries `target_branch` and never `config.git.target_branch` — but branch mode read the nested path, got `undefined` every time, and fell through to `main`. The failure is invisible at the call site: a plausible branch name still comes out, so on a repository whose integration branch is `develop` the command silently diffs against `main` and reports hundreds of unrelated commits as branch divergence, and on a workspace with no `main` at all `git log main..<branch>` fails into a swallowed catch and the command reports *zero* divergence — the most misleading answer available. `target_branch` had three readers between them spelling it three different ways, of which this was the one that was simply broken.
+
+  The three spellings are now one. `resolveTargetBranch()` in `bin/lib/core.cjs` is the single supported reader: it accepts a loaded config or a raw parsed `.planning/config.json`, applies one precedence order (caller overrides, then the flat key, then `git.target_branch`, then the fallback), and treats `null` and `""` as unconfigured rather than as a branch name. `loadConfig()` resolves its own `target_branch` field through the same helper, so the normalizer and its consumers cannot disagree by construction. `cmdSquash`, `cmdDivergence`, `resolveGitContext` (both the standalone and the submodule path) and the two `init` commands all call it. A structural lint in the test suite fails the build if any shipped source under `bin/` reads `target_branch` off a config object directly, so a fourth reader cannot drift back in; a self-test on the detector keeps that rule from passing vacuously.
+
+  A latent second form of the same drift is closed with it: the submodule path in `resolveGitContext` read the parsed config's `git` block directly and so honoured `git.target_branch` while ignoring a legacy flat top-level `target_branch` that `loadConfig` accepts everywhere else. Both shapes now resolve identically in both paths.
+
+### Changed
+
+- The meaning of the global `git.target_branch` in a submodule workspace is now written down in `references/planning-config.md`, where the workspace repo and the code submodule usually integrate into different branches. It has a dual role: it is the workspace repo's own integration branch, *and* it is the default that each `git.submodules.<name>` entry inherits when it sets no `target_branch` of its own. It is not a description of the submodule — when a submodule is the active git context, `git-context` and `init` report that submodule's resolved branch. The reference now recommends setting both keys explicitly when the two repos differ, rather than relying on inheritance.
+
 ## [1.0.0-dev.19] - 2026-07-21
 
 ### Added

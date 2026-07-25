@@ -237,3 +237,80 @@ describe('lint: no hardcoded /tmp/ in path.join() or mkdtempSync() calls', () =>
     );
   });
 });
+
+// ── Rule 8: no direct target_branch read off a config object ─────────────────
+//
+// loadConfig() normalizes the `git` block onto the top level, so a loaded
+// config has `target_branch` and never `git.target_branch`. A reader that
+// reaches for the nested path gets `undefined` and silently falls through to
+// its own fallback — the failure is invisible because a plausible branch name
+// still comes out. resolveTargetBranch() in core.cjs is the only supported
+// reader; it accepts both shapes and applies one precedence order.
+//
+// Detection: any `<something-config-ish>.target_branch` property access in
+// shipped bin/ sources, plus any `.git.target_branch` / `.git?.target_branch`
+// nested access regardless of the receiver name. Object-literal keys
+// (`target_branch: value`) and assignments to result objects are writes, not
+// reads, and are not flagged.
+
+describe('lint: no direct target_branch read off a config object (use resolveTargetBranch)', () => {
+  // Recursively collect shipped .cjs sources under gsd-ng/bin/.
+  function binSources(dir, acc = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) binSources(full, acc);
+      else if (entry.name.endsWith('.cjs')) acc.push(full);
+    }
+    return acc;
+  }
+
+  const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
+  const CONFIG_READ = /\bconfig\w*\s*\??\.\s*target_branch/i;
+  const NESTED_READ = /\.\s*git\s*\??\.\s*target_branch/;
+
+  test('resolveTargetBranch is the only reader of target_branch in bin/', () => {
+    const violations = [];
+    for (const file of binSources(BIN_DIR)) {
+      const rel = path.relative(BIN_DIR, file);
+      const lines = fs.readFileSync(file, 'utf-8').split('\n');
+
+      // The helper itself legitimately reads both shapes — skip its body.
+      let skipFrom = -1;
+      let skipTo = -1;
+      const helperIdx = lines.findIndex(l =>
+        l.startsWith('function resolveTargetBranch(')
+      );
+      if (helperIdx !== -1) {
+        skipFrom = helperIdx;
+        const next = lines.findIndex((l, i) => i > helperIdx && /^function \w/.test(l));
+        skipTo = next === -1 ? lines.length : next;
+      }
+
+      lines.forEach((line, i) => {
+        if (i >= skipFrom && i < skipTo) return;
+        const trimmed = line.trim();
+        if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
+        if (CONFIG_READ.test(line) || NESTED_READ.test(line)) {
+          violations.push(`${rel}:${i + 1}: ${trimmed}`);
+        }
+      });
+    }
+    assert.deepStrictEqual(violations, [],
+      `Direct target_branch read found (use resolveTargetBranch() from core.cjs instead):\n${violations.join('\n')}`
+    );
+  });
+
+  // Self-test: the detector must actually catch the shape that broke
+  // cmdDivergence, otherwise the rule above passes vacuously.
+  test('detector flags both the nested and the config-receiver read shapes', () => {
+    assert.ok(NESTED_READ.test('const base = opts.base || config.git?.target_branch;'));
+    assert.ok(NESTED_READ.test('config.git && config.git.target_branch'));
+    assert.ok(CONFIG_READ.test('const targetBranch = config.target_branch || "main";'));
+    assert.ok(CONFIG_READ.test('let t = configSubmodule.target_branch || null;'));
+    // Writes and non-config receivers are not reads of a config object.
+    assert.ok(!CONFIG_READ.test('    target_branch: targetBranch,'));
+    assert.ok(!NESTED_READ.test('    target_branch: targetBranch,'));
+    assert.ok(!CONFIG_READ.test('result.target_branch = gitCtx.target_branch;'));
+    assert.ok(!CONFIG_READ.test('  target_branch: DEFAULTS.target_branch,'));
+  });
+});

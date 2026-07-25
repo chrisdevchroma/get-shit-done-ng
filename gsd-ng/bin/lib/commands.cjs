@@ -27,6 +27,7 @@ const {
   planningPaths,
   getEngineRuntime,
   readTextArgOrFile,
+  resolveTargetBranch,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { MODEL_PROFILES, EFFORT_PROFILES } = require('./model-profiles.cjs');
@@ -1930,8 +1931,7 @@ function cmdSquash(cwd, phase, options) {
   if (!strategy) error('--strategy required: single, per-plan, or logical');
 
   const config = loadConfig(cwd);
-  const targetBranch =
-    config.target_branch || (config.git && config.git.target_branch) || 'main';
+  const targetBranch = resolveTargetBranch(config);
 
   // Get current branch name
   const branchResult = execGit(cwd, ['branch', '--show-current']);
@@ -3523,7 +3523,7 @@ function rewriteDivergenceTable(filePath, triageState) {
  *   --init: Create DIVERGENCE.md with full upstream commit inventory
  *   --triage <hash> --status <status> --reason <text>: Update a commit's triage status
  *   --branch <name>: Track drift between base ref and branch
- *   --base <ref>: Base ref for branch mode (default: git.target_branch or main)
+ *   --base <ref>: Base ref for branch mode (default: configured target_branch, else main)
  *
  * @param {string} cwd
  * @param {{ refresh?: boolean, init?: boolean, triage?: string, status?: string, reason?: string, branch?: string, base?: string, remote?: string, remoteBranch?: string }} opts
@@ -3534,7 +3534,7 @@ function cmdDivergence(cwd, opts) {
   // ── Branch mode: track drift between base and branch ──────────────────────
   if (opts.branch) {
     const config = loadConfig(cwd);
-    const base = opts.base || config.git?.target_branch || 'main';
+    const base = opts.base || resolveTargetBranch(config);
     const sectionKey = `${base}..${opts.branch}`;
 
     // Verify branch exists

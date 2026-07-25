@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   loadConfig,
+  resolveTargetBranch,
   findPhaseInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
@@ -817,7 +818,7 @@ function cmdStateSnapshot(cwd, phaseFilter) {
 
   // Load config for git target_branch visibility
   const config = loadConfig(cwd);
-  const targetBranch = config.target_branch || 'main';
+  const targetBranch = resolveTargetBranch(config);
 
   // Parse numeric fields
   const totalPhases = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;

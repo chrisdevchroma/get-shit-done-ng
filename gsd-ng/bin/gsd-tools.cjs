@@ -49,7 +49,7 @@
  *     [--init]                          Create/update DIVERGENCE.md inventory
  *     [--triage <hash>]                 Update a commit's triage status
  *     [--branch <name>]                 Track branch instead of upstream
- *     [--base <ref>]                    Base ref for branch mode (default: git.target_branch or main)
+ *     [--base <ref>]                    Base ref for branch mode (default: configured target_branch, else main)
  *     [--remote <name>]                 Remote name for upstream mode (default: upstream)
  *     [--remote-branch <branch>]        Remote branch for upstream mode (default: main)
  *   pingpong-check [--window N]         Detect agent oscillation in recent commits

@@ -9,6 +9,7 @@ const {
   error,
   execGit,
   loadConfig,
+  resolveTargetBranch,
   planningPaths,
 } = require('./core.cjs');
 const { DEFAULTS } = require('./defaults.cjs');
@@ -290,7 +291,7 @@ function resolveGitContext(cwd) {
   if (type !== 'submodule' || submodulePaths.length === 0) {
     const config = loadConfig(cwd);
     const remote = config.remote || 'origin';
-    const targetBranch = config.target_branch || 'main';
+    const targetBranch = resolveTargetBranch(config);
 
     const remoteResult = execGit(cwd, ['remote', 'get-url', remote]);
     const remoteUrl =
@@ -451,7 +452,10 @@ function resolveGitContext(cwd) {
     branchResult.exitCode === 0 ? branchResult.stdout || null : null;
 
   // Resolve target branch: config override > git tracking > fallback 'main'
-  let targetBranch = configSubmodule.target_branch || null;
+  let targetBranch = resolveTargetBranch(parsedConfig, {
+    overrides: configSubmodule,
+    fallback: null,
+  });
   if (!targetBranch && currentBranch) {
     const mergeResult = execGit(subCwd, [
       'config',

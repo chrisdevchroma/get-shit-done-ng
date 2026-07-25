@@ -8602,6 +8602,84 @@ describe('sub-batch E: divergence tracking', () => {
     assert.match(r.error, /Branch.*not found/);
   });
 
+  // Regression: branch mode used to read the nested `config.git.target_branch`
+  // off a loaded config, which loadConfig has already flattened away — so the
+  // configured integration branch was ignored and every diff was taken against
+  // 'main'. On a workspace with no 'main' the git log fails silently and the
+  // command reports zero divergence.
+  test('cmdDivergence --branch resolves base from configured target_branch when --base omitted', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'develop' } }),
+    );
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git checkout -b feature/tb', { cwd: tmpDir, stdio: 'pipe' });
+    fs.writeFileSync(path.join(tmpDir, 'tb.txt'), 'work\n');
+    execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git commit -m "feat: target branch work"', {
+      cwd: tmpDir,
+      stdio: 'pipe',
+    });
+
+    const r = runGsdTools(
+      ['divergence', '--branch', 'feature/tb', '--json'],
+      tmpDir,
+    );
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.strictEqual(
+      parsed.base,
+      'develop',
+      'base must come from the configured target_branch, not the "main" fallback',
+    );
+    assert.strictEqual(parsed.section, 'develop..feature/tb');
+    assert.strictEqual(
+      parsed.commits.length,
+      1,
+      'diffing against the configured base must find the branch commit',
+    );
+    assert.strictEqual(parsed.commits[0].subject, 'feat: target branch work');
+  });
+
+  test('cmdDivergence --branch honours a flat top-level target_branch', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ target_branch: 'develop' }),
+    );
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git checkout -b feature/flat', { cwd: tmpDir, stdio: 'pipe' });
+
+    const r = runGsdTools(
+      ['divergence', '--branch', 'feature/flat', '--json'],
+      tmpDir,
+    );
+    assert.ok(r.success, r.error);
+    assert.strictEqual(JSON.parse(r.output).base, 'develop');
+  });
+
+  test('cmdDivergence --base overrides the configured target_branch', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'develop' } }),
+    );
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git checkout -b feature/override', { cwd: tmpDir, stdio: 'pipe' });
+
+    const r = runGsdTools(
+      [
+        'divergence',
+        '--branch',
+        'feature/override',
+        '--base',
+        'develop~0',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(r.success, r.error);
+    assert.strictEqual(JSON.parse(r.output).base, 'develop~0');
+  });
+
   test('cmdDivergence --branch with valid branch shows ok', () => {
     execSync('git checkout -b feature/x', { cwd: tmpDir, stdio: 'pipe' });
     execSync('git checkout master 2>/dev/null || git checkout main', {
