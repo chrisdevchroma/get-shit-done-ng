@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.20] - 2026-07-25
+
 ### Removed
 
 - The `divergence` command is gone, along with its `/gsd:divergence` slash command, its triage state machine, and the `DIVERGENCE.md` artifact it maintained. It tracked how far a fork had drifted from its upstream and let you mark individual commits picked, skipped, deferred, adapted or already-covered. Nothing else in GSD read that state — it was a bookkeeping surface maintained by hand, parallel to the planning artifacts rather than part of them, and the triage table went stale the moment anyone rebased. `planningPaths()` no longer exposes a `divergence` entry, and the CLI now rejects `divergence` as an unknown command. There is no deprecation shim: a workspace with a `.planning/DIVERGENCE.md` keeps the file as an inert leftover and may delete it.
