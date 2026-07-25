@@ -426,6 +426,7 @@ function resolveGitContext(cwd) {
 
   // Read submodule config overrides from already-parsed .planning/config.json
   let configSubmodule = {};
+  let perSubmoduleConfig = {};
   try {
     const globalGit = parsedConfig.git || {};
     const submoduleName = activePath ? activePath.split('/').pop() : null;
@@ -434,6 +435,7 @@ function resolveGitContext(cwd) {
         globalGit.submodules &&
         globalGit.submodules[submoduleName]) ||
       {};
+    perSubmoduleConfig = perSubmodule;
     // Merged: global git fields as base, per-submodule overrides on top
     configSubmodule = { ...globalGit, ...perSubmodule };
     /* c8 ignore next 3 — unreachable: parsedConfig is plain JSON.parse output; property access on .git/.submodules cannot throw without internal mocking */
@@ -451,9 +453,12 @@ function resolveGitContext(cwd) {
   const currentBranch =
     branchResult.exitCode === 0 ? branchResult.stdout || null : null;
 
-  // Resolve target branch: config override > git tracking > fallback 'main'
+  // Resolve target branch: per-submodule > global config > git tracking > 'main'.
+  // Only the per-submodule block is an override layer — passing the merged
+  // `configSubmodule` would promote the global `git` block above the base
+  // config's flat top-level key and invert the documented precedence.
   let targetBranch = resolveTargetBranch(parsedConfig, {
-    overrides: configSubmodule,
+    overrides: perSubmoduleConfig,
     fallback: null,
   });
   if (!targetBranch && currentBranch) {

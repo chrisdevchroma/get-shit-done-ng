@@ -281,8 +281,11 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
     if (/\[\s*['"`]target_branch['"`]\s*\]/.test(line)) return true;
 
     const probe = line
+      // Template literals first — they may embed quotes (`'${base}' … `), so
+      // the quote-delimited pass below cannot span them.
+      .replace(/`[^`]*target_branch[^`]*`/g, '')
       // String literals — key allowlists such as `'git.target_branch'`.
-      .replace(/(['"`])[^'"`]*target_branch[^'"`]*\1/g, '')
+      .replace(/(['"])[^'"]*target_branch[^'"]*\1/g, '')
       // Reads of an already-resolved git context or of the defaults table.
       .replace(/\b(?:gitCtx|DEFAULTS|defaults)\s*\??\.\s*target_branch/g, '')
       // Assignment targets — `result.target_branch = …` is a write, not a read.
@@ -300,7 +303,12 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
       const rel = path.relative(BIN_DIR, file);
       const lines = fs.readFileSync(file, 'utf-8').split('\n');
 
-      // The helper itself legitimately reads both shapes — skip its body.
+      // The helper itself legitimately reads both shapes — skip its body. End
+      // the skip at the function's own closing brace (top-level declarations
+      // close at column 0), never at "whatever declaration comes next": keying
+      // it to the next `function` exempts the entire rest of the file the
+      // moment the helper is moved last or the next declaration becomes a
+      // const-arrow.
       let skipFrom = -1;
       let skipTo = -1;
       const helperIdx = lines.findIndex(l =>
@@ -308,14 +316,22 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
       );
       if (helperIdx !== -1) {
         skipFrom = helperIdx;
-        const next = lines.findIndex((l, i) => i > helperIdx && /^function \w/.test(l));
-        skipTo = next === -1 ? lines.length : next;
+        const close = lines.findIndex((l, i) => i > helperIdx && l === '}');
+        assert.notStrictEqual(
+          close, -1,
+          `${rel}: resolveTargetBranch has no column-0 closing brace; the Rule 8 skip range cannot be bounded`
+        );
+        skipTo = close + 1;
       }
 
       lines.forEach((line, i) => {
         if (i >= skipFrom && i < skipTo) return;
         const trimmed = line.trim();
-        if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
+        if (
+          trimmed.startsWith('//') ||
+          trimmed.startsWith('*') ||
+          trimmed.startsWith('/*')
+        ) return;
         if (readsTargetBranch(line)) {
           violations.push(`${rel}:${i + 1}: ${trimmed}`);
         }

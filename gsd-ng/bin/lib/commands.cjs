@@ -3543,6 +3543,16 @@ function cmdDivergence(cwd, opts) {
       return;
     }
 
+    // Verify base exists. Both `git log` calls below swallow their failure, so
+    // an unresolvable base yields an empty commit list and reports as zero
+    // divergence — the same silent-wrong-answer that hid the target_branch bug.
+    if (execGit(cwd, ['rev-parse', '--verify', base]).exitCode !== 0) {
+      error(
+        `Base ref '${base}' not found. Pass --base <ref>, or set git.target_branch to a ref that exists.`,
+      );
+      return;
+    }
+
     // ── Branch init mode ──
     if (opts.init) {
       let allCommits = [];

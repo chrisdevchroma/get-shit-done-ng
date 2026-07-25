@@ -1054,6 +1054,62 @@ describe('resolveGitContext', () => {
     );
   });
 
+  // The submodule path passes only the per-submodule block as an override
+  // layer. Passing the merged global+per-submodule block instead would promote
+  // the global `git` block above the base config's flat top-level key, so the
+  // same config.json would resolve differently through loadConfig() than
+  // through resolveGitContext() — the precedence must not depend on the path.
+  test('Test 11c: flat top-level target_branch outranks the nested git block, as in loadConfig', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    fs.writeFileSync(
+      path.join(workspaceDir, '.planning', 'config.json'),
+      JSON.stringify(
+        { target_branch: 'flatval', git: { target_branch: 'nestedval' } },
+        null,
+        2,
+      ),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(
+      result.target_branch,
+      'flatval',
+      'submodule path must apply the same flat-over-nested precedence as loadConfig',
+    );
+  });
+
+  test('Test 11d: per-submodule target_branch still outranks a flat top-level key', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    fs.writeFileSync(
+      path.join(workspaceDir, '.planning', 'config.json'),
+      JSON.stringify(
+        {
+          target_branch: 'flatval',
+          git: { submodules: { mylib: { target_branch: 'per-submodule' } } },
+        },
+        null,
+        2,
+      ),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(result.target_branch, 'per-submodule');
+  });
+
   test('Test 12: per-submodule branching_strategy exposed in resolveGitContext result', () => {
     const { workspaceDir } = createSubmoduleWorkspace([
       {

@@ -414,7 +414,7 @@ It is **not** a description of the submodule. When a submodule is the active git
 
 1. **Auto-detection:** `git-context` inspects `git diff` to identify which submodule has changes
 2. **Remote resolution:** Uses the submodule's own configured `remote` (default `origin`), not the workspace remote
-3. **Target branch:** Reads from `git.submodules.<name>.target_branch` (merged over global `git.target_branch`, then a top-level `target_branch`), falls back to git tracking info, then `main`
+3. **Target branch:** `git.submodules.<name>.target_branch`, then a top-level `target_branch`, then global `git.target_branch`, then the submodule's git tracking info (`branch.<current>.merge`), then `main`. The flat-over-nested order here is the same one `loadConfig()` applies, so a given `config.json` resolves to the same branch whichever path reads it
 4. **Platform detection:** Per-submodule `platform` key (when set) is passed directly to `detect-platform`, bypassing the inner `loadConfig` that would otherwise look inside the submodule directory (which has no `.planning/`). If `platform` is not set, URL-based auto-detection from the submodule's remote URL is used.
 
 #### Platform and self-hosted hosts

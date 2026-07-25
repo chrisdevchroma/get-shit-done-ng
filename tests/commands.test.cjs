@@ -8644,16 +8644,28 @@ describe('sub-batch E: divergence tracking', () => {
   // Security regression: `base` and `branch` are interpolated into the
   // `<base>..<branch>` range that branch mode passes to git. Routing the
   // configured target_branch into that range made `.planning/config.json` an
-  // input to the git invocation, so building the command as a shell string
-  // would let a cloned repo's config execute arbitrary commands. Every git
-  // call in branch mode goes through execGit (spawnSync, array argv) — no
-  // shell — so a metacharacter stays inert data.
+  // input to the git invocation, so building the command as a shell string let
+  // a cloned repo's config execute arbitrary commands.
+  //
+  // The payload is a *real branch name*: git's ref rules permit `;`, `$`, `{`
+  // and `}`, so `x;touch${IFS}PWNED` is a legitimate branch that passes
+  // `rev-parse --verify` and reaches the `git log` call. That matters — a
+  // syntactically invalid ref would be rejected by the existence check first
+  // and the test would pass without ever exercising the argv-array boundary
+  // it exists to pin. Under a shell `${IFS}` expands to a space and the
+  // trailing `;#` comments out the rest of the command line so the payload
+  // survives the `--format`/`--date` arguments that follow the range — without
+  // it `touch` inherits them, rejects `--format`, and creates nothing, which
+  // would make this test pass against vulnerable code. Through execGit
+  // (spawnSync, argv array) the whole string stays inert data.
+  const REF_PAYLOAD = 'x;touch${IFS}PWNED;#';
+
   test('cmdDivergence --branch does not execute shell metacharacters from config', () => {
+    execSync(`git branch '${REF_PAYLOAD}'`, { cwd: tmpDir, stdio: 'pipe' });
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify({ git: { target_branch: 'develop;touch PWNED #' } }),
+      JSON.stringify({ git: { target_branch: REF_PAYLOAD } }),
     );
-    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
     execSync('git checkout -b feature/inj', { cwd: tmpDir, stdio: 'pipe' });
 
     const r = runGsdTools(
@@ -8666,30 +8678,35 @@ describe('sub-batch E: divergence tracking', () => {
       false,
       'config-sourced shell metacharacters must not execute',
     );
-    // The value is still carried through verbatim as inert data.
-    assert.strictEqual(JSON.parse(r.output).base, 'develop;touch PWNED #');
+    // The value still flows through to the range verbatim, as inert data.
+    assert.strictEqual(JSON.parse(r.output).base, REF_PAYLOAD);
   });
 
   test('cmdDivergence --branch does not execute shell metacharacters from --branch', () => {
-    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync(`git branch '${REF_PAYLOAD}'`, { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git branch develop', { cwd: tmpDir, stdio: 'pipe' });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'develop' } }),
+    );
     const r = runGsdTools(
-      ['divergence', '--branch', 'nope;touch PWNED2 #', '--json'],
+      ['divergence', '--branch', REF_PAYLOAD, '--json'],
       tmpDir,
     );
-    assert.strictEqual(r.success, false, 'bogus branch name must not resolve');
+    assert.ok(r.success, r.error);
     assert.strictEqual(
-      fs.existsSync(path.join(tmpDir, 'PWNED2')),
+      fs.existsSync(path.join(tmpDir, 'PWNED')),
       false,
       'branch-name shell metacharacters must not execute',
     );
   });
 
   test('cmdDivergence --branch --init does not execute shell metacharacters', () => {
+    execSync(`git branch '${REF_PAYLOAD}'`, { cwd: tmpDir, stdio: 'pipe' });
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify({ git: { target_branch: 'develop;touch PWNED3 #' } }),
+      JSON.stringify({ git: { target_branch: REF_PAYLOAD } }),
     );
-    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
     execSync('git checkout -b feature/inj2', { cwd: tmpDir, stdio: 'pipe' });
 
     runGsdTools(
@@ -8697,10 +8714,32 @@ describe('sub-batch E: divergence tracking', () => {
       tmpDir,
     );
     assert.strictEqual(
-      fs.existsSync(path.join(tmpDir, 'PWNED3')),
+      fs.existsSync(path.join(tmpDir, 'PWNED')),
       false,
       'init mode must not execute config-sourced metacharacters',
     );
+  });
+
+  // A base that does not resolve used to produce `status: ok` with zero
+  // commits, because both `git log` calls swallow their failure — the same
+  // silent-wrong-answer shape that hid the target_branch bug itself. A typo'd
+  // config value must be reported, not absorbed.
+  test('cmdDivergence --branch errors on an unresolvable base instead of reporting zero divergence', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'no-such-branch' } }),
+    );
+    execSync('git checkout -b feature/real', { cwd: tmpDir, stdio: 'pipe' });
+    fs.writeFileSync(path.join(tmpDir, 'r.txt'), 'x\n');
+    execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git commit -m "feat: real work"', { cwd: tmpDir, stdio: 'pipe' });
+
+    const r = runGsdTools(
+      ['divergence', '--branch', 'feature/real', '--json'],
+      tmpDir,
+    );
+    assert.strictEqual(r.success, false, 'must not report success');
+    assert.match(r.error, /Base ref 'no-such-branch' not found/);
   });
 
   test('cmdDivergence --branch honours a flat top-level target_branch', () => {
