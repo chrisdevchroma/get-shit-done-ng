@@ -44,14 +44,6 @@
  *     [--date <date>]                  Override date (iso8601, default: today)
  *   generate-allowlist                 Generate .claude/settings.json permissions
  *                                      from static template + config-derived entries
- *   divergence                          Show upstream/branch drift and manage triage
- *     [--refresh]                       Fetch from upstream/remote first
- *     [--init]                          Create/update DIVERGENCE.md inventory
- *     [--triage <hash>]                 Update a commit's triage status
- *     [--branch <name>]                 Track branch instead of upstream
- *     [--base <ref>]                    Base ref for branch mode (default: git.target_branch or main)
- *     [--remote <name>]                 Remote name for upstream mode (default: upstream)
- *     [--remote-branch <branch>]        Remote branch for upstream mode (default: main)
  *   pingpong-check [--window N]         Detect agent oscillation in recent commits
  *   update [--dry-run]                Check for and install GSD updates
  *     [--local]                        Force local install path
@@ -242,7 +234,6 @@ const ALL_COMMANDS = [
   'issue-import',
   'issue-sync',
   'issue-list-refs',
-  'divergence',
   'pingpong-check',
   'breakout-check',
   'cleanup',
@@ -539,22 +530,6 @@ const ARG_SCHEMAS = {
   },
   'issue-sync': {
     _self: { positional: { min: 0, max: 1 }, flags: ['--auto'] },
-  },
-  divergence: {
-    _self: {
-      positional: { min: 0, max: 0 },
-      flags: [
-        '--refresh',
-        '--init',
-        '--triage',
-        '--status',
-        '--reason',
-        '--branch',
-        '--base',
-        '--remote',
-        '--remote-branch',
-      ],
-    },
   },
   'pingpong-check': {
     _self: { positional: { min: 0, max: 0 }, flags: ['--window'] },
@@ -2159,32 +2134,6 @@ async function main() {
 
     case 'issue-list-refs': {
       commands.cmdIssueListRefs(cwd);
-      break;
-    }
-
-    case 'divergence': {
-      validateArgs('divergence', null, args.slice(1));
-      const refreshFlag = args.includes('--refresh');
-      const initFlag = args.includes('--init');
-      const triageIdx = args.indexOf('--triage');
-      const statusIdx = args.indexOf('--status');
-      const reasonIdx = args.indexOf('--reason');
-      const branchIdx = args.indexOf('--branch');
-      const baseIdx = args.indexOf('--base');
-      const remoteIdx = args.indexOf('--remote');
-      const remoteBranchIdx = args.indexOf('--remote-branch');
-      const opts = {
-        refresh: refreshFlag,
-        init: initFlag,
-        triage: triageIdx !== -1 ? args[triageIdx + 1] : null,
-        status: statusIdx !== -1 ? args[statusIdx + 1] : null,
-        reason: reasonIdx !== -1 ? args.slice(reasonIdx + 1).join(' ') : null,
-        branch: branchIdx !== -1 ? args[branchIdx + 1] : null,
-        base: baseIdx !== -1 ? args[baseIdx + 1] : null,
-        remote: remoteIdx !== -1 ? args[remoteIdx + 1] : null,
-        remoteBranch: remoteBranchIdx !== -1 ? args[remoteBranchIdx + 1] : null,
-      };
-      commands.cmdDivergence(cwd, opts);
       break;
     }
 

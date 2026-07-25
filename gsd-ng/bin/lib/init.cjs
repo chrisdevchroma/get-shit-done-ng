@@ -7,6 +7,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const {
   loadConfig,
+  resolveTargetBranch,
   resolveModelInternal,
   resolveEffortInternal,
   findPhaseInternal,
@@ -96,7 +97,7 @@ function cmdInitExecutePhase(cwd, phase) {
     branching_strategy: config.branching_strategy,
     phase_branch_template: config.phase_branch_template,
     milestone_branch_template: config.milestone_branch_template,
-    target_branch: config.target_branch,
+    target_branch: resolveTargetBranch(config),
     auto_push: config.auto_push,
     remote: config.remote,
     review_branch_template: config.review_branch_template,
@@ -917,7 +918,7 @@ function cmdInitMilestoneOp(cwd) {
 
     // Git config fields — will be overridden by gitCtx merge if submodule is active
     branching_strategy: config.branching_strategy,
-    target_branch: config.target_branch,
+    target_branch: resolveTargetBranch(config),
     auto_push: config.auto_push,
     remote: config.remote,
     platform: config.platform,

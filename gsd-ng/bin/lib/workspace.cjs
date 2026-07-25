@@ -9,6 +9,7 @@ const {
   error,
   execGit,
   loadConfig,
+  resolveTargetBranch,
   planningPaths,
 } = require('./core.cjs');
 const { DEFAULTS } = require('./defaults.cjs');
@@ -290,7 +291,7 @@ function resolveGitContext(cwd) {
   if (type !== 'submodule' || submodulePaths.length === 0) {
     const config = loadConfig(cwd);
     const remote = config.remote || 'origin';
-    const targetBranch = config.target_branch || 'main';
+    const targetBranch = resolveTargetBranch(config);
 
     const remoteResult = execGit(cwd, ['remote', 'get-url', remote]);
     const remoteUrl =
@@ -425,6 +426,7 @@ function resolveGitContext(cwd) {
 
   // Read submodule config overrides from already-parsed .planning/config.json
   let configSubmodule = {};
+  let perSubmoduleConfig = {};
   try {
     const globalGit = parsedConfig.git || {};
     const submoduleName = activePath ? activePath.split('/').pop() : null;
@@ -433,6 +435,7 @@ function resolveGitContext(cwd) {
         globalGit.submodules &&
         globalGit.submodules[submoduleName]) ||
       {};
+    perSubmoduleConfig = perSubmodule;
     // Merged: global git fields as base, per-submodule overrides on top
     configSubmodule = { ...globalGit, ...perSubmodule };
     /* c8 ignore next 3 — unreachable: parsedConfig is plain JSON.parse output; property access on .git/.submodules cannot throw without internal mocking */
@@ -450,8 +453,14 @@ function resolveGitContext(cwd) {
   const currentBranch =
     branchResult.exitCode === 0 ? branchResult.stdout || null : null;
 
-  // Resolve target branch: config override > git tracking > fallback 'main'
-  let targetBranch = configSubmodule.target_branch || null;
+  // Resolve target branch: per-submodule > global config > git tracking > 'main'.
+  // Only the per-submodule block is an override layer — passing the merged
+  // `configSubmodule` would promote the global `git` block above the base
+  // config's flat top-level key and invert the documented precedence.
+  let targetBranch = resolveTargetBranch(parsedConfig, {
+    overrides: perSubmoduleConfig,
+    fallback: null,
+  });
   if (!targetBranch && currentBranch) {
     const mergeResult = execGit(subCwd, [
       'config',

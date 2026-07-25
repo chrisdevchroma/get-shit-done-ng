@@ -507,7 +507,6 @@ You're never locked in. The system adapts.
 |---------|--------------|
 | `/gsd:import-issues [issue]` | Import external issues from GitHub/GitLab/Forgejo/Gitea as GSD todos |
 | `/gsd:sync-issues [phase]` | Manually sync GSD planning state with external issue trackers |
-| `/gsd:divergence [--refresh] [--init]` | Track upstream fork divergence and triage pending commits |
 
 ### UI & Design
 

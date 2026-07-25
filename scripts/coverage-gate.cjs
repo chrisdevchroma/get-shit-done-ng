@@ -12,14 +12,6 @@ const path = require('path');
 
 const FLOORS = {
   default: { lines: 95, branches: 90, functions: 80 },
-  // commands.cjs has a softened branch floor (88 instead of 90). The file is
-  // ~4800 lines with extensive defensive ||/?: template-literal arms in the
-  // row formatters of cmdDivergence/cmdSquash/cmdGenerateChangelog; ~18
-  // residual uncovered branches are defensive fallbacks for fields that
-  // upstream code sets but the type signature does not enforce. Suppressing
-  // them with c8-ignore would hide real defensive code; per-file softening
-  // is the cleaner alternative.
-  'gsd-ng/bin/lib/commands.cjs': { lines: 95, branches: 88, functions: 80 },
 };
 
 const summaryPath = path.join('coverage', 'coverage-summary.json');

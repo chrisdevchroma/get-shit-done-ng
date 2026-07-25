@@ -13,6 +13,7 @@ const { resolveTmpDir, cleanup, cleanupSubdir } = require('./helpers.cjs');
 
 const {
   loadConfig,
+  resolveTargetBranch,
   resolveModelInternal,
   resolveEffortInternal,
   escapeRegex,
@@ -121,6 +122,95 @@ describe('loadConfig', () => {
     writeConfig({ commit_docs: false, planning: { commit_docs: true } });
     const config = loadConfig(tmpDir);
     assert.strictEqual(config.commit_docs, false);
+  });
+
+  // The `git` block is normalized onto the top level, so a loaded config never
+  // carries it. Readers that reach for `config.git.*` get undefined and fall
+  // through to their own fallback without any error surfacing.
+  test('flattens the git block — loaded config exposes no git section', () => {
+    writeConfig({ git: { target_branch: 'develop', remote: 'upstream' } });
+    const config = loadConfig(tmpDir);
+    assert.strictEqual(config.target_branch, 'develop');
+    assert.strictEqual(config.remote, 'upstream');
+    assert.strictEqual(
+      config.git,
+      undefined,
+      'loaded config must not carry a nested git section',
+    );
+  });
+});
+
+// ─── resolveTargetBranch ──────────────────────────────────────────────────────
+
+describe('resolveTargetBranch', () => {
+  test('reads the flat key from a loaded config', () => {
+    assert.strictEqual(
+      resolveTargetBranch({ target_branch: 'develop' }),
+      'develop',
+    );
+  });
+
+  test('reads the nested key from a raw parsed config.json', () => {
+    assert.strictEqual(
+      resolveTargetBranch({ git: { target_branch: 'develop' } }),
+      'develop',
+    );
+  });
+
+  test('prefers the flat key over the nested one', () => {
+    assert.strictEqual(
+      resolveTargetBranch({
+        target_branch: 'flat',
+        git: { target_branch: 'nested' },
+      }),
+      'flat',
+    );
+  });
+
+  test('defaults to main when nothing is configured', () => {
+    assert.strictEqual(resolveTargetBranch({}), 'main');
+    assert.strictEqual(resolveTargetBranch(null), 'main');
+    assert.strictEqual(resolveTargetBranch(undefined), 'main');
+  });
+
+  test('treats null and empty string as unconfigured', () => {
+    assert.strictEqual(resolveTargetBranch({ target_branch: null }), 'main');
+    assert.strictEqual(resolveTargetBranch({ target_branch: '' }), 'main');
+    assert.strictEqual(
+      resolveTargetBranch({ target_branch: '', git: { target_branch: 'dev' } }),
+      'dev',
+    );
+  });
+
+  test('overrides win over the base config', () => {
+    assert.strictEqual(
+      resolveTargetBranch(
+        { git: { target_branch: 'global' } },
+        { overrides: { target_branch: 'per-submodule' } },
+      ),
+      'per-submodule',
+    );
+  });
+
+  test('falls back to the base config when overrides are silent', () => {
+    assert.strictEqual(
+      resolveTargetBranch(
+        { git: { target_branch: 'global' } },
+        { overrides: { remote: 'origin' } },
+      ),
+      'global',
+    );
+  });
+
+  test('honours an explicit null fallback for callers that resolve further', () => {
+    assert.strictEqual(
+      resolveTargetBranch({}, { overrides: {}, fallback: null }),
+      null,
+    );
+  });
+
+  test('honours a custom fallback string', () => {
+    assert.strictEqual(resolveTargetBranch({}, { fallback: 'trunk' }), 'trunk');
   });
 });
 
@@ -959,14 +1049,6 @@ describe('planningPaths', () => {
     assert.strictEqual(
       result.codebase,
       path.join('/project', '.planning', 'codebase'),
-    );
-  });
-
-  test('divergence equals .planning/DIVERGENCE.md', () => {
-    const result = planningPaths('/project');
-    assert.strictEqual(
-      result.divergence,
-      path.join('/project', '.planning', 'DIVERGENCE.md'),
     );
   });
 

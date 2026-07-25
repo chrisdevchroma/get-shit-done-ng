@@ -19,7 +19,7 @@ function toPosixPath(p) {
  * Return a flat object containing all common .planning/ subpaths for a given cwd.
  * Call once per function entry and destructure the properties needed.
  * @param {string} cwd - project root directory
- * @returns {{ root, phases, config, state, roadmap, requirements, todos, todosPending, todosCompleted, codebase, divergence, milestones, milestonesFile, project, archive }}
+ * @returns {{ root, phases, config, state, roadmap, requirements, todos, todosPending, todosCompleted, codebase, milestones, milestonesFile, project, archive }}
  */
 function planningPaths(cwd) {
   const root = path.join(cwd, '.planning');
@@ -34,7 +34,6 @@ function planningPaths(cwd) {
     todosPending: path.join(root, 'todos', 'pending'),
     todosCompleted: path.join(root, 'todos', 'completed'),
     codebase: path.join(root, 'codebase'),
-    divergence: path.join(root, 'DIVERGENCE.md'),
     milestones: path.join(root, 'milestones'),
     milestonesFile: path.join(root, 'MILESTONES.md'),
     project: path.join(root, 'PROJECT.md'),
@@ -161,6 +160,48 @@ function safeReadFile(filePath) {
   }
 }
 
+/**
+ * Resolve the integration branch — the single supported reader for
+ * `target_branch`. Every caller must go through this rather than reaching into
+ * a config object directly.
+ *
+ * loadConfig() normalizes the `git` block onto the top level, so a loaded
+ * config carries `target_branch` and never `git.target_branch`. Both shapes are
+ * accepted here so a raw `.planning/config.json` resolves identically, and the
+ * precedence is the same everywhere:
+ *
+ *   overrides (e.g. a merged per-submodule block) > flat `target_branch`
+ *   > nested `git.target_branch` > fallback
+ *
+ * @param {object|null|undefined} config - Loaded config, or raw parsed config.json
+ * @param {{ overrides?: object|null, fallback?: string|null }} [opts] -
+ *   `fallback` defaults to `DEFAULTS.target_branch`; pass `null` when the caller
+ *   has a further resolution step of its own (the submodule git-tracking probe).
+ * @returns {string|null}
+ */
+function resolveTargetBranch(config, opts = {}) {
+  const fallback =
+    opts.fallback !== undefined ? opts.fallback : DEFAULTS.target_branch;
+
+  for (const layer of [opts.overrides, config]) {
+    if (!layer || typeof layer !== 'object') continue;
+    if (typeof layer.target_branch === 'string' && layer.target_branch) {
+      return layer.target_branch;
+    }
+    const git = layer.git;
+    if (
+      git &&
+      typeof git === 'object' &&
+      typeof git.target_branch === 'string' &&
+      git.target_branch
+    ) {
+      return git.target_branch;
+    }
+  }
+
+  return fallback;
+}
+
 function loadConfig(cwd) {
   const { config: configPath } = planningPaths(cwd);
   const defaults = {
@@ -243,9 +284,9 @@ function loadConfig(cwd) {
           section: 'git',
           field: 'milestone_branch_template',
         }) ?? defaults.milestone_branch_template,
-      target_branch:
-        get('target_branch', { section: 'git', field: 'target_branch' }) ??
-        defaults.target_branch,
+      target_branch: resolveTargetBranch(parsed, {
+        fallback: defaults.target_branch,
+      }),
       auto_push:
         get('auto_push', { section: 'git', field: 'auto_push' }) ??
         defaults.auto_push,
@@ -912,6 +953,7 @@ module.exports = {
   reapStaleTempFiles,
   safeReadFile,
   loadConfig,
+  resolveTargetBranch,
   getEngineRuntime,
   isGitIgnored,
   execGit,

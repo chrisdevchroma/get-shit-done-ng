@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- The `divergence` command is gone, along with its `/gsd:divergence` slash command, its triage state machine, and the `DIVERGENCE.md` artifact it maintained. It tracked how far a fork had drifted from its upstream and let you mark individual commits picked, skipped, deferred, adapted or already-covered. Nothing else in GSD read that state — it was a bookkeeping surface maintained by hand, parallel to the planning artifacts rather than part of them, and the triage table went stale the moment anyone rebased. `planningPaths()` no longer exposes a `divergence` entry, and the CLI now rejects `divergence` as an unknown command. There is no deprecation shim: a workspace with a `.planning/DIVERGENCE.md` keeps the file as an inert leftover and may delete it.
+
+### Fixed
+
+- `target_branch` is resolved through a single reader. `loadConfig()` normalizes the config's `git` block onto the top level, so a loaded config carries `target_branch` and never `config.git.target_branch` — but callers had drifted into three different spellings of the read, one of which reached for the nested path, got `undefined` every time, and silently fell through to `'main'`. The failure was invisible at the call site because a plausible branch name still came out.
+
+  `resolveTargetBranch()` in `bin/lib/core.cjs` is now the only supported reader: it accepts a loaded config or a raw parsed `.planning/config.json`, applies one precedence order (caller overrides, then the flat key, then `git.target_branch`, then the fallback), and treats `null` and `""` as unconfigured rather than as a branch name. `loadConfig()` resolves its own field through the same helper, so the normalizer and its consumers cannot disagree by construction. `cmdSquash`, `resolveGitContext` (both the standalone and the submodule path) and the two `init` commands all call it. A structural lint fails the build if any shipped source under `bin/` reads `target_branch` off a config object directly, so a fourth reader cannot drift back in; a self-test on the detector keeps that rule from passing vacuously. The lint is line-oriented and says so — it is a tripwire against obvious re-introduction, not a proof that no reader exists.
+
+- The submodule path in `resolveGitContext` no longer inverts the precedence it documents. It passed the *merged* global-plus-per-submodule block as the override layer, which promoted the global `git` block above the base config's flat top-level key — so `{"target_branch": "flatval", "git": {"target_branch": "nestedval"}}` resolved to `flatval` through `loadConfig()` and `nestedval` through `resolveGitContext()`, from one file. Only the per-submodule block is an override layer now, making the order `git.submodules.<name>` > flat `target_branch` > `git.target_branch` > the submodule's git tracking info > `main`, identical in both paths and as documented.
+
+  One upgrade-visible consequence: the submodule path previously ignored a legacy flat top-level `target_branch` entirely, so a workspace using that spelling fell through to the submodule's git tracking info. Both spellings now resolve identically, which means such a workspace may see its submodule's resolved branch change to the configured value. That is the intended unification, but it is a behaviour change rather than a pure fix.
+
+### Changed
+
+- The meaning of the global `git.target_branch` in a submodule workspace is now written down in `references/planning-config.md`, where the workspace repo and the code submodule usually integrate into different branches. It has a dual role: it is the workspace repo's own integration branch, *and* it is the default that each `git.submodules.<name>` entry inherits when it sets no `target_branch` of its own. It is not a description of the submodule — when a submodule is the active git context, `git-context` and `init` report that submodule's resolved branch. The reference now recommends setting both keys explicitly when the two repos differ, rather than relying on inheritance, and states the full resolution order.
+
 ## [1.0.0-dev.19] - 2026-07-21
 
 ### Added

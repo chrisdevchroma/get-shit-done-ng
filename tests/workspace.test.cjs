@@ -1031,6 +1031,85 @@ describe('resolveGitContext', () => {
     );
   });
 
+  test('Test 11b: flat top-level target_branch is honoured in the submodule path', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    const configPath = path.join(workspaceDir, '.planning', 'config.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ target_branch: 'staging' }, null, 2),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(
+      result.target_branch,
+      'staging',
+      'legacy flat target_branch should resolve the same as git.target_branch',
+    );
+  });
+
+  // The submodule path passes only the per-submodule block as an override
+  // layer. Passing the merged global+per-submodule block instead would promote
+  // the global `git` block above the base config's flat top-level key, so the
+  // same config.json would resolve differently through loadConfig() than
+  // through resolveGitContext() — the precedence must not depend on the path.
+  test('Test 11c: flat top-level target_branch outranks the nested git block, as in loadConfig', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    fs.writeFileSync(
+      path.join(workspaceDir, '.planning', 'config.json'),
+      JSON.stringify(
+        { target_branch: 'flatval', git: { target_branch: 'nestedval' } },
+        null,
+        2,
+      ),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(
+      result.target_branch,
+      'flatval',
+      'submodule path must apply the same flat-over-nested precedence as loadConfig',
+    );
+  });
+
+  test('Test 11d: per-submodule target_branch still outranks a flat top-level key', () => {
+    const { workspaceDir } = createSubmoduleWorkspace([
+      {
+        name: 'mylib',
+        path: 'mylib',
+        remoteUrl: 'https://github.com/user/mylib.git',
+      },
+    ]);
+    tmpDir = workspaceDir;
+    touchSubmodule(workspaceDir, 'mylib');
+    fs.writeFileSync(
+      path.join(workspaceDir, '.planning', 'config.json'),
+      JSON.stringify(
+        {
+          target_branch: 'flatval',
+          git: { submodules: { mylib: { target_branch: 'per-submodule' } } },
+        },
+        null,
+        2,
+      ),
+    );
+    const result = workspace.resolveGitContext(workspaceDir);
+    assert.strictEqual(result.target_branch, 'per-submodule');
+  });
+
   test('Test 12: per-submodule branching_strategy exposed in resolveGitContext result', () => {
     const { workspaceDir } = createSubmoduleWorkspace([
       {
@@ -2308,6 +2387,58 @@ describe('resolveGitContext — git tracking branch fallback', () => {
       result.target_branch,
       'develop',
       'should resolve target_branch from git config branch.<current>.merge with refs/heads/ prefix stripped',
+    );
+  });
+
+  // The probe runs only when the config is silent. A legacy flat top-level
+  // `target_branch` is the same statement as `git.target_branch`, so it must
+  // suppress the probe exactly as the nested spelling does — otherwise the two
+  // spellings mean different things in a submodule workspace, which is the
+  // drift this whole area was consolidated to remove. The test above has no
+  // configured target_branch at all, so it cannot observe this interaction.
+  test('a flat top-level target_branch suppresses the tracking probe, as the nested key does', () => {
+    const ws = createSubmoduleWorkspace([
+      {
+        name: 'lib-tracked2',
+        path: 'lib-tracked2',
+        remoteUrl: 'https://github.com/test/lib-tracked2.git',
+      },
+    ]);
+    workspaceDir = ws.workspaceDir;
+    const subDir = ws.subDirs[0];
+
+    const currentBranch = execSync('git branch --show-current', {
+      cwd: subDir,
+      encoding: 'utf-8',
+    }).trim();
+    execSync(`git config branch.${currentBranch}.merge refs/heads/develop`, {
+      cwd: subDir,
+      stdio: 'pipe',
+    });
+    execSync(`git config branch.${currentBranch}.remote origin`, {
+      cwd: subDir,
+      stdio: 'pipe',
+    });
+    touchSubmodule(workspaceDir, 'lib-tracked2');
+
+    const workspace = require('../gsd-ng/bin/lib/workspace.cjs');
+    const configPath = path.join(workspaceDir, '.planning', 'config.json');
+
+    fs.writeFileSync(configPath, JSON.stringify({ target_branch: 'main' }));
+    assert.strictEqual(
+      workspace.resolveGitContext(workspaceDir).target_branch,
+      'main',
+      'flat top-level key must win over the tracking probe',
+    );
+
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ git: { target_branch: 'main' } }),
+    );
+    assert.strictEqual(
+      workspace.resolveGitContext(workspaceDir).target_branch,
+      'main',
+      'nested key must win over the tracking probe — same answer as the flat key',
     );
   });
 });

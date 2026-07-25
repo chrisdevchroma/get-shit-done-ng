@@ -271,6 +271,8 @@ The `target_branch` determines:
 
 Per-milestone override: `{{COMMAND_PREFIX}}new-milestone --target-branch develop`
 
+Both `git.target_branch` and a top-level `target_branch` are accepted; the top-level key wins when both are present. Reading it in code goes through `resolveTargetBranch()` in `bin/lib/core.cjs` — `loadConfig()` normalizes the `git` block onto the top level, so a loaded config has `target_branch` and never `config.git.target_branch`.
+
 **Review Branch Template Variables:**
 
 | Variable | Description | Example |
@@ -396,11 +398,22 @@ All keys from the `git.*` global scope are also valid per-submodule. The validat
 }
 ```
 
+#### What the global `git.target_branch` means here
+
+In a submodule workspace the workspace repo and the code submodule usually have different integration branches, so the global key has a defined dual role:
+
+1. **It is the workspace repo's own integration branch.** Commands operating on the outer repo (planning commits, workspace-level branch creation, `complete-milestone` merges) use it.
+2. **It is the default every `git.submodules.<name>` entry inherits.** Per-submodule keys are merged *over* the global `git.*` block, so a submodule that does not set its own `target_branch` integrates into the global one.
+
+It is **not** a description of the submodule. When a submodule is the active git context, `git-context` and the `init` commands report that submodule's resolved branch as `target_branch` (and also as `submodule_target_branch`); the workspace repo's value remains whatever `git.target_branch` says.
+
+> **Recommendation:** when the two repos integrate into different branches, set both explicitly — `git.target_branch` for the workspace repo and `git.submodules.<name>.target_branch` for the submodule — rather than relying on inheritance. Inheritance is only the right default when every repo in the workspace shares one integration branch.
+
 #### Resolution order
 
 1. **Auto-detection:** `git-context` inspects `git diff` to identify which submodule has changes
 2. **Remote resolution:** Uses the submodule's own configured `remote` (default `origin`), not the workspace remote
-3. **Target branch:** Reads from `git.submodules.<name>.target_branch` (merged over global `git.target_branch`), falls back to git tracking info, then `main`
+3. **Target branch:** `git.submodules.<name>.target_branch`, then a top-level `target_branch`, then global `git.target_branch`, then the submodule's git tracking info (`branch.<current>.merge`), then `main`. The flat-over-nested order here is the same one `loadConfig()` applies, so a given `config.json` resolves to the same branch whichever path reads it
 4. **Platform detection:** Per-submodule `platform` key (when set) is passed directly to `detect-platform`, bypassing the inner `loadConfig` that would otherwise look inside the submodule directory (which has no `.planning/`). If `platform` is not set, URL-based auto-detection from the submodule's remote URL is used.
 
 #### Platform and self-hosted hosts

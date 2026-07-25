@@ -237,3 +237,147 @@ describe('lint: no hardcoded /tmp/ in path.join() or mkdtempSync() calls', () =>
     );
   });
 });
+
+// ── Rule 8: no direct target_branch read off a config object ─────────────────
+//
+// loadConfig() normalizes the `git` block onto the top level, so a loaded
+// config has `target_branch` and never `git.target_branch`. A reader that
+// reaches for the nested path gets `undefined` and silently falls through to
+// its own fallback — the failure is invisible because a plausible branch name
+// still comes out. resolveTargetBranch() in core.cjs is the only supported
+// reader; it accepts both shapes and applies one precedence order.
+//
+// Detection: any read of `target_branch` off any receiver in shipped bin/
+// sources. Object-literal keys (`target_branch: value`) and assignments to
+// result objects are writes, not reads, and are not flagged.
+//
+// This rule is a tripwire, not a proof. It is line-oriented, so it cannot see
+// multi-line syntax: a destructure split across lines
+// (`const {\n  target_branch,\n} = loadConfig(cwd)`) or a property access
+// broken after the receiver both slip past — and those are shapes prettier
+// produces on its own past 80 columns. Treat a green Rule 8 as "no obvious
+// re-introduction", not as "no reader exists". Catching the rest needs an AST
+// pass rather than a regex.
+
+describe('lint: no direct target_branch read off a config object (use resolveTargetBranch)', () => {
+  // Recursively collect shipped .cjs sources under gsd-ng/bin/.
+  function binSources(dir, acc = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) binSources(full, acc);
+      else if (entry.name.endsWith('.cjs')) acc.push(full);
+    }
+    return acc;
+  }
+
+  const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
+
+  // Flag any read of `target_branch` off any receiver. A receiver-name
+  // allowlist is the wrong shape for this rule: `\bconfig\w*` misses the
+  // mid-word `parsedConfig.target_branch` and every `cfg`-style abbreviation,
+  // which is exactly the drift the rule exists to stop. So the detector
+  // subtracts what is provably not a config read, then flags the remainder.
+  //
+  // The scan and its self-test share this one function on purpose — a detector
+  // whose tests exercise a second copy of the logic is the same class of bug
+  // this rule was written to catch.
+  function readsTargetBranch(line) {
+    // Bracket access is checked against the raw line: the string-literal strip
+    // below would eat the quoted key and hide `config['target_branch']`.
+    if (/\[\s*['"`]target_branch['"`]\s*\]/.test(line)) return true;
+
+    const probe = line
+      // Template literals first — they may embed quotes (`'${base}' … `), so
+      // the quote-delimited pass below cannot span them.
+      .replace(/`[^`]*target_branch[^`]*`/g, '')
+      // String literals — key allowlists such as `'git.target_branch'`.
+      .replace(/(['"])[^'"]*target_branch[^'"]*\1/g, '')
+      // Reads of an already-resolved git context or of the defaults table.
+      .replace(/\b(?:gitCtx|DEFAULTS|defaults)\s*\??\.\s*target_branch/g, '')
+      // Assignment targets — `result.target_branch = …` is a write, not a read.
+      .replace(/\w\s*\??\.\s*target_branch\s*=(?!=)/g, '');
+
+    return (
+      /(?:\w|\])\s*\??\.\s*target_branch/.test(probe) ||
+      /\{[^}]*\btarget_branch\b[^}]*\}\s*=/.test(probe)
+    );
+  }
+
+  test('resolveTargetBranch is the only reader of target_branch in bin/', () => {
+    const violations = [];
+    for (const file of binSources(BIN_DIR)) {
+      const rel = path.relative(BIN_DIR, file);
+      const lines = fs.readFileSync(file, 'utf-8').split('\n');
+
+      // The helper itself legitimately reads both shapes — skip its body. End
+      // the skip at the function's own closing brace (top-level declarations
+      // close at column 0), never at "whatever declaration comes next": keying
+      // it to the next `function` exempts the entire rest of the file the
+      // moment the helper is moved last or the next declaration becomes a
+      // const-arrow.
+      let skipFrom = -1;
+      let skipTo = -1;
+      const helperIdx = lines.findIndex(l =>
+        l.startsWith('function resolveTargetBranch(')
+      );
+      if (helperIdx !== -1) {
+        skipFrom = helperIdx;
+        const close = lines.findIndex((l, i) => i > helperIdx && l === '}');
+        assert.notStrictEqual(
+          close, -1,
+          `${rel}: resolveTargetBranch has no column-0 closing brace; the Rule 8 skip range cannot be bounded`
+        );
+        skipTo = close + 1;
+      }
+
+      lines.forEach((line, i) => {
+        if (i >= skipFrom && i < skipTo) return;
+        const trimmed = line.trim();
+        if (
+          trimmed.startsWith('//') ||
+          trimmed.startsWith('*') ||
+          trimmed.startsWith('/*')
+        ) return;
+        if (readsTargetBranch(line)) {
+          violations.push(`${rel}:${i + 1}: ${trimmed}`);
+        }
+      });
+    }
+    assert.deepStrictEqual(violations, [],
+      `Direct target_branch read found (use resolveTargetBranch() from core.cjs instead):\n${violations.join('\n')}`
+    );
+  });
+
+  // Self-test: the detector must actually catch the nested-read shape,
+  // otherwise the rule above passes vacuously.
+  test('detector flags every read shape, whatever the receiver is named', () => {
+    const flags = readsTargetBranch;
+
+    // The nested read that returns undefined off a loaded config.
+    assert.ok(flags('const base = opts.base || config.git?.target_branch;'));
+    assert.ok(flags('config.git && config.git.target_branch'));
+    assert.ok(flags('const targetBranch = config.target_branch || "main";'));
+    assert.ok(flags('let t = configSubmodule.target_branch || null;'));
+    // Receivers a name-allowlist would miss.
+    assert.ok(flags('const t = parsedConfig.target_branch;'));
+    assert.ok(flags('const t = cfg.target_branch;'));
+    assert.ok(flags('const t = opts.target_branch;'));
+    // Non-dotted access shapes.
+    assert.ok(flags("const t = config['target_branch'];"));
+    assert.ok(flags('const { target_branch } = config;'));
+    assert.ok(flags('const { remote, target_branch } = loadConfig(cwd);'));
+
+    // Writes are not reads.
+    assert.ok(!flags('    target_branch: targetBranch,'));
+    assert.ok(!flags('  target_branch: null,'));
+    assert.ok(!flags('  target_branch: resolveTargetBranch(config),'));
+    // Reads of an already-resolved context or the defaults table.
+    assert.ok(!flags('result.target_branch = gitCtx.target_branch;'));
+    assert.ok(!flags('  target_branch: DEFAULTS.target_branch,'));
+    assert.ok(!flags('        fallback: defaults.target_branch,'));
+    // A string literal naming the key is an allowlist entry, not a read.
+    assert.ok(!flags("  'git.target_branch',"));
+    // An equality comparison is still a read.
+    assert.ok(flags("if (config.target_branch === 'main') {"));
+  });
+});
