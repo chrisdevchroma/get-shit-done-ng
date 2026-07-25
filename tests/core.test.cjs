@@ -1052,14 +1052,6 @@ describe('planningPaths', () => {
     );
   });
 
-  test('divergence equals .planning/DIVERGENCE.md', () => {
-    const result = planningPaths('/project');
-    assert.strictEqual(
-      result.divergence,
-      path.join('/project', '.planning', 'DIVERGENCE.md'),
-    );
-  });
-
   test('milestones equals .planning/milestones', () => {
     const result = planningPaths('/project');
     assert.strictEqual(

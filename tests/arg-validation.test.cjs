@@ -225,7 +225,7 @@ describe('ARG_SCHEMAS coverage', () => {
     // Verify _self entries exist for key top-level commands
     const topLevelCommands = [
       'commit', 'detect-workspace', 'git-context', 'squash',
-      'version-bump', 'divergence', 'cleanup', 'update',
+      'version-bump', 'cleanup', 'update',
     ];
     for (const cmd of topLevelCommands) {
       // Accept both quoted ('commit': ...) and unquoted (commit: ...) key forms.

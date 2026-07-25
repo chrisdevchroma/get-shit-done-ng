@@ -247,11 +247,17 @@ describe('lint: no hardcoded /tmp/ in path.join() or mkdtempSync() calls', () =>
 // still comes out. resolveTargetBranch() in core.cjs is the only supported
 // reader; it accepts both shapes and applies one precedence order.
 //
-// Detection: any `<something-config-ish>.target_branch` property access in
-// shipped bin/ sources, plus any `.git.target_branch` / `.git?.target_branch`
-// nested access regardless of the receiver name. Object-literal keys
-// (`target_branch: value`) and assignments to result objects are writes, not
-// reads, and are not flagged.
+// Detection: any read of `target_branch` off any receiver in shipped bin/
+// sources. Object-literal keys (`target_branch: value`) and assignments to
+// result objects are writes, not reads, and are not flagged.
+//
+// This rule is a tripwire, not a proof. It is line-oriented, so it cannot see
+// multi-line syntax: a destructure split across lines
+// (`const {\n  target_branch,\n} = loadConfig(cwd)`) or a property access
+// broken after the receiver both slip past — and those are shapes prettier
+// produces on its own past 80 columns. Treat a green Rule 8 as "no obvious
+// re-introduction", not as "no reader exists". Catching the rest needs an AST
+// pass rather than a regex.
 
 describe('lint: no direct target_branch read off a config object (use resolveTargetBranch)', () => {
   // Recursively collect shipped .cjs sources under gsd-ng/bin/.
@@ -342,12 +348,12 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
     );
   });
 
-  // Self-test: the detector must actually catch the shape that broke
-  // cmdDivergence, otherwise the rule above passes vacuously.
+  // Self-test: the detector must actually catch the nested-read shape,
+  // otherwise the rule above passes vacuously.
   test('detector flags every read shape, whatever the receiver is named', () => {
     const flags = readsTargetBranch;
 
-    // The exact shape that broke cmdDivergence.
+    // The nested read that returns undefined off a loaded config.
     assert.ok(flags('const base = opts.base || config.git?.target_branch;'));
     assert.ok(flags('config.git && config.git.target_branch'));
     assert.ok(flags('const targetBranch = config.target_branch || "main";'));

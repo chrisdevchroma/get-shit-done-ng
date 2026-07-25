@@ -268,7 +268,6 @@ The `target_branch` determines:
 - Base for new work branches: `git checkout -b {work_branch} {target_branch}`
 - PR target: PRs opened against this branch
 - Merge target in `complete-milestone`
-- Base ref for `{{COMMAND_PREFIX}}divergence --branch {name}` when `--base` is omitted
 
 Per-milestone override: `{{COMMAND_PREFIX}}new-milestone --target-branch develop`
 

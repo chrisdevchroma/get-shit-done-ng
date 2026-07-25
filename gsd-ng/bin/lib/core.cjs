@@ -19,7 +19,7 @@ function toPosixPath(p) {
  * Return a flat object containing all common .planning/ subpaths for a given cwd.
  * Call once per function entry and destructure the properties needed.
  * @param {string} cwd - project root directory
- * @returns {{ root, phases, config, state, roadmap, requirements, todos, todosPending, todosCompleted, codebase, divergence, milestones, milestonesFile, project, archive }}
+ * @returns {{ root, phases, config, state, roadmap, requirements, todos, todosPending, todosCompleted, codebase, milestones, milestonesFile, project, archive }}
  */
 function planningPaths(cwd) {
   const root = path.join(cwd, '.planning');
@@ -34,7 +34,6 @@ function planningPaths(cwd) {
     todosPending: path.join(root, 'todos', 'pending'),
     todosCompleted: path.join(root, 'todos', 'completed'),
     codebase: path.join(root, 'codebase'),
-    divergence: path.join(root, 'DIVERGENCE.md'),
     milestones: path.join(root, 'milestones'),
     milestonesFile: path.join(root, 'MILESTONES.md'),
     project: path.join(root, 'PROJECT.md'),
