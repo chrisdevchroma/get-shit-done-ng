@@ -3538,9 +3538,7 @@ function cmdDivergence(cwd, opts) {
     const sectionKey = `${base}..${opts.branch}`;
 
     // Verify branch exists
-    try {
-      execSync(`git rev-parse --verify ${opts.branch}`, { cwd, stdio: 'pipe' });
-    } catch {
+    if (execGit(cwd, ['rev-parse', '--verify', opts.branch]).exitCode !== 0) {
       error(`Branch '${opts.branch}' not found. Verify the branch name.`);
       return;
     }
@@ -3549,10 +3547,12 @@ function cmdDivergence(cwd, opts) {
     if (opts.init) {
       let allCommits = [];
       try {
-        const log = execSync(
-          `git log ${sectionKey} --format="%H|%ad|%s" --date=short`,
-          { cwd, encoding: 'utf8', stdio: 'pipe' },
-        ).trim();
+        const log = execGit(cwd, [
+          'log',
+          sectionKey,
+          '--format=%H|%ad|%s',
+          '--date=short',
+        ]).stdout;
         if (log) {
           // Load existing section to detect already-triaged commits
           const existingTriage = parseDivergenceBranchSection(
@@ -3670,10 +3670,13 @@ function cmdDivergence(cwd, opts) {
       let entry = triageState.get(hash);
       if (!entry) {
         try {
-          const info = execSync(
-            `git log --format="%ad|%s" --date=short -1 ${hash}`,
-            { cwd, encoding: 'utf8', stdio: 'pipe' },
-          ).trim();
+          const info = execGit(cwd, [
+            'log',
+            '--format=%ad|%s',
+            '--date=short',
+            '-1',
+            hash,
+          ]).stdout;
           const [date, ...subjectParts] = info.split('|');
           entry = {
             date: date || '',
@@ -3709,10 +3712,12 @@ function cmdDivergence(cwd, opts) {
     );
     let commits = [];
     try {
-      const log = execSync(
-        `git log ${sectionKey} --format="%H|%ad|%s" --date=short`,
-        { cwd, encoding: 'utf8', stdio: 'pipe' },
-      ).trim();
+      const log = execGit(cwd, [
+        'log',
+        sectionKey,
+        '--format=%H|%ad|%s',
+        '--date=short',
+      ]).stdout;
       if (log) {
         commits = log.split('\n').map((line) => {
           const [hash, date, ...subjectParts] = line.split('|');

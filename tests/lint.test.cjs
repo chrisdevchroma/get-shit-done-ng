@@ -265,8 +265,34 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
   }
 
   const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
-  const CONFIG_READ = /\bconfig\w*\s*\??\.\s*target_branch/i;
-  const NESTED_READ = /\.\s*git\s*\??\.\s*target_branch/;
+
+  // Flag any read of `target_branch` off any receiver. A receiver-name
+  // allowlist is the wrong shape for this rule: `\bconfig\w*` misses the
+  // mid-word `parsedConfig.target_branch` and every `cfg`-style abbreviation,
+  // which is exactly the drift the rule exists to stop. So the detector
+  // subtracts what is provably not a config read, then flags the remainder.
+  //
+  // The scan and its self-test share this one function on purpose — a detector
+  // whose tests exercise a second copy of the logic is the same class of bug
+  // this rule was written to catch.
+  function readsTargetBranch(line) {
+    // Bracket access is checked against the raw line: the string-literal strip
+    // below would eat the quoted key and hide `config['target_branch']`.
+    if (/\[\s*['"`]target_branch['"`]\s*\]/.test(line)) return true;
+
+    const probe = line
+      // String literals — key allowlists such as `'git.target_branch'`.
+      .replace(/(['"`])[^'"`]*target_branch[^'"`]*\1/g, '')
+      // Reads of an already-resolved git context or of the defaults table.
+      .replace(/\b(?:gitCtx|DEFAULTS|defaults)\s*\??\.\s*target_branch/g, '')
+      // Assignment targets — `result.target_branch = …` is a write, not a read.
+      .replace(/\w\s*\??\.\s*target_branch\s*=(?!=)/g, '');
+
+    return (
+      /(?:\w|\])\s*\??\.\s*target_branch/.test(probe) ||
+      /\{[^}]*\btarget_branch\b[^}]*\}\s*=/.test(probe)
+    );
+  }
 
   test('resolveTargetBranch is the only reader of target_branch in bin/', () => {
     const violations = [];
@@ -290,7 +316,7 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
         if (i >= skipFrom && i < skipTo) return;
         const trimmed = line.trim();
         if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
-        if (CONFIG_READ.test(line) || NESTED_READ.test(line)) {
+        if (readsTargetBranch(line)) {
           violations.push(`${rel}:${i + 1}: ${trimmed}`);
         }
       });
@@ -302,15 +328,34 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
 
   // Self-test: the detector must actually catch the shape that broke
   // cmdDivergence, otherwise the rule above passes vacuously.
-  test('detector flags both the nested and the config-receiver read shapes', () => {
-    assert.ok(NESTED_READ.test('const base = opts.base || config.git?.target_branch;'));
-    assert.ok(NESTED_READ.test('config.git && config.git.target_branch'));
-    assert.ok(CONFIG_READ.test('const targetBranch = config.target_branch || "main";'));
-    assert.ok(CONFIG_READ.test('let t = configSubmodule.target_branch || null;'));
-    // Writes and non-config receivers are not reads of a config object.
-    assert.ok(!CONFIG_READ.test('    target_branch: targetBranch,'));
-    assert.ok(!NESTED_READ.test('    target_branch: targetBranch,'));
-    assert.ok(!CONFIG_READ.test('result.target_branch = gitCtx.target_branch;'));
-    assert.ok(!CONFIG_READ.test('  target_branch: DEFAULTS.target_branch,'));
+  test('detector flags every read shape, whatever the receiver is named', () => {
+    const flags = readsTargetBranch;
+
+    // The exact shape that broke cmdDivergence.
+    assert.ok(flags('const base = opts.base || config.git?.target_branch;'));
+    assert.ok(flags('config.git && config.git.target_branch'));
+    assert.ok(flags('const targetBranch = config.target_branch || "main";'));
+    assert.ok(flags('let t = configSubmodule.target_branch || null;'));
+    // Receivers a name-allowlist would miss.
+    assert.ok(flags('const t = parsedConfig.target_branch;'));
+    assert.ok(flags('const t = cfg.target_branch;'));
+    assert.ok(flags('const t = opts.target_branch;'));
+    // Non-dotted access shapes.
+    assert.ok(flags("const t = config['target_branch'];"));
+    assert.ok(flags('const { target_branch } = config;'));
+    assert.ok(flags('const { remote, target_branch } = loadConfig(cwd);'));
+
+    // Writes are not reads.
+    assert.ok(!flags('    target_branch: targetBranch,'));
+    assert.ok(!flags('  target_branch: null,'));
+    assert.ok(!flags('  target_branch: resolveTargetBranch(config),'));
+    // Reads of an already-resolved context or the defaults table.
+    assert.ok(!flags('result.target_branch = gitCtx.target_branch;'));
+    assert.ok(!flags('  target_branch: DEFAULTS.target_branch,'));
+    assert.ok(!flags('        fallback: defaults.target_branch,'));
+    // A string literal naming the key is an allowlist entry, not a read.
+    assert.ok(!flags("  'git.target_branch',"));
+    // An equality comparison is still a read.
+    assert.ok(flags("if (config.target_branch === 'main') {"));
   });
 });

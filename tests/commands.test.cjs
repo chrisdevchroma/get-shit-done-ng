@@ -8641,6 +8641,68 @@ describe('sub-batch E: divergence tracking', () => {
     assert.strictEqual(parsed.commits[0].subject, 'feat: target branch work');
   });
 
+  // Security regression: `base` and `branch` are interpolated into the
+  // `<base>..<branch>` range that branch mode passes to git. Routing the
+  // configured target_branch into that range made `.planning/config.json` an
+  // input to the git invocation, so building the command as a shell string
+  // would let a cloned repo's config execute arbitrary commands. Every git
+  // call in branch mode goes through execGit (spawnSync, array argv) — no
+  // shell — so a metacharacter stays inert data.
+  test('cmdDivergence --branch does not execute shell metacharacters from config', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'develop;touch PWNED #' } }),
+    );
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git checkout -b feature/inj', { cwd: tmpDir, stdio: 'pipe' });
+
+    const r = runGsdTools(
+      ['divergence', '--branch', 'feature/inj', '--json'],
+      tmpDir,
+    );
+    assert.ok(r.success, r.error);
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, 'PWNED')),
+      false,
+      'config-sourced shell metacharacters must not execute',
+    );
+    // The value is still carried through verbatim as inert data.
+    assert.strictEqual(JSON.parse(r.output).base, 'develop;touch PWNED #');
+  });
+
+  test('cmdDivergence --branch does not execute shell metacharacters from --branch', () => {
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    const r = runGsdTools(
+      ['divergence', '--branch', 'nope;touch PWNED2 #', '--json'],
+      tmpDir,
+    );
+    assert.strictEqual(r.success, false, 'bogus branch name must not resolve');
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, 'PWNED2')),
+      false,
+      'branch-name shell metacharacters must not execute',
+    );
+  });
+
+  test('cmdDivergence --branch --init does not execute shell metacharacters', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ git: { target_branch: 'develop;touch PWNED3 #' } }),
+    );
+    execSync('git checkout -b develop', { cwd: tmpDir, stdio: 'pipe' });
+    execSync('git checkout -b feature/inj2', { cwd: tmpDir, stdio: 'pipe' });
+
+    runGsdTools(
+      ['divergence', '--branch', 'feature/inj2', '--init', '--json'],
+      tmpDir,
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, 'PWNED3')),
+      false,
+      'init mode must not execute config-sourced metacharacters',
+    );
+  });
+
   test('cmdDivergence --branch honours a flat top-level target_branch', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
