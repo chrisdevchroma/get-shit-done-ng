@@ -779,11 +779,11 @@ describe('EFFORT_PROFILES', () => {
     }
   });
 
-  test('Test 2: EFFORT_PROFILES quality profile has correct max/high values', () => {
-    assert.strictEqual(EFFORT_PROFILES['gsd-planner'].quality, 'max');
-    assert.strictEqual(EFFORT_PROFILES['gsd-debugger'].quality, 'max');
-    assert.strictEqual(EFFORT_PROFILES['gsd-verifier'].quality, 'max');
-    assert.strictEqual(EFFORT_PROFILES['gsd-roadmapper'].quality, 'max');
+  test('Test 2: EFFORT_PROFILES quality profile has correct xhigh/high values', () => {
+    assert.strictEqual(EFFORT_PROFILES['gsd-planner'].quality, 'xhigh');
+    assert.strictEqual(EFFORT_PROFILES['gsd-debugger'].quality, 'xhigh');
+    assert.strictEqual(EFFORT_PROFILES['gsd-verifier'].quality, 'xhigh');
+    assert.strictEqual(EFFORT_PROFILES['gsd-roadmapper'].quality, 'xhigh');
     assert.strictEqual(EFFORT_PROFILES['gsd-executor'].quality, 'high');
   });
 
@@ -1062,7 +1062,7 @@ describe('Phase 55 — effort sync wiring', () => {
       path.join(tmpDir, '.claude/agents/gsd-planner.md'),
       'utf-8',
     );
-    assert.match(planner, /^effort: max$/m);
+    assert.match(planner, /^effort: xhigh$/m);
   });
 
   test('EFFSYNC-CONFIG-02: config-set effort_overrides.gsd-executor low syncs and prints restart notice', () => {

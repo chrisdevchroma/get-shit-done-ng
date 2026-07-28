@@ -103,16 +103,16 @@ Effort profiles control the `effort:` frontmatter injected into agent spawn call
 
 | Agent | `quality` | `balanced` | `budget` |
 |-------|-----------|------------|----------|
-| gsd-planner | max | inherit | high |
-| gsd-roadmapper | max | inherit | high |
+| gsd-planner | xhigh | inherit | high |
+| gsd-roadmapper | xhigh | inherit | high |
 | gsd-executor | high | inherit | high |
 | gsd-phase-researcher | high | inherit | medium |
 | gsd-project-researcher | high | inherit | medium |
 | gsd-research-synthesizer | high | inherit | medium |
-| gsd-debugger | max | inherit | high |
+| gsd-debugger | xhigh | inherit | high |
 | gsd-codebase-mapper | high | inherit | medium |
 | gsd-incremental-mapper | high | inherit | medium |
-| gsd-verifier | max | inherit | high |
+| gsd-verifier | xhigh | inherit | high |
 | gsd-plan-checker | high | inherit | medium |
 | gsd-integration-checker | high | inherit | medium |
 | gsd-nyquist-auditor | high | inherit | medium |
@@ -168,7 +168,7 @@ Overrides take precedence over the profile. Valid values: `low`, `medium`, `high
 ### Profile Philosophy
 
 **quality** — Maximum reasoning power
-- Critical decision-makers (planner, roadmapper, debugger, verifier) at `max`
+- Critical decision-makers (planner, roadmapper, debugger, verifier) at `xhigh`
 - All other agents at `high`
 - No agent below `high` — use when quota is available and correctness is critical
 

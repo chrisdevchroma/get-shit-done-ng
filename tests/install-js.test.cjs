@@ -2381,11 +2381,11 @@ function runDualRuntimeTest(firstRuntime, secondRuntime) {
       `Copilot sync-agents must exit 0 (${firstRuntime}-then-${secondRuntime})\nstderr: ${copilotSync.stderr || ''}`,
     );
 
-    // Claude engine: gsd-planner.md must have effort: frontmatter (quality profile → max)
+    // Claude engine: gsd-planner.md must have effort: frontmatter (quality profile → xhigh)
     const claudeAgentContent = fs.readFileSync(path.join(claudeAgentsDir, 'gsd-planner.md'), 'utf-8');
     assert.ok(
-      /^effort:\s*max$/m.test(claudeAgentContent),
-      `Claude agent must have effort: max after sync (${firstRuntime}-then-${secondRuntime})\nactual:\n${claudeAgentContent}`,
+      /^effort:\s*xhigh$/m.test(claudeAgentContent),
+      `Claude agent must have effort: xhigh after sync (${firstRuntime}-then-${secondRuntime})\nactual:\n${claudeAgentContent}`,
     );
 
     // Copilot engine: gsd-planner.md must NOT have effort: frontmatter
@@ -3740,7 +3740,7 @@ describe('install.js - Phase 55 effort frontmatter sync', () => {
     if (tmpDir) cleanup(tmpDir);
   });
 
-  test('EFFSYNC-INSTALL-01: Claude local install writes effort: max to gsd-planner.md when profile=quality', () => {
+  test('EFFSYNC-INSTALL-01: Claude local install writes effort: xhigh to gsd-planner.md when profile=quality', () => {
     tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-effsync-install-'));
     // Pre-seed config so resolveEffortInternal reads a known profile during install
     const configDir = path.join(tmpDir, '.planning');
@@ -3775,8 +3775,8 @@ describe('install.js - Phase 55 effort frontmatter sync', () => {
     const planner = fs.readFileSync(plannerPath, 'utf-8');
     assert.match(
       planner,
-      /^effort: max$/m,
-      'effort: max must be in frontmatter',
+      /^effort: xhigh$/m,
+      'effort: xhigh must be in frontmatter',
     );
     // install.js emits the restart notice on stderr when changes occur
     assert.ok(

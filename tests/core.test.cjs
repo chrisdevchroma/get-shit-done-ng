@@ -1345,10 +1345,10 @@ describe('resolveEffortInternal', () => {
     fs.writeFileSync(path.join(dir, '.runtime'), value + '\n', 'utf-8');
   }
 
-  test('Test 1: returns max for gsd-planner when model_profile=quality and no overrides', () => {
+  test('Test 1: returns xhigh for gsd-planner when model_profile=quality and no overrides', () => {
     writeConfig({ model_profile: 'quality' });
     const result = resolveEffortInternal(tmpDir, 'gsd-planner');
-    assert.strictEqual(result, 'max');
+    assert.strictEqual(result, 'xhigh');
   });
 
   test('Test 2: returns null for gsd-planner when model_profile=balanced (inherit resolves to null)', () => {
@@ -1396,7 +1396,7 @@ describe('resolveEffortInternal', () => {
     process.env.GSD_TEST_RUNTIME_MARKER_DIR = markerDir;
     writeConfig({ model_profile: 'quality' });
     const result = resolveEffortInternal(tmpDir, 'gsd-planner');
-    assert.strictEqual(result, 'max');
+    assert.strictEqual(result, 'xhigh');
   });
 
   test('Test 8: returns normal value when .runtime marker is absent (backward compat, defaults to claude)', () => {
@@ -1405,7 +1405,7 @@ describe('resolveEffortInternal', () => {
     process.env.GSD_TEST_RUNTIME_MARKER_DIR = markerDir;
     writeConfig({ model_profile: 'quality' });
     const result = resolveEffortInternal(tmpDir, 'gsd-planner');
-    assert.strictEqual(result, 'max');
+    assert.strictEqual(result, 'xhigh');
   });
 
   // Haiku-skip tests (Tests 9-13)
@@ -1586,8 +1586,8 @@ describe('resolveEffortInternal', () => {
     );
   });
 
-  test('Test 16: profile-derived max + non-tier model via model_overrides — silent skip, no warning', () => {
-    // Quality profile gives gsd-planner effort=max; force the model to a version-pinned
+  test('Test 16: profile-derived xhigh + non-tier model via model_overrides — silent skip, no warning', () => {
+    // Quality profile gives gsd-planner effort=xhigh; force the model to a version-pinned
     // sonnet-4-6 via override. Effort is profile-derived (no effort_overrides), so the
     // skip is silent.
     writeConfig({
@@ -1600,7 +1600,7 @@ describe('resolveEffortInternal', () => {
     assert.strictEqual(
       result,
       null,
-      'profile-derived max effort dropped silently for a non-tier model',
+      'profile-derived xhigh effort dropped silently for a non-tier model',
     );
     assert.strictEqual(
       captured,
