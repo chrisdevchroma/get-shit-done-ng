@@ -18,22 +18,6 @@ cov-tmp/
 /.claude/
 /.planning/
 
-# Sandbox / host environment artifacts injected into the checkout. Not project
-# content. They arrive as character devices, so `git add -A` aborts with
-# "can only add regular files, symbolic links or git-directories" until they are
-# ignored. No trailing slashes: each may appear as a file, directory or symlink
-# depending on the sandbox.
-.mcp.json
-.bash_profile
-.bashrc
-.profile
-.zprofile
-.zshrc
-.gitconfig
-.ripgreprc
-.idea
-.vscode
-
 # Default output of npm run evidence:clean-path; the phase copy is committed
 # under .planning/ via an explicit --out-dir
 /evidence/
