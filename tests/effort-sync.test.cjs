@@ -29,7 +29,7 @@ describe('syncAgentEffortFrontmatter', () => {
     const agentsDir = path.join(tmpDir, '.claude', 'agents');
     const result = syncAgentEffortFrontmatter(tmpDir, agentsDir);
     assert.ok(Array.isArray(result.changes), 'changes must be an array');
-    assert.strictEqual(readEffort(path.join(agentsDir, 'gsd-planner.md')), 'max');
+    assert.strictEqual(readEffort(path.join(agentsDir, 'gsd-planner.md')), 'xhigh');
     assert.strictEqual(readEffort(path.join(agentsDir, 'gsd-executor.md')), 'high');
     assert.strictEqual(result.changes.length, 2);
   });

@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The `quality` model profile now tops out at `xhigh` rather than `max`. The four critical decision-makers — `gsd-planner`, `gsd-roadmapper`, `gsd-debugger` and `gsd-verifier` — move from `effort: max` to `effort: xhigh`; every other agent keeps `high`, and the `balanced` and `budget` profiles are untouched. `max` remains a valid tier and is still reachable per agent through `effort_overrides`, so nothing is lost for a workspace that wants it on a specific agent — it is simply no longer what a profile hands out by default. Existing installs pick the new value up the next time the effort sync runs (an install, `/gsd:set-profile`, or any `gsd config set effort_overrides.*`), which rewrites the managed `effort:` frontmatter in `.claude/agents/*.md`; a Claude Code restart applies it. The reference table in `references/claude-model-profiles.md` was updated alongside `EFFORT_PROFILES`, and the new sync lint above now holds the two together.
+
 ## [1.0.0-dev.20] - 2026-07-25
 
 ### Removed

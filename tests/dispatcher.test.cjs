@@ -468,7 +468,7 @@ describe('sync-agents command', () => {
     const result = runGsdTools(['sync-agents'], tmpDir);
     assert.ok(result.success, `command failed: ${result.error}`);
     const planner = fs.readFileSync(path.join(tmpDir, '.claude/agents/gsd-planner.md'), 'utf-8');
-    assert.match(planner, /^effort: max$/m);
+    assert.match(planner, /^effort: xhigh$/m);
     // Stdout: clean summary, no restart notice substring
     assert.ok(
       result.output.includes('Synced 1 agent'),

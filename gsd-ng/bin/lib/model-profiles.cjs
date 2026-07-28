@@ -76,13 +76,13 @@ const VALID_EFFORT_VALUES = [
 /**
  * Mapping of GSD agent to effort level for each profile.
  *
- * Quality: critical decision-makers (planner, roadmapper, debugger, verifier) at max, others at high.
+ * Quality: critical decision-makers (planner, roadmapper, debugger, verifier) at xhigh, others at high.
  * Balanced: all inherit (session default applies, matches current behavior).
  * Budget: writers/decision-makers at high, mechanical/read-only agents at medium.
  */
 const EFFORT_PROFILES = {
-  'gsd-planner': { quality: 'max', balanced: 'inherit', budget: 'high' },
-  'gsd-roadmapper': { quality: 'max', balanced: 'inherit', budget: 'high' },
+  'gsd-planner': { quality: 'xhigh', balanced: 'inherit', budget: 'high' },
+  'gsd-roadmapper': { quality: 'xhigh', balanced: 'inherit', budget: 'high' },
   'gsd-executor': { quality: 'high', balanced: 'inherit', budget: 'high' },
   'gsd-phase-researcher': {
     quality: 'high',
@@ -99,7 +99,7 @@ const EFFORT_PROFILES = {
     balanced: 'inherit',
     budget: 'medium',
   },
-  'gsd-debugger': { quality: 'max', balanced: 'inherit', budget: 'high' },
+  'gsd-debugger': { quality: 'xhigh', balanced: 'inherit', budget: 'high' },
   'gsd-codebase-mapper': {
     quality: 'high',
     balanced: 'inherit',
@@ -110,7 +110,7 @@ const EFFORT_PROFILES = {
     balanced: 'inherit',
     budget: 'medium',
   },
-  'gsd-verifier': { quality: 'max', balanced: 'inherit', budget: 'high' },
+  'gsd-verifier': { quality: 'xhigh', balanced: 'inherit', budget: 'high' },
   'gsd-plan-checker': {
     quality: 'high',
     balanced: 'inherit',
