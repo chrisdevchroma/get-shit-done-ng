@@ -14,7 +14,9 @@ cov-tmp/
 # Vendored local binaries (platform-specific, not committed)
 .bin/
 
-# GSD artifacts
+# GSD artifacts. Unlike the other repos this blankets all of .claude/ on
+# purpose: install.js deploys agents/, commands/, hooks/ and gsd-ng/ here when
+# the installer is exercised, so everything under it is generated output.
 /.claude/
 /.planning/
 
