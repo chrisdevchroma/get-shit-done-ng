@@ -7,6 +7,8 @@ const path = require('path');
 const {
   escapeRegex,
   normalizePhaseName,
+  boldLabel,
+  phaseFieldPattern,
   comparePhaseNum,
   findPhaseInternal,
   getArchivedPhaseDirs,
@@ -75,7 +77,10 @@ const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]+?\r?\n---/;
 // bold, matching init.cjs. The colon-inside form is accepted too because
 // documents in the wild carry it and rejecting them would silently close
 // nothing for those projects.
-const ROADMAP_REQUIREMENTS_LINE = /\*\*Requirements(?:\*\*:|:\*\*)\s*([^\n]+)/i;
+const ROADMAP_REQUIREMENTS_LINE = new RegExp(
+  boldLabel('Requirements') + String.raw`\s*([^\n]+)`,
+  'i',
+);
 
 /**
  * Read the requirement IDs one file records under `field`, keeping the three
@@ -1509,7 +1514,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
     // Update plan count in phase section
     const planCountPattern = new RegExp(
-      `(#{2,4}\\s*Phase\\s+${phaseEscaped}[\\s\\S]*?\\*\\*Plans:\\*\\*\\s*)[^\\n]+`,
+      phaseFieldPattern(phaseEscaped, 'Plans'),
       'i',
     );
     roadmapContent = replaceInCurrentMilestone(

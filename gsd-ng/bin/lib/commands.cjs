@@ -11,6 +11,7 @@ const {
   isGitIgnored,
   execGit,
   normalizePhaseName,
+  boldLabel,
   comparePhaseNum,
   getArchivedPhaseDirs,
   generateSlugInternal,
@@ -1116,7 +1117,9 @@ function cmdTodoScanPhaseLinked(cwd, phase) {
       ? sectionStart + nextHeaderMatch.index
       : content.length;
     const section = content.slice(sectionStart, sectionEnd);
-    const sourceTodosMatch = section.match(/\*\*Source Todos\*\*:\s*([^\n]+)/i);
+    const sourceTodosMatch = section.match(
+      new RegExp(boldLabel('Source Todos') + String.raw`\s*([^\n]+)`, 'i'),
+    );
     if (sourceTodosMatch) sourceTodosStr = sourceTodosMatch[1].trim();
   } catch (_e) {
     output([]);

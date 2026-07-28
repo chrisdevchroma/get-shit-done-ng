@@ -23,7 +23,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
+const {
+  scanForInjection,
+  shannonEntropy: shannon,
+  ENTROPY_PARAMS,
+} = require('../gsd-ng/bin/lib/security.cjs');
 const fp = require('../scripts/fp-report.cjs');
 
 const BUDGET_PATH = path.join(
@@ -220,17 +224,6 @@ describe('FP budget: pattern hits on benign content', () => {
 
 const THRESHOLD = 5.5; // security.cjs — mirrored here so a drift shows up as a failure
 
-function shannon(s) {
-  const freq = {};
-  for (const ch of s) freq[ch] = (freq[ch] || 0) + 1;
-  let H = 0;
-  for (const count of Object.values(freq)) {
-    const p = count / s.length;
-    H -= p * Math.log2(p);
-  }
-  return H;
-}
-
 // Deterministic input whose entropy is set by alphabet size: cycling n distinct
 // characters over a full window approaches log2(n). The achieved H is asserted
 // rather than assumed, so each fixture verifies itself.
@@ -301,6 +294,49 @@ describe('Entropy: decision-boundary probe (H = 5.3 - 5.7)', () => {
   });
 });
 
+describe('Entropy: astral content is measured, not capped', () => {
+  // Counting code points against a code-unit length leaves the probabilities
+  // summing to <1, which caps any all-astral window below the threshold.
+  const astral = (n, base = 0x1f300) =>
+    Array.from({ length: n }, (_, i) => String.fromCodePoint(base + i)).join('');
+
+  test('probabilities sum to 1 for astral input', () => {
+    const segment = astral(128);
+    const freq = {};
+    for (let i = 0; i < segment.length; i++) {
+      freq[segment[i]] = (freq[segment[i]] || 0) + 1;
+    }
+    const total = Object.values(freq).reduce((s, c) => s + c, 0);
+    assert.equal(
+      total,
+      segment.length,
+      'frequency counts must cover every code unit of the segment',
+    );
+  });
+
+  test('a maximally diverse window reaches the full bits-per-code-unit ceiling', () => {
+    const distinct = Array.from({ length: 256 }, (_, i) =>
+      String.fromCharCode(i),
+    ).join('');
+    assert.ok(
+      Math.abs(shannon(distinct) - 8) < 1e-9,
+      `256 distinct code units should give H=8, got ${shannon(distinct)}`,
+    );
+  });
+
+  test('a random astral window is not forced under the threshold', () => {
+    const segment = astral(128);
+    assert.ok(
+      segment.length === ENTROPY_PARAMS.WINDOW,
+      'fixture must be exactly one window wide',
+    );
+    assert.ok(
+      shannon(segment) > 4,
+      `astral window capped at ${shannon(segment)} — code points are being counted against a code-unit length`,
+    );
+  });
+});
+
 // ── Entropy: measured against both corpora ───────────────────────────────────
 
 describe('Entropy: measured false positives on benign content', () => {
@@ -315,6 +351,58 @@ describe('Entropy: measured false positives on benign content', () => {
       b.examples.every((e) => 'ref' in e && 'max_H' in e && 'offsets' in e),
       'entropy budget examples must record ref, max_H and offsets',
     );
+  });
+
+  test('the entropy measurement dominates every full window the detector reports', () => {
+    // Stride 1 visits a superset of the detector's STEP-aligned full windows,
+    // so its peak can never sit below one. Pins the measurement to the detector
+    // rather than to a recorded number, which a stub return would satisfy.
+    const { WINDOW } = ENTROPY_PARAMS;
+    let compared = 0;
+
+    for (const item of repoWalk.items) {
+      const reported = fp
+        .entropySegments(
+          scanForInjection(item.content, { external: true, entropy: true }),
+        )
+        .filter((s) => s.end - s.start === WINDOW);
+      if (!reported.length) continue;
+
+      const peak = fp.peakEntropyAnyAlignment(item.content);
+      assert.ok(peak, `${item.ref}: detector flagged a window but peak is null`);
+      for (const seg of reported) {
+        compared++;
+        assert.ok(
+          peak.max_H >= seg.H - 1e-9,
+          `${item.ref}: detector reports H=${seg.H} at ${seg.start}-${seg.end}, ` +
+            `but the stride-1 peak is only ${peak.max_H}`,
+        );
+      }
+    }
+
+    assert.ok(
+      compared > 0,
+      'no full-window detector findings in the corpus — this test proved nothing',
+    );
+  });
+
+  test('the entropy measurement does not move when bytes shift', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'commands.cjs'),
+      'utf8',
+    );
+    const anchor = "const fs = require('fs');";
+    assert.ok(source.includes(anchor), 'anchor line must exist to shift from');
+
+    const baseline = fp.peakEntropyAnyAlignment(source).max_H;
+    for (const pad of [1, 7, 13, 64, 128, 257]) {
+      const shifted = source.replace(anchor, anchor + ' '.repeat(pad));
+      assert.equal(
+        fp.peakEntropyAnyAlignment(shifted).max_H,
+        baseline,
+        `inserting ${pad} bytes changed peak entropy — measurement is alignment-sensitive again`,
+      );
+    }
   });
 
   test('GSD-prose corpus stays within the entropy budget', () => {

@@ -428,7 +428,7 @@ REQUIREMENTS=$(node -e "
   const data = process.argv[1];
   try {
     const r = JSON.parse(data);
-    const m = (r.section||'').match(/\*\*Requirements\*\*:\s*([^\n]+)/i);
+    const m = (r.section||'').match(/\*\*Requirements(?:\*\*:|:\*\*)\s*([^\n]+)/i);
     const requirements = m ? m[1].trim().replace(/^\[(.*)\]$/, '\$1').trim() : '';
     console.log(requirements);
   } catch { console.log(''); }

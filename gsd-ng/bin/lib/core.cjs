@@ -393,6 +393,22 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Accepts the colon on either side of the bold markers. See phase.cjs.
+function boldLabel(label) {
+  return String.raw`\*\*${escapeRegex(label)}(?:\*\*:|:\*\*)`;
+}
+
+// Rewrite target for `label`'s value inside one phase's section. The search is
+// stopped at the next phase header: an unbounded scan silently rewrites the
+// following phase's line when this phase has no such field.
+function phaseFieldPattern(phaseEscaped, label) {
+  return (
+    String.raw`(#{2,4}\s*Phase\s+${phaseEscaped}(?![\dA-Za-z.])(?:(?!\n#{2,4}\s*Phase\s)[\s\S])*?` +
+    boldLabel(label) +
+    String.raw`\s*)[^\n]+`
+  );
+}
+
 function normalizePhaseName(phase) {
   const match = String(phase).match(/^(\d+)([A-Z])?((?:\.\d+)*)/i);
   if (!match) return phase;
@@ -643,7 +659,7 @@ function getRoadmapPhaseInternal(cwd, phaseNum) {
     const section = content.slice(headerIndex, sectionEnd).trim();
 
     const goalMatch = section.match(
-      /\*\*Goal(?:\*\*:|\*?\*?:\*\*)\s*([^\n]+)/i,
+      new RegExp(boldLabel('Goal') + String.raw`\s*([^\n]+)`, 'i'),
     );
     const goal = goalMatch ? goalMatch[1].trim() : null;
 
@@ -958,6 +974,8 @@ module.exports = {
   isGitIgnored,
   execGit,
   escapeRegex,
+  boldLabel,
+  phaseFieldPattern,
   normalizePhaseName,
   comparePhaseNum,
   searchPhaseInDir,

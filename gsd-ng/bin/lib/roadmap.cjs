@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const {
   escapeRegex,
+  boldLabel,
+  phaseFieldPattern,
   normalizePhaseName,
   output,
   error,
@@ -15,6 +17,18 @@ const {
   getPhaseCompletionStatus,
   planningPaths,
 } = require('./core.cjs');
+
+const FIELD_VALUE = String.raw`\s*([^\n]+)`;
+const GOAL_LINE = new RegExp(boldLabel('Goal') + FIELD_VALUE, 'i');
+const DEPENDS_ON_LINE = new RegExp(boldLabel('Depends on') + FIELD_VALUE, 'i');
+const SOURCE_TODOS_LINE = new RegExp(
+  boldLabel('Source Todos') + FIELD_VALUE,
+  'i',
+);
+// Not boldLabel(): the canonical form carries a parenthetical between the label
+// and its colon — `**Success Criteria** (what must be TRUE):`.
+const SUCCESS_CRITERIA_BLOCK =
+  /\*\*Success Criteria(?:\*\*[^\n]*:|:\*\*[^\n]*)\s*\n((?:\s*\d+\.\s*[^\n]+\n?)+)/i;
 
 function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
   const { roadmap: roadmapPath } = planningPaths(cwd);
@@ -93,13 +107,11 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
     const section = content.slice(headerIndex, sectionEnd).trim();
 
     // Extract goal if present
-    const goalMatch = section.match(/\*\*Goal:\*\*\s*([^\n]+)/i);
+    const goalMatch = section.match(GOAL_LINE);
     const goal = goalMatch ? goalMatch[1].trim() : null;
 
     // Extract success criteria as structured array
-    const criteriaMatch = section.match(
-      /\*\*Success Criteria\*\*[^\n]*:\s*\n((?:\s*\d+\.\s*[^\n]+\n?)+)/i,
-    );
+    const criteriaMatch = section.match(SUCCESS_CRITERIA_BLOCK);
     const success_criteria = criteriaMatch
       ? criteriaMatch[1]
           .trim()
@@ -109,11 +121,11 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
       : [];
 
     // Extract depends_on (same pattern as cmdRoadmapAnalyze)
-    const dependsMatch = section.match(/\*\*Depends on:\*\*\s*([^\n]+)/i);
+    const dependsMatch = section.match(DEPENDS_ON_LINE);
     const depends_on = dependsMatch ? dependsMatch[1].trim() : null;
 
     // Extract source_todos
-    const sourceTodosMatch = section.match(/\*\*Source Todos\*\*:\s*([^\n]+)/i);
+    const sourceTodosMatch = section.match(SOURCE_TODOS_LINE);
     const source_todos = sourceTodosMatch ? sourceTodosMatch[1].trim() : null;
 
     output(
@@ -172,13 +184,13 @@ function cmdRoadmapAnalyze(cwd, phaseFilter) {
       : content.length;
     const section = content.slice(sectionStart, sectionEnd);
 
-    const goalMatch = section.match(/\*\*Goal:\*\*\s*([^\n]+)/i);
+    const goalMatch = section.match(GOAL_LINE);
     const goal = goalMatch ? goalMatch[1].trim() : null;
 
-    const dependsMatch = section.match(/\*\*Depends on:\*\*\s*([^\n]+)/i);
+    const dependsMatch = section.match(DEPENDS_ON_LINE);
     const depends_on = dependsMatch ? dependsMatch[1].trim() : null;
 
-    const sourceTodosMatch = section.match(/\*\*Source Todos\*\*:\s*([^\n]+)/i);
+    const sourceTodosMatch = section.match(SOURCE_TODOS_LINE);
     const source_todos = sourceTodosMatch ? sourceTodosMatch[1].trim() : null;
 
     // Check completion on disk
@@ -411,7 +423,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
 
   // Update plan count in phase detail section
   const planCountPattern = new RegExp(
-    `(#{2,4}\\s*Phase\\s+${phaseEscaped}[\\s\\S]*?\\*\\*Plans:\\*\\*\\s*)[^\\n]+`,
+    phaseFieldPattern(phaseEscaped, 'Plans'),
     'i',
   );
   const planCountText = isComplete

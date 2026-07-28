@@ -1213,6 +1213,92 @@ describe('phase complete command', () => {
     cleanup(tmpDir);
   });
 
+  test('rewrites the Plans line when the colon sits outside the bold markers', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 1: Foundation
+- [ ] Phase 2: API
+
+### Phase 1: Foundation
+**Goal**: Setup
+**Plans**: TBD
+
+### Phase 2: API
+**Goal**: Build API
+**Plans**: TBD
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 01\n**Current Phase Name:** Foundation\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 1\n`,
+    );
+
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /### Phase 1: Foundation\n\*\*Goal\*\*: Setup\n\*\*Plans\*\*: 1\/1 plans complete/,
+      "Phase 1's Plans line should be rewritten",
+    );
+    assert.match(
+      roadmap,
+      /### Phase 2: API\n\*\*Goal\*\*: Build API\n\*\*Plans\*\*: TBD/,
+      "Phase 2's Plans line must be untouched",
+    );
+  });
+
+  test('leaves a later phase alone when this phase has no Plans line', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] Phase 1: Foundation
+- [ ] Phase 2: API
+
+### Phase 1: Foundation
+**Goal**: Setup
+
+### Phase 2: API
+**Goal**: Build API
+**Plans**: TBD
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 01\n**Current Phase Name:** Foundation\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 1\n`,
+    );
+
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD$/m,
+      "Phase 2's Plans line must not absorb Phase 1's counts",
+    );
+  });
+
   test('marks phase complete and transitions to next', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
