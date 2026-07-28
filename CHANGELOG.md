@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The profile tables in `references/claude-model-profiles.md` are now checked against `MODEL_PROFILES` and `EFFORT_PROFILES` by a lint in the test suite. The reference doc is what agents and users read, the constants in `bin/lib/model-profiles.cjs` are what the engine resolves, and they were two hand-maintained copies of one mapping with nothing to catch a divergence — a doc that promised `opus` while the engine spawned `sonnet` would have read as correct on both sides. The lint parses the first pipe table under each definitions heading and compares agent list, order, and all three profile columns cell by cell, reporting the doc line number and both values on a mismatch. Its parser hard-fails on a renamed or reordered header row rather than comparing columns that no longer line up, and synthetic-input self-tests cover that case plus a drifted row, so the lint cannot pass vacuously if the doc's shape changes.
+
 ### Changed
 
 - The `quality` model profile now tops out at `xhigh` rather than `max`. The four critical decision-makers — `gsd-planner`, `gsd-roadmapper`, `gsd-debugger` and `gsd-verifier` — move from `effort: max` to `effort: xhigh`; every other agent keeps `high`, and the `balanced` and `budget` profiles are untouched. `max` remains a valid tier and is still reachable per agent through `effort_overrides`, so nothing is lost for a workspace that wants it on a specific agent — it is simply no longer what a profile hands out by default. Existing installs pick the new value up the next time the effort sync runs (an install, `/gsd:set-profile`, or any `gsd config set effort_overrides.*`), which rewrites the managed `effort:` frontmatter in `.claude/agents/*.md`; a Claude Code restart applies it. The reference table in `references/claude-model-profiles.md` was updated alongside `EFFORT_PROFILES`, and the new sync lint above now holds the two together.
