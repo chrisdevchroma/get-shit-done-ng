@@ -31,7 +31,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const { scanForInjection } = require('../gsd-ng/bin/lib/security.cjs');
+const {
+  scanForInjection,
+  ENTROPY_PARAMS,
+  shannonEntropy,
+  stripFencedCodeBlocks,
+} = require('../gsd-ng/bin/lib/security.cjs');
 
 // Repository root, resolved from this file. scripts/ sits directly beneath it,
 // so one level up is the root and nothing here can reach outside the package.
@@ -190,6 +195,74 @@ function entropySegments(result) {
 }
 
 /**
+ * Peak entropy over every window alignment, not only the STEP-aligned windows
+ * the detector samples, so the value cannot move when surrounding bytes shift.
+ *
+ * Content shorter than one window is scored whole, matching the detector.
+ * Partial tail windows of longer content are excluded: their length varies with
+ * total content length, which is the same instability. That is a one-sided gap
+ * against the detector, recorded under `_entropy_metric` in fp-budget.json.
+ *
+ * Shares the detector's window constants and its short-content scoring; the
+ * long-content path computes entropy inline to keep the walk O(1) per step.
+ *
+ * @param {string} content
+ * @returns {{max_H: number, start: number, end: number}|null}
+ */
+function peakEntropyAnyAlignment(content) {
+  const { WINDOW, MIN_SEGMENT } = ENTROPY_PARAMS;
+  const scannable = stripFencedCodeBlocks(content);
+  if (scannable.length < MIN_SEGMENT) return null;
+
+  if (scannable.length < WINDOW) {
+    return {
+      max_H: shannonEntropy(scannable),
+      start: 0,
+      end: scannable.length,
+    };
+  }
+
+  // H = log2(N) - (1/N) * sum(c * log2 c) for a fixed window size N, so the sum
+  // is all that has to be carried between positions — O(1) per step.
+  const term = (c) => (c > 0 ? c * Math.log2(c) : 0);
+  const logN = Math.log2(WINDOW);
+  const counts = new Map();
+  let running = 0;
+  const bump = (ch, delta) => {
+    const before = counts.get(ch) || 0;
+    const after = before + delta;
+    running -= term(before);
+    running += term(after);
+    if (after === 0) counts.delete(ch);
+    else counts.set(ch, after);
+  };
+
+  // Rescore a candidate from the exact integer counts, in sorted order: the
+  // running sum carries step-count-dependent rounding, which is the same
+  // byte-offset sensitivity this function exists to remove.
+  const exactH = () =>
+    logN -
+    [...counts.values()].sort((a, b) => a - b).reduce((s, c) => s + term(c), 0) /
+      WINDOW;
+
+  for (let i = 0; i < WINDOW; i++) bump(scannable[i], 1);
+
+  let best = { max_H: exactH(), start: 0, end: WINDOW };
+
+  for (let i = WINDOW; i < scannable.length; i++) {
+    bump(scannable[i - WINDOW], -1);
+    bump(scannable[i], 1);
+    if (logN - running / WINDOW > best.max_H - 1e-9) {
+      const H = exactH();
+      if (H > best.max_H) {
+        best = { max_H: H, start: i - WINDOW + 1, end: i + 1 };
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Measure one corpus.
  *
  * Every item is scanned twice: once with entropy off, isolating pattern hits,
@@ -216,18 +289,13 @@ function measureCorpus(items) {
       }
     }
 
-    const withEntropy = scanForInjection(item.content, {
-      external: true,
-      entropy: true,
-    });
-    const segments = entropySegments(withEntropy);
-    if (segments.length) {
-      const itemMax = Math.max(...segments.map((s) => s.H));
-      maxH = Math.max(maxH, itemMax);
+    const peak = peakEntropyAnyAlignment(item.content);
+    if (peak && peak.max_H > ENTROPY_PARAMS.THRESHOLD) {
+      maxH = Math.max(maxH, peak.max_H);
       entropyItems.push({
         ref: item.ref,
-        max_H: itemMax,
-        segments: segments.map((s) => `${s.start}-${s.end}`),
+        max_H: peak.max_H,
+        segments: [`${peak.start}-${peak.end}`],
       });
     }
   }
@@ -333,6 +401,7 @@ module.exports = {
   loadGsdProse,
   patternRuleIds,
   entropySegments,
+  peakEntropyAnyAlignment,
   measureCorpus,
   measureRepoWalk,
   measureGsdProse,

@@ -768,6 +768,59 @@ describe('roadmap get-phase success criteria', () => {
     );
   });
 
+  test('parses fields when the colon sits outside the bold markers', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 1: Test
+**Goal**: Deliver the thing
+**Depends on**: Phase 0
+**Source Todos**: todo-a.md
+**Success Criteria** (what must be TRUE):
+  1. Thing works
+**Plans**: TBD
+`,
+    );
+
+    const result = runGsdTools('roadmap get-phase 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.goal, 'Deliver the thing', 'goal parses');
+    assert.strictEqual(output.depends_on, 'Phase 0', 'depends_on parses');
+    assert.strictEqual(output.source_todos, 'todo-a.md', 'source_todos parses');
+    assert.deepStrictEqual(
+      output.success_criteria,
+      ['Thing works'],
+      'success_criteria parses',
+    );
+  });
+
+  test('parses success criteria when the colon sits inside the bold markers', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 1: Test
+**Goal:** Legacy goal
+**Success Criteria:**
+  1. Legacy works
+`,
+    );
+
+    const result = runGsdTools('roadmap get-phase 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.goal, 'Legacy goal', 'goal parses');
+    assert.deepStrictEqual(
+      output.success_criteria,
+      ['Legacy works'],
+      'success_criteria parses',
+    );
+  });
+
   test('returns empty array when no success criteria present', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
@@ -989,6 +1042,152 @@ describe('roadmap update-plan-progress command', () => {
     assert.ok(
       output.reason.includes('ROADMAP.md not found'),
       'reason should mention missing ROADMAP.md',
+    );
+  });
+
+  test('updates the Plans line when the colon sits outside the bold markers', () => {
+    const roadmapContent = `# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+`;
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+
+    const p50 = path.join(tmpDir, '.planning', 'phases', '50-build');
+    fs.mkdirSync(p50, { recursive: true });
+    fs.writeFileSync(path.join(p50, '50-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p50, '50-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('roadmap update-plan-progress 50', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: 1\/1 plans complete$/m,
+      'Plans line should be rewritten and keep its colon placement',
+    );
+  });
+
+  test('leaves a later phase alone when this phase has no Plans line', () => {
+    const roadmapContent = `# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+
+### Phase 51: Next
+**Goal**: Next stuff
+**Plans**: TBD
+`;
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+
+    const p50 = path.join(tmpDir, '.planning', 'phases', '50-build');
+    fs.mkdirSync(p50, { recursive: true });
+    fs.writeFileSync(path.join(p50, '50-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p50, '50-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('roadmap update-plan-progress 50', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD$/m,
+      "Phase 51's Plans line must not absorb Phase 50's counts",
+    );
+  });
+
+  test('does not match a longer phase number that appears first', () => {
+    const roadmapContent = `# Roadmap
+
+### Phase 50: Fifty
+**Goal**: Fifty stuff
+**Plans**: TBD-FIFTY
+
+### Phase 5: Five
+**Goal**: Five stuff
+**Plans**: TBD-FIVE
+`;
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('roadmap update-plan-progress 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD-FIFTY$/m,
+      "Phase 50's Plans line must not absorb Phase 5's counts",
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: 1\/1 plans complete$/m,
+      "Phase 5's Plans line should be rewritten",
+    );
+  });
+
+  test('does not match a decimal child phase that appears first', () => {
+    const roadmapContent = `# Roadmap
+
+### Phase 5.10: Child
+**Goal**: Child stuff
+**Plans**: TBD-CHILD
+
+### Phase 5.1: Target
+**Goal**: Target stuff
+**Plans**: TBD-TARGET
+`;
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+
+    const p = path.join(tmpDir, '.planning', 'phases', '05.1-target');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, '05.1-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p, '05.1-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('roadmap update-plan-progress 5.1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD-CHILD$/m,
+      "Phase 5.10's Plans line must not absorb Phase 5.1's counts",
     );
   });
 

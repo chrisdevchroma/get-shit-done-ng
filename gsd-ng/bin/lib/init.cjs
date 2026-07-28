@@ -11,6 +11,7 @@ const {
   resolveModelInternal,
   resolveEffortInternal,
   findPhaseInternal,
+  boldLabel,
   getRoadmapPhaseInternal,
   pathExistsInternal,
   generateSlugInternal,
@@ -69,7 +70,10 @@ function cmdInitExecutePhase(cwd, phase) {
   }
 
   const reqMatch = roadmapPhase?.section?.match(
-    /^\*\*Requirements\*\*:[^\S\n]*([^\n]*)$/m,
+    new RegExp(
+      '^' + boldLabel('Requirements') + String.raw`[^\S\n]*([^\n]*)$`,
+      'm',
+    ),
   );
   const reqExtracted = reqMatch
     ? reqMatch[1]
@@ -258,7 +262,10 @@ function cmdInitPlanPhase(cwd, phase) {
   }
 
   const reqMatch = roadmapPhase?.section?.match(
-    /^\*\*Requirements\*\*:[^\S\n]*([^\n]*)$/m,
+    new RegExp(
+      '^' + boldLabel('Requirements') + String.raw`[^\S\n]*([^\n]*)$`,
+      'm',
+    ),
   );
   const reqExtracted = reqMatch
     ? reqMatch[1]

@@ -616,17 +616,33 @@ function requireSafePath(filePath, baseDir, label, opts = {}) {
   return result.resolved;
 }
 
-// ─── Entropy helpers (not exported) ──────────────────────────────────────────
+// ─── Entropy helpers ─────────────────────────────────────────────────────────
+
+const ENTROPY_PARAMS = {
+  WINDOW: 256,
+  STEP: 128,
+  MIN_SEGMENT: 64,
+  THRESHOLD: 5.5,
+};
 
 /**
  * Shannon entropy: H = -sum(p_i * log2(p_i)) for each unique character.
- * Returns bits/char for the given string segment.
+ * Returns bits/code-unit for the given string segment.
+ *
+ * Counts code units, matching how callers slice windows. Counting code points
+ * against a code-unit length would leave the probabilities summing to less
+ * than 1, capping an all-astral window at 4.0 bits — under the threshold no
+ * matter how random it is.
+ *
  * @param {string} segment
  * @returns {number}
  */
 function shannonEntropy(segment) {
   const freq = {};
-  for (const ch of segment) freq[ch] = (freq[ch] || 0) + 1;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    freq[ch] = (freq[ch] || 0) + 1;
+  }
   let H = 0;
   for (const count of Object.values(freq)) {
     const p = count / segment.length;
@@ -918,10 +934,7 @@ function scanForInjection(content, opts = {}) {
   const globalEnabled = opts.cwd ? isEntropyGloballyEnabled(opts.cwd) : true;
 
   if (entropyEnabled && globalEnabled) {
-    const WINDOW = 256;
-    const STEP = 128;
-    const MIN_SEGMENT = 64;
-    const THRESHOLD = 5.5;
+    const { WINDOW, STEP, MIN_SEGMENT, THRESHOLD } = ENTROPY_PARAMS;
 
     const scannable = stripFencedCodeBlocks(content);
 
@@ -1329,4 +1342,7 @@ module.exports = {
   diffConfusables, // codepoint diff for homoglyph audit log (exported for test visibility)
   INJECTION_PATTERNS, // backward compat — 11-element array unchanged
   INJECTION_PATTERNS_TIERED, // tiered patterns with confidence classification
+  ENTROPY_PARAMS, // window/threshold constants (exported for test visibility)
+  shannonEntropy, // bits/char of a segment (exported for test visibility)
+  stripFencedCodeBlocks, // offset-preserving fence blanking (exported for test visibility)
 };

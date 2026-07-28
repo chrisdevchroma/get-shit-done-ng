@@ -2,6 +2,7 @@
   "_note": "Measured FP baseline. Counts may only DECREASE. Raising a number requires a documented justification in the same commit.",
   "_generated_by": "scripts/fp-report.cjs, via the harness in tests/security-fp-corpus.test.cjs. Counts are measured, never hand-authored.",
   "_entropy_note": "Entropy findings route to findings[] and never to blocked[], so they are advisory only and cannot hard-block an import or fail CI. Asserted by tests/security-fp-corpus.test.cjs. Threshold is H > 5.5 (security.cjs).",
+  "_entropy_metric": "Entropy counts are measured at stride 1 over every window alignment (scripts/fp-report.cjs, peakEntropyAnyAlignment), NOT from the detector's STEP-aligned windows. The detector still samples every 128 chars in production; only the budget measurement is alignment-invariant, so that inserting bytes anywhere in a file cannot move a borderline entry across the threshold and fail CI on an unrelated edit. Content shorter than one window is scored whole, matching the detector. KNOWN GAP: partial tail windows of longer content are excluded, because their length is a function of total content length — the same instability in another form. The detector does scan that tail, so an FP whose only high-entropy region sits in the final <256 chars is invisible to this budget. A 64-char tail can reach H=6.0 while diluting to nothing inside a 256-char window, so this is a real one-sided blind spot, accepted in exchange for a count that does not move on unrelated edits.",
   "repo_walk": {
     "corpus": {
       "files": 220,
@@ -226,17 +227,34 @@
       }
     },
     "entropy_fp": {
-      "files": 1,
-      "max_H": 5.75,
+      "files": 3,
+      "max_H": 5.78,
       "examples": [
         {
           "ref": "gsd-ng/bin/lib/security.cjs",
-          "max_H": 5.59,
-          "offsets": ["16000-16256", "17408-17664", "19072-19328"]
+          "max_H": 5.78,
+          "offsets": ["13953-14209"]
+        },
+        {
+          "ref": "gsd-ng/bin/lib/commands.cjs",
+          "max_H": 5.57,
+          "offsets": ["19042-19298"]
+        },
+        {
+          "ref": "scripts/capture-clean-path-evidence.cjs",
+          "max_H": 5.52,
+          "offsets": ["1700-1956"]
         }
       ],
-      "raised_from": 5.59,
-      "raised_justification": "Deleting 42 redundant English-prose comments from security.cjs raised that file byte entropy, since what remains is denser in regex literals. Still one file flagged; entropy routes to findings[] and can never block or fail CI."
+      "raised_from": 1,
+      "raised_from_unit": "files (the prior 5.59 raised_from recorded max_H, not a count — see history below)",
+      "raised_justification": "Not a regression — the metric changed. This count was previously measured from the detector's own STEP-aligned windows, which made it a function of byte offset rather than of content: inserting 7 blank bytes at the top of an otherwise untouched commands.cjs moved it across the threshold, because the 256-char window re-aligned over the pre-existing YAML_TIMESTAMP block at line ~711. Any edit above a dense region could flip the count, so the budget is now measured by scripts/fp-report.cjs at stride 1 (peakEntropyAnyAlignment) — the peak over all alignments, which no byte shift can change. On this corpus that reports 3 files where the anchored measurement reported 1. It is NOT a general upper bound on the detector: partial tail windows are excluded (see _entropy_metric), and a file whose only high-entropy region is a short tail is flagged by the detector but not counted here. All three files were verified present at the unmodified HEAD (f022bf6) under the new metric with the same max_H values; commands.cjs reports a shifted window (19029 at HEAD) only because this change edits that file. Entropy routes to findings[] and can never block an import or fail CI.",
+      "prior_entry": {
+        "files": 1,
+        "max_H": 5.75,
+        "raised_from": 5.59,
+        "raised_justification": "Deleting 42 redundant English-prose comments from security.cjs raised that file byte entropy, since what remains is denser in regex literals. Still one file flagged; entropy routes to findings[] and can never block or fail CI."
+      }
     }
   },
   "gsd_prose": {
