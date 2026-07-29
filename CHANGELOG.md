@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.21] - 2026-07-29
+
 ### Fixed
 
 - A document rewrite that matches nothing is now reported instead of counted as success. `replaceInCurrentMilestone` in `bin/lib/core.cjs` returned its input unchanged when the pattern found no target, and all seven callers assigned the result without comparing it, so the file was written, the command returned `updated: true`, and the only evidence was a document whose two halves disagreed — found later, by accident. This is the defect behind the three fixes below and behind the `**Goal**:` bug already fixed: one class wearing four different regexes. The helper now returns `{ content, changed }`, a shape a caller cannot ignore without failing loudly, and `changed` means the pattern found its target rather than that the bytes differ, so a re-run of an already-complete phase stays quiet. `roadmap update-plan-progress` and `phase complete` collect landed and missed targets and report `missed_targets`, and a miss is only raised when a looser probe confirms the target exists — a roadmap that simply has no progress table is not a failure. Fixing the three regexes without this would have left the next pattern free to fail the same way; this is the only change here that catches a bug nobody has written yet.
