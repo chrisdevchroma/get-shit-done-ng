@@ -4656,3 +4656,106 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
     assert.strictEqual(currentPlanInState(), '07-02');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// templates/state.md round trip
+//
+// The template's own output must be reachable by every field writer. It was not:
+// the Current Position block was plain text with compound lines, and the writers
+// matched bold labels only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('templates/state.md round trip', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function templateStateMd() {
+    const template = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'templates', 'state.md'),
+      'utf-8',
+    );
+    const block = template.match(/```markdown\n([\s\S]*?)\n```/);
+    assert.ok(block, 'templates/state.md must contain a markdown file template');
+    return block[1] + '\n';
+  }
+
+  function statePath() {
+    return path.join(tmpDir, '.planning', 'STATE.md');
+  }
+
+  test('phase complete updates every field of a template-shaped STATE.md', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Alpha\n**Goal:** a\n**Plans:** 1 plans\n\n### Phase 2: Beta\n**Goal:** b\n**Plans:** 1 plans\n',
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(
+      out.state_fields_missing,
+      [],
+      `template fields must all be reachable (got: ${r.output})`,
+    );
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(state, /^\*\*Current Phase:\*\* 2$/m, state);
+    assert.match(state, /^\*\*Current Phase Name:\*\* beta$/m, state);
+    assert.match(state, /^\*\*Status:\*\* Ready to plan$/m, state);
+    assert.match(state, /^\*\*Current Plan:\*\* Not started$/m, state);
+    assert.match(state, new RegExp(`^\\*\\*Last Activity:\\*\\* ${today}$`, 'm'), state);
+    assert.match(
+      state,
+      /^\*\*Last Activity Description:\*\* Phase 1 complete, transitioned to Phase 2$/m,
+      state,
+    );
+  });
+
+  test('progress, session and read-back work against the template shape', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const progress = runGsdTools(['state', 'update-progress', '--json'], tmpDir);
+    assert.ok(progress.success, progress.error);
+    assert.strictEqual(JSON.parse(progress.output).updated, true);
+    assert.match(
+      fs.readFileSync(statePath(), 'utf-8'),
+      /^\*\*Progress:\*\* \[█+\] 100%$/m,
+    );
+
+    const session = runGsdTools(
+      ['state', 'record-session', '--stopped-at', 'Finished 01-01', '--json'],
+      tmpDir,
+    );
+    assert.ok(session.success, session.error);
+    const sessionOut = JSON.parse(session.output);
+    assert.ok(
+      sessionOut.updated.includes('Last session'),
+      `session fields must be found (got: ${session.output})`,
+    );
+    assert.ok(sessionOut.updated.includes('Stopped At'), session.output);
+    assert.ok(sessionOut.updated.includes('Resume File'), session.output);
+
+    const snapshot = runGsdTools(['state-snapshot', '--json'], tmpDir);
+    assert.ok(snapshot.success, snapshot.error);
+    const snap = JSON.parse(snapshot.output);
+    assert.strictEqual(snap.session.stopped_at, 'Finished 01-01');
+    assert.strictEqual(snap.session.resume_file, 'None');
+  });
+});

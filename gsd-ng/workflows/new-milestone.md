@@ -64,15 +64,16 @@ Update Active requirements section and "Last updated" footer.
 ```markdown
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: [today] — Milestone v[X.Y] started
+**Current Phase:** Not started
+**Current Plan:** —
+**Status:** Defining requirements
+**Last Activity:** [today]
+**Last Activity Description:** Milestone v[X.Y] started
 ```
 
 If `--target-branch` flag was provided, add to STATE.md Current Position:
 ```
-Target Branch: {branch} (set via --target-branch)
+**Target Branch:** {branch} (set via --target-branch)
 ```
 
 And invoke config-set to persist to config.json (source of truth):
