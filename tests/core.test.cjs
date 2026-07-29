@@ -31,6 +31,9 @@ const {
   extractCurrentMilestone,
   writeFileAtomic,
   reapStaleAtomicTempFiles,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
 } = require('../gsd-ng/bin/lib/core.cjs');
 
 // ─── loadConfig ────────────────────────────────────────────────────────────────
@@ -2270,4 +2273,164 @@ describe('writeFileAtomic', () => {
       `reader observed partial content (byte lengths: ${result.bad.join(', ')})`,
     );
   });
+});
+
+// ─── Phase checkbox readers ───────────────────────────────────────────────────
+//
+// Bare and bold are the two supported roadmap forms. Every reader shares one
+// pattern so a form cannot be supported by the rewriters and invisible to the
+// readers, which is how `phase complete` came to skip an outstanding phase.
+
+describe('parsePhaseCheckboxes', () => {
+  test('reads the bare form', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Phase 1: Alpha\n- [x] Phase 2: Beta\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('reads the bold form', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] **Phase 1: Alpha**\n- [x] **Phase 2: Beta**\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('reads zero-padded, lettered and decimal numbers', () => {
+    const entries = parsePhaseCheckboxes(
+      ['- [ ] Phase 06: Six', '- [ ] Phase 6.1: Six One', '- [ ] **Phase 12A: Twelve A**'].join(
+        '\n',
+      ),
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => e.num),
+      ['06', '6.1', '12A'],
+    );
+  });
+
+  test('drops the completed suffix from the name', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [x] Phase 3: Gamma (completed 2026-07-30)\n',
+    );
+    assert.deepStrictEqual(entries.map((e) => e.name), ['Gamma']);
+  });
+
+  test('ignores a mid-line phase mention', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Ship the thing that Phase 4: needed\n',
+    );
+    assert.deepStrictEqual(entries, []);
+  });
+
+  test('reports a numbered checkbox with no title as nameless', () => {
+    const entries = parsePhaseCheckboxes('- [ ] Phase 9\n');
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name })),
+      [{ num: '9', name: null }],
+    );
+  });
+});
+
+describe('phaseCheckboxLinePattern', () => {
+  test('narrowed to a phase, tolerates padding and rejects a longer number', () => {
+    const re = new RegExp(phaseCheckboxLinePattern(1), 'im');
+    assert.ok(re.test('- [ ] Phase 01: Alpha'), 'padded form must match');
+    assert.ok(re.test('- [ ] **Phase 1: Alpha**'), 'bold form must match');
+    assert.strictEqual(
+      re.test('- [ ] Phase 12: Twelve'),
+      false,
+      'phase 1 must not match phase 12',
+    );
+    assert.strictEqual(
+      re.test('- [ ] Phase 1.1: One One'),
+      false,
+      'phase 1 must not match its own decimal without withDecimals',
+    );
+  });
+
+  test('withDecimals also matches the phase decimals', () => {
+    const re = new RegExp(phaseCheckboxLinePattern(36, { withDecimals: true }), 'im');
+    assert.ok(re.test('- [ ] **Phase 36: Base**'), 'the parent must match');
+    assert.ok(re.test('- [ ] Phase 36.2: Second'), 'a decimal must match');
+    assert.strictEqual(
+      re.test('- [ ] Phase 360: Far'),
+      false,
+      'a longer number must not match',
+    );
+  });
+});
+
+describe('phaseCheckboxName', () => {
+  test('strips bold markers, suffixes and whitespace', () => {
+    assert.strictEqual(phaseCheckboxName('Alpha**'), 'Alpha');
+    assert.strictEqual(phaseCheckboxName('  Beta  '), 'Beta');
+    assert.strictEqual(
+      phaseCheckboxName('Gamma (completed 2026-07-30)'),
+      'Gamma',
+    );
+    assert.strictEqual(phaseCheckboxName('Delta (INSERTED)'), 'Delta');
+  });
+
+  test('stops at the closing bold markers', () => {
+    assert.strictEqual(
+      phaseCheckboxName('Foundation** - Set up project'),
+      'Foundation',
+    );
+    assert.strictEqual(phaseCheckboxName('** Alpha'), 'Alpha');
+  });
+
+  test('keeps a trailing parenthetical that is part of the name', () => {
+    assert.strictEqual(phaseCheckboxName('Auth (JWT)'), 'Auth (JWT)');
+  });
+
+  test('returns null for an empty name', () => {
+    assert.strictEqual(phaseCheckboxName('**'), null);
+  });
+});
+
+describe('getMilestonePhaseFilter checkbox forms', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-core-test-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  for (const form of [
+    { label: 'bare', line: '- [ ] Phase 7: Seven' },
+    { label: 'bold', line: '- [ ] **Phase 7: Seven**' },
+  ]) {
+    test(`accepts a checkbox-only phase directory (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '## Roadmap v0.1: Current', '', form.line, '', '### Phase 8: Eight', ''].join(
+          '\n',
+        ),
+      );
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(
+        filter('07-seven'),
+        true,
+        `${form.label} form: the checkbox declares phase 7 in this milestone`,
+      );
+      assert.strictEqual(filter('08-eight'), true, 'the header declares phase 8');
+      assert.strictEqual(filter('09-nine'), false, 'phase 9 is not declared');
+    });
+  }
 });

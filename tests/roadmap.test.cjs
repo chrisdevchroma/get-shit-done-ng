@@ -2228,3 +2228,78 @@ describe('roadmap.cjs residuals (60-11)', () => {
     assert.match(r.stderr, /phase number required/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The roadmap readers accept both supported checkbox forms, bare and bold.
+// Pinned together so the two cannot diverge again.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('roadmap checkbox form parity', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FORMS = [
+    { label: 'bare', line: (n, name) => `- [ ] Phase ${n}: ${name}` },
+    { label: 'bold', line: (n, name) => `- [ ] **Phase ${n}: ${name}**` },
+  ];
+
+  for (const form of FORMS) {
+    test(`get-phase reports a checkbox-only phase as malformed (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap v1.0', '', '## Phases', '', form.line(1, 'Foundation'), ''].join(
+          '\n',
+        ),
+      );
+
+      const result = runGsdTools('roadmap get-phase 1 --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      assert.strictEqual(
+        output.error,
+        'malformed_roadmap',
+        `${form.label} form: the checkbox names the phase, so the missing detail ` +
+          `section is what should be reported`,
+      );
+      assert.strictEqual(
+        output.phase_name,
+        'Foundation',
+        `${form.label} form: the name comes off the checkbox line`,
+      );
+    });
+
+    test(`analyze lists a checkbox-only phase as missing details (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          form.line(1, 'Foundation'),
+          form.line(2, 'API'),
+          '',
+          '### Phase 2: API',
+          '**Goal:** Build REST API',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runGsdTools('roadmap analyze --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      assert.deepStrictEqual(
+        output.missing_phase_details,
+        ['1'],
+        `${form.label} form: phase 1 has a checkbox and no detail section`,
+      );
+    });
+  }
+});

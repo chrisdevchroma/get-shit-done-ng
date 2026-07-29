@@ -543,6 +543,53 @@ function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
   return String.raw`(-\s*\[)(${boxState})(\]\s*(?:\*\*)?Phase\s+${phaseNumPattern(phaseNum)}[:\s][^\n]*)`;
 }
 
+// One whole checkbox line, for the readers rather than the rewriters: box state
+// in group 1, phase number in group 2, everything after the colon in group 3.
+// `phaseNum` narrows to that phase and its decimals; omitted, any phase matches.
+// The bare-or-bold prefix is phaseCheckboxPattern's — a reader that takes only
+// the bold form reports a bare-form roadmap as having no phases at all, which
+// is how `phase complete` came to call a milestone finished with a phase left.
+function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
+  const num =
+    phaseNum == null
+      ? String.raw`\d+[A-Z]?(?:\.\d+)*`
+      : phaseNumPattern(phaseNum) +
+        String.raw`[A-Z]?` +
+        (opts.withDecimals ? String.raw`(?:\.\d+)*` : '');
+  return String.raw`^[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
+}
+
+// The name as written after the colon, minus the bold markers and the
+// `(completed DATE)` suffix `phase complete` appends. Null when nothing is left:
+// a checkbox may carry only a number.
+function phaseCheckboxName(rest) {
+  // A bold entry closes its markers at the end of the name; anything after them
+  // is a trailing description, not part of it.
+  const raw = String(rest).replace(/^\s*\*\*\s*/, '');
+  const bolded = raw.match(/^([^*\n]*?)\s*\*\*/);
+  const name = (bolded ? bolded[1] : raw)
+    .replace(/\*\*/g, '')
+    .replace(/\s*\((?:completed|inserted)\b[^)]*\)\s*$/i, '')
+    .trim();
+  return name || null;
+}
+
+// Every phase checkbox in `content`, in document order.
+function parsePhaseCheckboxes(content) {
+  const pattern = new RegExp(phaseCheckboxLinePattern(), 'gim');
+  const entries = [];
+  let m;
+  while ((m = pattern.exec(content)) !== null) {
+    entries.push({
+      index: m.index,
+      checked: m[1].toLowerCase() === 'x',
+      num: m[2],
+      name: phaseCheckboxName(m[3]),
+    });
+  }
+  return entries;
+}
+
 function normalizePhaseName(phase) {
   const match = String(phase).match(/^(\d+)([A-Z])?((?:\.\d+)*)/i);
   if (!match) return phase;
@@ -784,6 +831,16 @@ function currentMilestoneSlice(content) {
 function hasPhaseTableRow(content, phaseNum) {
   return new RegExp(
     String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
+    'im',
+  ).test(currentMilestoneSlice(content));
+}
+
+// A header naming the phase, without requiring the colon the section rewrites
+// key on: a header that separates its name with a dash instead is a target they
+// cannot reach.
+function hasPhaseHeader(content, phaseNum) {
+  return new RegExp(
+    String.raw`^#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])`,
     'im',
   ).test(currentMilestoneSlice(content));
 }
@@ -1034,15 +1091,12 @@ function getMilestonePhaseFilter(cwd) {
     while ((m = phasePattern.exec(roadmap)) !== null) {
       milestonePhaseNums.add(m[1]);
     }
-    // Also recognize bullet-only entries: `- [ ] **Phase N: Title**` (no Details header yet).
-    // These exist for phases that are declared in the roadmap but not yet planned
-    // via /gsd:plan-phase. The `getMilestonePhaseFilter` only needs the phase number,
-    // so a simple Set union with the header results is sufficient.
-    const bulletPattern =
-      /^[-*]\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\b/gim;
-    let bm;
-    while ((bm = bulletPattern.exec(roadmap)) !== null) {
-      milestonePhaseNums.add(bm[1]);
+    // Also recognize bullet-only entries: `- [ ] Phase N: Title` (no Details
+    // header yet). These exist for phases that are declared in the roadmap but
+    // not yet planned via /gsd:plan-phase. The `getMilestonePhaseFilter` only
+    // needs the phase number, so a Set union with the header results suffices.
+    for (const entry of parsePhaseCheckboxes(roadmap)) {
+      milestonePhaseNums.add(entry.num);
     }
   } catch {}
 
@@ -1171,6 +1225,9 @@ module.exports = {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
   normalizePhaseName,
   comparePhaseNum,
   searchPhaseInDir,
@@ -1186,7 +1243,9 @@ module.exports = {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  currentMilestoneOffset,
   hasPhaseTableRow,
+  hasPhaseHeader,
   hasPhasePlansLine,
   isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,

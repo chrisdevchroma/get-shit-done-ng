@@ -11,6 +11,8 @@ const {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  parsePhaseCheckboxes,
   comparePhaseNum,
   findPhaseInternal,
   getArchivedPhaseDirs,
@@ -18,7 +20,9 @@ const {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  currentMilestoneOffset,
   hasPhaseTableRow,
+  hasPhaseHeader,
   hasPhasePlansLine,
   isPhaseCheckboxSatisfied,
   readVerificationStatus,
@@ -955,6 +959,18 @@ function detectFileOverlaps(plans) {
   return overlaps;
 }
 
+// Index of the first line belonging to the current milestone. Line-based
+// rewrites start here so they cannot reach into an archived section.
+function currentMilestoneStartLine(content) {
+  const offset = currentMilestoneOffset(content);
+  if (offset === 0) return 0;
+  let line = 0;
+  for (let i = 0; i < offset; i++) {
+    if (content[i] === '\n') line++;
+  }
+  return line + 1;
+}
+
 /**
  * Insert a `- [ ] **Phase N: Description**` checkbox line into the phases list
  * section of ROADMAP.md content.
@@ -969,24 +985,22 @@ function detectFileOverlaps(plans) {
 function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   const checkboxLine = `- [ ] **Phase ${phaseNum}: ${description}**`;
   const lines = rawContent.split('\n');
+  // The list being appended to is the current milestone's. Scanning from the top
+  // of the document put the new phase inside a shipped <details> section
+  // whenever that section held the last checkbox in the file.
+  const first = currentMilestoneStartLine(rawContent);
 
   if (afterPhase != null) {
-    // For insert: find the parent phase's checkbox line (or last decimal of parent)
-    const escapedParent = String(afterPhase).replace(/\./g, '\\.');
+    // For insert: the parent phase's checkbox line, or the last decimal of that
+    // parent (e.g. 36.1, 36.2) — one pattern covers both.
     const parentPattern = new RegExp(
-      `^- \\[[ x]\\] \\*\\*Phase\\s+${escapedParent}[.:]`,
-    );
-    const decimalPattern = new RegExp(
-      `^- \\[[ x]\\] \\*\\*Phase\\s+${escapedParent}\\.\\d+[.:]`,
+      phaseCheckboxLinePattern(afterPhase, { withDecimals: true }),
+      'i',
     );
     let insertAfterIdx = -1;
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = first; i < lines.length; i++) {
       if (parentPattern.test(lines[i])) {
-        insertAfterIdx = i;
-      }
-      // Also match existing decimal phases of this parent (e.g. 36.1, 36.2)
-      if (decimalPattern.test(lines[i])) {
         insertAfterIdx = i;
       }
     }
@@ -998,16 +1012,31 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   }
 
   // For add (or insert fallback): append after last checkbox line in the phases list
+  const anyCheckbox = new RegExp(phaseCheckboxLinePattern(), 'i');
   let lastCheckboxIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^- \[[ x]\] \*\*Phase\s+\d/.test(lines[i])) {
+  for (let i = first; i < lines.length; i++) {
+    if (anyCheckbox.test(lines[i])) {
       lastCheckboxIdx = i;
     }
   }
 
   if (lastCheckboxIdx >= 0) {
     lines.splice(lastCheckboxIdx + 1, 0, checkboxLine);
+    return lines.join('\n');
   }
+
+  // This milestone has no phase list yet. The list belongs above the detail
+  // sections; returning the content untouched instead left `phase add`
+  // reporting a phase that the roadmap never listed.
+  const headerPattern = /^#{2,4}\s*Phase\s+\d/i;
+  for (let i = first; i < lines.length; i++) {
+    if (headerPattern.test(lines[i])) {
+      lines.splice(i, 0, checkboxLine, '');
+      return lines.join('\n');
+    }
+  }
+
+  lines.push(checkboxLine);
   return lines.join('\n');
 }
 
@@ -1177,6 +1206,22 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
   };
 
   output(result, decimalPhase);
+}
+
+// True when a milestone slice still names an integer phase above `removedInt`,
+// by header or by checkbox. That is what the renumbering exists to rewrite, so a
+// renumbering that changed nothing while one is present has missed its target.
+function namesPhaseAbove(slice, removedInt) {
+  const headerPattern = /^#{2,4}\s*Phase\s+(\d+)/gim;
+  const numbers = [];
+  let m;
+  while ((m = headerPattern.exec(slice)) !== null) {
+    numbers.push(parseInt(m[1], 10));
+  }
+  for (const entry of parsePhaseCheckboxes(slice)) {
+    numbers.push(parseInt(entry.num, 10));
+  }
+  return numbers.some((n) => Number.isFinite(n) && n > removedInt);
 }
 
 function cmdPhaseRemove(cwd, targetPhase, options) {
@@ -1355,8 +1400,14 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     } catch {}
   }
 
-  // Update ROADMAP.md
+  // Update ROADMAP.md. Every rewrite here is scoped to the current milestone and
+  // checked for landing: unscoped, the removals deleted a same-numbered phase
+  // out of an archived milestone section, and unchecked they reported success
+  // having matched nothing.
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+  const roadmapBefore = roadmapContent;
+  const roadmapLanded = [];
+  const roadmapMissed = [];
 
   // Remove the target phase section
   const targetEscaped = phaseNumPattern(targetPhase);
@@ -1364,25 +1415,51 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
     'i',
   );
-  roadmapContent = roadmapContent.replace(sectionPattern, '');
+  const section = replaceInCurrentMilestone(roadmapContent, sectionPattern, '');
+  roadmapContent = section.content;
+  if (section.changed) roadmapLanded.push('phase-section');
+  else if (hasPhaseHeader(roadmapBefore, targetPhase))
+    roadmapMissed.push('phase-section');
 
   // Remove from phase list (checkbox)
   const checkboxPattern = new RegExp(
     String.raw`\n?` + phaseCheckboxPattern(targetPhase),
     'gi',
   );
-  roadmapContent = roadmapContent.replace(checkboxPattern, '');
+  const checkbox = replaceInCurrentMilestone(
+    roadmapContent,
+    checkboxPattern,
+    '',
+  );
+  roadmapContent = checkbox.content;
+  if (checkbox.changed) roadmapLanded.push('phase-checkbox');
+  else if (!isPhaseCheckboxSatisfied(roadmapBefore, targetPhase))
+    roadmapMissed.push('phase-checkbox');
 
   // Remove from progress table
   const tableRowPattern = new RegExp(
     `\\n?\\|\\s*${targetEscaped}\\.?\\s[^|]*\\|[^\\n]*`,
     'gi',
   );
-  roadmapContent = roadmapContent.replace(tableRowPattern, '');
+  const tableRow = replaceInCurrentMilestone(
+    roadmapContent,
+    tableRowPattern,
+    '',
+  );
+  roadmapContent = tableRow.content;
+  if (tableRow.changed) roadmapLanded.push('progress-table');
+  else if (hasPhaseTableRow(roadmapBefore, targetPhase))
+    roadmapMissed.push('progress-table');
 
-  // Renumber references in ROADMAP for subsequent phases
+  // Renumber references in ROADMAP for subsequent phases. The loop runs over the
+  // current milestone slice only — run over the whole document it renumbered
+  // archived milestone sections and mangled the dates in their progress tables.
   if (!isDecimal) {
     const removedInt = parseInt(normalized, 10);
+    const offset = currentMilestoneOffset(roadmapContent);
+    const head = roadmapContent.slice(0, offset);
+    const tailBefore = roadmapContent.slice(offset);
+    let tail = tailBefore;
 
     // Collect all integer phases > removedInt
     const maxPhase = 99; // reasonable upper bound
@@ -1394,38 +1471,48 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const newPad = newStr.padStart(2, '0');
 
       // Phase headings: ## Phase N: or ### Phase N: — renumber old to new
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(#{2,4}\\s*Phase\\s+)${oldStr}(\\s*:)`, 'gi'),
         `$1${newStr}$2`,
       );
 
-      // Checkbox items: - [ ] **Phase N:** — renumber old to new
-      roadmapContent = roadmapContent.replace(
+      // Checkbox items: - [ ] Phase N: — renumber old to new
+      tail = tail.replace(
         new RegExp(`(Phase\\s+)${oldStr}([:\\s])`, 'g'),
         `$1${newStr}$2`,
       );
 
-      // Plan references: 18-01 → 17-01
-      roadmapContent = roadmapContent.replace(
-        new RegExp(`${oldPad}-(\\d{2})`, 'g'),
+      // Plan references: 18-01 → 17-01. A leading digit or hyphen disqualifies
+      // the match, or the renumbering walks into dates: 2020-01-01 became
+      // 2002-01-01, one iteration of the loop at a time. The trailing side stays
+      // open to a hyphen so that 18-01-PLAN.md is still a plan reference.
+      tail = tail.replace(
+        new RegExp(`(?<![\\d-])${oldPad}-(\\d{2})(?!\\d)`, 'g'),
         `${newPad}-$1`,
       );
 
       // Table rows: | 18. → | 17.
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(\\|\\s*)${oldStr}\\.\\s`, 'g'),
         `$1${newStr}. `,
       );
 
       // Depends on references
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(Depends on:\\*\\*\\s*Phase\\s+)${oldStr}\\b`, 'gi'),
         `$1${newStr}`,
       );
     }
+
+    roadmapContent = head + tail;
+    if (tail !== tailBefore) roadmapLanded.push('renumber');
+    else if (namesPhaseAbove(tailBefore, removedInt))
+      roadmapMissed.push('renumber');
   }
 
-  writeFileAtomic(roadmapPath, roadmapContent);
+  if (roadmapLanded.length > 0) {
+    writeFileAtomic(roadmapPath, roadmapContent);
+  }
 
   // Update STATE.md phase count
   const statePath = planningPaths(cwd).state;
@@ -1460,7 +1547,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     directory_deleted: targetDir || null,
     renamed_directories: renamedDirs,
     renamed_files: renamedFiles,
-    roadmap_updated: true,
+    roadmap_updated: roadmapLanded.length > 0,
+    roadmap_landed: roadmapLanded,
+    roadmap_missed_targets: roadmapMissed,
     state_updated: fs.existsSync(statePath),
   };
 
@@ -1659,11 +1748,12 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
   // Fallback: if filesystem found no next phase, check ROADMAP.md
   // for phases that are defined but not yet planned (no directory on disk).
-  // Union of two patterns:
+  // Union of two sources:
   //   1. Header pattern: `### Phase N: Title` (post-planning, when Details section exists)
-  //   2. Bullet pattern: `- [ ] **Phase N: Title**` (pre-planning, bullet-only entry)
+  //   2. Checkbox lines (pre-planning, bullet-only entry), read through the
+  //      shared helper so both supported forms — bare and bold — are seen here.
   // Note on normalization: the header pattern returns whatever is written (e.g. '06'),
-  // while the bullet pattern returns whatever is written (e.g. '6'). We do NOT pad here —
+  // while the checkbox returns whatever is written (e.g. '6'). We do NOT pad here —
   // comparePhaseNum handles both forms semantically. When both a header and bullet reference
   // the same phase, the header entry is preferred (via sort-stable dedup).
   if (isLastPhase && fs.existsSync(roadmapPath)) {
@@ -1673,17 +1763,18 @@ function cmdPhaseComplete(cwd, phaseNum) {
       );
       const headerPattern =
         /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:\s*([^\n]+)/gi;
-      // Bullet pattern also captures the name (between `:` and the closing `**`)
-      const bulletPattern =
-        /^[-*]\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*):\s*([^*\n]+?)\*\*/gim;
 
       const candidates = [];
       let pm;
       while ((pm = headerPattern.exec(roadmapForPhases)) !== null) {
         candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
       }
-      while ((pm = bulletPattern.exec(roadmapForPhases)) !== null) {
-        candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
+      for (const entry of parsePhaseCheckboxes(roadmapForPhases)) {
+        candidates.push({
+          index: entry.index,
+          num: entry.num,
+          name: entry.name || '',
+        });
       }
       // Sort by phase number ascending (comparePhaseNum handles padded/unpadded forms).
       // At equal phase number, preserve document order (header tends to appear after bullet
@@ -1707,11 +1798,12 @@ function cmdPhaseComplete(cwd, phaseNum) {
       for (const c of unique) {
         if (comparePhaseNum(c.num, phaseNum) > 0) {
           nextPhaseNum = c.num;
-          nextPhaseName = c.name
-            .replace(/\(INSERTED\)/i, '')
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, '-');
+          nextPhaseName =
+            c.name
+              .replace(/\(INSERTED\)/i, '')
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, '-') || null;
           isLastPhase = false;
           break;
         }
