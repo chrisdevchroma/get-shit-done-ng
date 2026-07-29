@@ -20,7 +20,9 @@ const {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  currentMilestoneOffset,
   hasPhaseTableRow,
+  hasPhaseHeader,
   hasPhasePlansLine,
   isPhaseCheckboxSatisfied,
   readVerificationStatus,
@@ -1176,6 +1178,22 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
   output(result, decimalPhase);
 }
 
+// True when a milestone slice still names an integer phase above `removedInt`,
+// by header or by checkbox. That is what the renumbering exists to rewrite, so a
+// renumbering that changed nothing while one is present has missed its target.
+function namesPhaseAbove(slice, removedInt) {
+  const headerPattern = /^#{2,4}\s*Phase\s+(\d+)/gim;
+  const numbers = [];
+  let m;
+  while ((m = headerPattern.exec(slice)) !== null) {
+    numbers.push(parseInt(m[1], 10));
+  }
+  for (const entry of parsePhaseCheckboxes(slice)) {
+    numbers.push(parseInt(entry.num, 10));
+  }
+  return numbers.some((n) => Number.isFinite(n) && n > removedInt);
+}
+
 function cmdPhaseRemove(cwd, targetPhase, options) {
   if (!targetPhase) {
     error('phase number required for phase remove');
@@ -1352,8 +1370,14 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     } catch {}
   }
 
-  // Update ROADMAP.md
+  // Update ROADMAP.md. Every rewrite here is scoped to the current milestone and
+  // checked for landing: unscoped, the removals deleted a same-numbered phase
+  // out of an archived milestone section, and unchecked they reported success
+  // having matched nothing.
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+  const roadmapBefore = roadmapContent;
+  const roadmapLanded = [];
+  const roadmapMissed = [];
 
   // Remove the target phase section
   const targetEscaped = phaseNumPattern(targetPhase);
@@ -1361,25 +1385,51 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
     'i',
   );
-  roadmapContent = roadmapContent.replace(sectionPattern, '');
+  const section = replaceInCurrentMilestone(roadmapContent, sectionPattern, '');
+  roadmapContent = section.content;
+  if (section.changed) roadmapLanded.push('phase-section');
+  else if (hasPhaseHeader(roadmapBefore, targetPhase))
+    roadmapMissed.push('phase-section');
 
   // Remove from phase list (checkbox)
   const checkboxPattern = new RegExp(
     String.raw`\n?` + phaseCheckboxPattern(targetPhase),
     'gi',
   );
-  roadmapContent = roadmapContent.replace(checkboxPattern, '');
+  const checkbox = replaceInCurrentMilestone(
+    roadmapContent,
+    checkboxPattern,
+    '',
+  );
+  roadmapContent = checkbox.content;
+  if (checkbox.changed) roadmapLanded.push('phase-checkbox');
+  else if (!isPhaseCheckboxSatisfied(roadmapBefore, targetPhase))
+    roadmapMissed.push('phase-checkbox');
 
   // Remove from progress table
   const tableRowPattern = new RegExp(
     `\\n?\\|\\s*${targetEscaped}\\.?\\s[^|]*\\|[^\\n]*`,
     'gi',
   );
-  roadmapContent = roadmapContent.replace(tableRowPattern, '');
+  const tableRow = replaceInCurrentMilestone(
+    roadmapContent,
+    tableRowPattern,
+    '',
+  );
+  roadmapContent = tableRow.content;
+  if (tableRow.changed) roadmapLanded.push('progress-table');
+  else if (hasPhaseTableRow(roadmapBefore, targetPhase))
+    roadmapMissed.push('progress-table');
 
-  // Renumber references in ROADMAP for subsequent phases
+  // Renumber references in ROADMAP for subsequent phases. The loop runs over the
+  // current milestone slice only — run over the whole document it renumbered
+  // archived milestone sections and mangled the dates in their progress tables.
   if (!isDecimal) {
     const removedInt = parseInt(normalized, 10);
+    const offset = currentMilestoneOffset(roadmapContent);
+    const head = roadmapContent.slice(0, offset);
+    const tailBefore = roadmapContent.slice(offset);
+    let tail = tailBefore;
 
     // Collect all integer phases > removedInt
     const maxPhase = 99; // reasonable upper bound
@@ -1391,38 +1441,48 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const newPad = newStr.padStart(2, '0');
 
       // Phase headings: ## Phase N: or ### Phase N: — renumber old to new
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(#{2,4}\\s*Phase\\s+)${oldStr}(\\s*:)`, 'gi'),
         `$1${newStr}$2`,
       );
 
-      // Checkbox items: - [ ] **Phase N:** — renumber old to new
-      roadmapContent = roadmapContent.replace(
+      // Checkbox items: - [ ] Phase N: — renumber old to new
+      tail = tail.replace(
         new RegExp(`(Phase\\s+)${oldStr}([:\\s])`, 'g'),
         `$1${newStr}$2`,
       );
 
-      // Plan references: 18-01 → 17-01
-      roadmapContent = roadmapContent.replace(
-        new RegExp(`${oldPad}-(\\d{2})`, 'g'),
+      // Plan references: 18-01 → 17-01. A leading digit or hyphen disqualifies
+      // the match, or the renumbering walks into dates: 2020-01-01 became
+      // 2002-01-01, one iteration of the loop at a time. The trailing side stays
+      // open to a hyphen so that 18-01-PLAN.md is still a plan reference.
+      tail = tail.replace(
+        new RegExp(`(?<![\\d-])${oldPad}-(\\d{2})(?!\\d)`, 'g'),
         `${newPad}-$1`,
       );
 
       // Table rows: | 18. → | 17.
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(\\|\\s*)${oldStr}\\.\\s`, 'g'),
         `$1${newStr}. `,
       );
 
       // Depends on references
-      roadmapContent = roadmapContent.replace(
+      tail = tail.replace(
         new RegExp(`(Depends on:\\*\\*\\s*Phase\\s+)${oldStr}\\b`, 'gi'),
         `$1${newStr}`,
       );
     }
+
+    roadmapContent = head + tail;
+    if (tail !== tailBefore) roadmapLanded.push('renumber');
+    else if (namesPhaseAbove(tailBefore, removedInt))
+      roadmapMissed.push('renumber');
   }
 
-  writeFileAtomic(roadmapPath, roadmapContent);
+  if (roadmapLanded.length > 0) {
+    writeFileAtomic(roadmapPath, roadmapContent);
+  }
 
   // Update STATE.md phase count
   const statePath = planningPaths(cwd).state;
@@ -1457,7 +1517,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     directory_deleted: targetDir || null,
     renamed_directories: renamedDirs,
     renamed_files: renamedFiles,
-    roadmap_updated: true,
+    roadmap_updated: roadmapLanded.length > 0,
+    roadmap_landed: roadmapLanded,
+    roadmap_missed_targets: roadmapMissed,
     state_updated: fs.existsSync(statePath),
   };
 

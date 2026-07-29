@@ -765,6 +765,16 @@ function hasPhaseTableRow(content, phaseNum) {
   ).test(currentMilestoneSlice(content));
 }
 
+// A header naming the phase, without requiring the colon the section rewrites
+// key on: a header that separates its name with a dash instead is a target they
+// cannot reach.
+function hasPhaseHeader(content, phaseNum) {
+  return new RegExp(
+    String.raw`^#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])`,
+    'im',
+  ).test(currentMilestoneSlice(content));
+}
+
 function hasPhasePlansLine(content, phaseNum) {
   const section = currentMilestoneSlice(content).match(
     new RegExp(
@@ -1162,7 +1172,9 @@ module.exports = {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  currentMilestoneOffset,
   hasPhaseTableRow,
+  hasPhaseHeader,
   hasPhasePlansLine,
   isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,

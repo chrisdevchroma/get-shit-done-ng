@@ -5799,3 +5799,257 @@ describe('checkbox form parity: bare and bold', () => {
 
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase remove rewrites the current milestone only, and reports what its
+// rewrites actually did. Removing a phase used to delete a same-numbered
+// phase's checkbox and table row out of an archived milestone section, mangle
+// the dates in that section's table, and report roadmap_updated regardless.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove milestone scoping', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const ARCHIVED = [
+    '<details>',
+    '<summary>v0.1 — Legacy (Shipped)</summary>',
+    '',
+    '## Roadmap v0.1: Legacy',
+    '',
+    '- [x] **Phase 1: Ancient**',
+    '- [x] **Phase 2: Older**',
+    '- [x] Phase 3: Oldest',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+    '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+    '| 3. Oldest | 2/2 | Complete | 2020-03-01 |',
+    '',
+    '### Phase 2: Older',
+    '**Goal:** old',
+    '',
+    '### Phase 3: Oldest',
+    '**Goal:** older',
+    '',
+    '</details>',
+    '',
+  ];
+
+  const CURRENT = [
+    '## Roadmap v0.2: Current',
+    '',
+    '- [ ] **Phase 1: Alpha**',
+    '- [ ] **Phase 2: Beta**',
+    '- [ ] **Phase 3: Gamma**',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 1. Alpha | 1/1 | Complete | 2026-05-05 |',
+    '| 2. Beta | 0/0 | Pending | - |',
+    '| 3. Gamma | 0/0 | Pending | - |',
+    '',
+    '### Phase 1: Alpha',
+    '**Goal:** a',
+    '',
+    '### Phase 2: Beta',
+    '**Goal:** b',
+    '',
+    '### Phase 3: Gamma',
+    '**Goal:** c',
+    '',
+  ];
+
+  function writeMilestoneRoadmap() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', ''].concat(ARCHIVED, CURRENT).join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  }
+
+  test('leaves the archived milestone section untouched', () => {
+    writeMilestoneRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    const archived = roadmap.slice(0, roadmap.indexOf('</details>'));
+
+    assert.deepStrictEqual(
+      archived.split('\n').filter((l) => /^- \[/.test(l)),
+      [
+        '- [x] **Phase 1: Ancient**',
+        '- [x] **Phase 2: Older**',
+        '- [x] Phase 3: Oldest',
+      ],
+      'no archived checkbox may be removed or renumbered',
+    );
+    assert.deepStrictEqual(
+      archived.split('\n').filter((l) => /^\| \d\./.test(l)),
+      [
+        '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+        '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+        '| 3. Oldest | 2/2 | Complete | 2020-03-01 |',
+      ],
+      'no archived table row may be removed, renumbered or re-dated',
+    );
+    assert.match(
+      archived,
+      /### Phase 2: Older/,
+      'the archived phase section stays',
+    );
+    assert.match(
+      archived,
+      /### Phase 3: Oldest/,
+      'the archived sections keep their numbers',
+    );
+  });
+
+  test('rewrites the current milestone and reports every landing', () => {
+    writeMilestoneRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.roadmap_updated, true);
+    assert.deepStrictEqual(output.roadmap_missed_targets, []);
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+      'renumber',
+    ]);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    const current = roadmap.slice(
+      roadmap.lastIndexOf('</details>') + '</details>'.length,
+    );
+
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^- \[/.test(l)),
+      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 2: Gamma**'],
+      'Beta goes, Gamma becomes 2',
+    );
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^\| \d\./.test(l)),
+      [
+        '| 1. Alpha | 1/1 | Complete | 2026-05-05 |',
+        '| 2. Gamma | 0/0 | Pending | - |',
+      ],
+      'the surviving rows keep their dates',
+    );
+    assert.ok(
+      !/### Phase \d: Beta/.test(current),
+      'the removed section is gone',
+    );
+  });
+
+  test('reports missed targets instead of success when nothing matches', () => {
+    // Every target names phase 2 in a shape the rewrites cannot reach: the
+    // header has no colon, the checkbox does not start with the phase, and the
+    // table row has no space after the number.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Milestone work: Phase 2: Beta',
+        '',
+        '| Phase | Plans |',
+        '|-------|-------|',
+        '| 2|Beta |',
+        '',
+        '### Phase 2 — Beta',
+        '**Goal:** b',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-beta'), {
+      recursive: true,
+    });
+    const before = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(
+      output.roadmap_updated,
+      false,
+      'nothing was rewritten, so nothing may be claimed',
+    );
+    assert.deepStrictEqual(output.roadmap_landed, []);
+    assert.deepStrictEqual(output.roadmap_missed_targets, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+    ]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a roadmap nothing matched in is left alone',
+    );
+  });
+
+  test('reports a renumbering that could not reach a zero-padded phase', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 03: Gamma',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.ok(
+      output.roadmap_landed.includes('phase-checkbox'),
+      'phase 2 checkbox removal lands',
+    );
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      ['renumber'],
+      'the padded Phase 03 is a renumbering target the rewrite cannot reach, ' +
+        'and saying so is the point of the check',
+    );
+  });
+});
