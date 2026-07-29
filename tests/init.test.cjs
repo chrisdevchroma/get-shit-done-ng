@@ -964,6 +964,23 @@ describe('cmdInitProgress', () => {
     );
   });
 
+  test('paused_at detected from a plain STATE.md pause line', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nPaused At: Phase 2, Task 3 — implementing auth\n',
+    );
+
+    const result = runGsdTools('init progress --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(output.paused_at, 'paused_at should be set for the plain form');
+    assert.ok(
+      output.paused_at.includes('Phase 2, Task 3'),
+      'paused_at should contain pause location',
+    );
+  });
+
   test('no paused_at when STATE.md has no pause line', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
