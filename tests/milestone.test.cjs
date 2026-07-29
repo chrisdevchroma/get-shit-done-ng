@@ -7,6 +7,74 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const {
+  formatMilestoneHeading,
+  parseCompletedMilestones,
+} = require('../gsd-ng/bin/lib/milestone-format.cjs');
+
+describe('milestone-format shared module', () => {
+  test('a heading the writer emits parses back to version and name', () => {
+    const heading = formatMilestoneHeading('v0.2', 'FabGL Bring-Up', '2026-07-24');
+    assert.strictEqual(heading, '## v0.2 FabGL Bring-Up (Shipped: 2026-07-24)');
+    assert.deepStrictEqual(parseCompletedMilestones(heading), [
+      { version: 'v0.2', name: 'FabGL Bring-Up' },
+    ]);
+  });
+
+  test('an unnamed milestone parses with a null name', () => {
+    const heading = formatMilestoneHeading('v0.2', 'v0.2', '2026-07-24');
+    assert.deepStrictEqual(parseCompletedMilestones(heading), [
+      { version: 'v0.2', name: null },
+    ]);
+  });
+
+  test('legacy list and table forms parse', () => {
+    assert.deepStrictEqual(
+      parseCompletedMilestones('- [x] **v1.0 — Foundation** — initial release'),
+      [{ version: 'v1.0', name: 'Foundation' }],
+    );
+    assert.deepStrictEqual(
+      parseCompletedMilestones('| v1.0 | Foundation | Complete |'),
+      [{ version: 'v1.0', name: 'Foundation' }],
+    );
+  });
+
+  test('incomplete entries and non-entries are ignored', () => {
+    assert.deepStrictEqual(
+      parseCompletedMilestones(
+        [
+          '# Milestones',
+          '## v2.0 Expansion (In progress)',
+          '- [ ] **v3.0 — Later**',
+          '| v4.0 | Later still | Planned |',
+          '',
+        ].join('\n'),
+      ),
+      [],
+    );
+  });
+
+  test('handles empty and missing content', () => {
+    assert.deepStrictEqual(parseCompletedMilestones(''), []);
+    assert.deepStrictEqual(parseCompletedMilestones(null), []);
+    assert.deepStrictEqual(parseCompletedMilestones(undefined), []);
+  });
+
+  test('a version repeated across formats is reported once, keeping its name', () => {
+    const entries = parseCompletedMilestones(
+      [
+        '## v1.0 (Shipped: 2026-07-24)',
+        '- [x] **v1.0 — Foundation**',
+        '## v1.1 Auth (Shipped: 2026-07-25)',
+        '',
+      ].join('\n'),
+    );
+    assert.deepStrictEqual(entries, [
+      { version: 'v1.0', name: 'Foundation' },
+      { version: 'v1.1', name: 'Auth' },
+    ]);
+  });
+});
 
 describe('milestone complete command', () => {
   let tmpDir;
