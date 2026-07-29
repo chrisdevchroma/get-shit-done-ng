@@ -171,33 +171,9 @@ function cmdStatePatch(cwd, patches) {
   const { state: statePath } = planningPaths(cwd);
   try {
     let content = fs.readFileSync(statePath, 'utf-8');
-    const results = { updated: [], failed: [] };
-
-    for (const [field, value] of Object.entries(patches)) {
-      const fieldEscaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Try **Field:** bold format first, then plain Field: format
-      const boldPattern = new RegExp(
-        `(\\*\\*${fieldEscaped}:\\*\\*\\s*)(.*)`,
-        'i',
-      );
-      const plainPattern = new RegExp(`(^${fieldEscaped}:\\s*)(.*)`, 'im');
-
-      if (boldPattern.test(content)) {
-        content = content.replace(
-          boldPattern,
-          (_match, prefix) => `${prefix}${value}`,
-        );
-        results.updated.push(field);
-      } else if (plainPattern.test(content)) {
-        content = content.replace(
-          plainPattern,
-          (_match, prefix) => `${prefix}${value}`,
-        );
-        results.updated.push(field);
-      } else {
-        results.failed.push(field);
-      }
-    }
+    const applied = stateReplaceFields(content, Object.entries(patches));
+    content = applied.content;
+    const results = { updated: applied.updated, failed: applied.missing };
 
     if (results.updated.length > 0) {
       writeStateMd(statePath, content, cwd);
@@ -282,6 +258,34 @@ function stateReplaceField(content, fieldName, newValue) {
     );
   }
   return null;
+}
+
+/**
+ * Apply several field updates in one pass, reporting which labels were found.
+ *
+ * Every STATE.md writer goes through here so a field cannot be supported in the
+ * bold form and missed in the plain one — the split that left `phase complete`
+ * updating some fields of a template-shaped STATE.md and silently skipping the
+ * rest. `missing` lets callers report a rewrite that did not land instead of
+ * unconditional success.
+ *
+ * Entries with a null or undefined value are skipped, not reported missing.
+ */
+function stateReplaceFields(content, fields) {
+  let result = content;
+  const updated = [];
+  const missing = [];
+  for (const [field, value] of fields) {
+    if (value === undefined || value === null) continue;
+    const next = stateReplaceField(result, field, value);
+    if (next === null) {
+      missing.push(field);
+    } else {
+      result = next;
+      updated.push(field);
+    }
+  }
+  return { content: result, updated, missing };
 }
 
 /**
@@ -537,30 +541,9 @@ function cmdStateUpdateProgress(cwd) {
   const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(barWidth - filled);
   const progressStr = `[${bar}] ${percent}%`;
 
-  // Try **Progress:** bold format first, then plain Progress: format
-  const boldProgressPattern = /(\*\*Progress:\*\*\s*).*/i;
-  const plainProgressPattern = /^(Progress:\s*).*/im;
-  if (boldProgressPattern.test(content)) {
-    content = content.replace(
-      boldProgressPattern,
-      (_match, prefix) => `${prefix}${progressStr}`,
-    );
-    writeStateMd(statePath, content, cwd);
-    output(
-      {
-        updated: true,
-        percent,
-        completed: totalSummaries,
-        total: totalPlans,
-        bar: progressStr,
-      },
-      progressStr,
-    );
-  } else if (plainProgressPattern.test(content)) {
-    content = content.replace(
-      plainProgressPattern,
-      (_match, prefix) => `${prefix}${progressStr}`,
-    );
+  const withProgress = stateReplaceField(content, 'Progress', progressStr);
+  if (withProgress !== null) {
+    content = withProgress;
     writeStateMd(statePath, content, cwd);
     output(
       {
@@ -748,37 +731,14 @@ function cmdStateRecordSession(cwd, options) {
   const now = new Date().toISOString();
   const updated = [];
 
-  // Update Last session / Last Date
-  let result = stateReplaceField(content, 'Last session', now);
-  if (result) {
-    content = result;
-    updated.push('Last session');
-  }
-  result = stateReplaceField(content, 'Last Date', now);
-  if (result) {
-    content = result;
-    updated.push('Last Date');
-  }
-
-  // Update Stopped at
-  if (options.stopped_at) {
-    result = stateReplaceField(content, 'Stopped At', options.stopped_at);
-    if (!result)
-      result = stateReplaceField(content, 'Stopped at', options.stopped_at);
-    if (result) {
-      content = result;
-      updated.push('Stopped At');
-    }
-  }
-
-  // Update Resume file
-  const resumeFile = options.resume_file || 'None';
-  result = stateReplaceField(content, 'Resume File', resumeFile);
-  if (!result) result = stateReplaceField(content, 'Resume file', resumeFile);
-  if (result) {
-    content = result;
-    updated.push('Resume File');
-  }
+  const applied = stateReplaceFields(content, [
+    ['Last session', now],
+    ['Last Date', now],
+    ['Stopped At', options.stopped_at || null],
+    ['Resume File', options.resume_file || 'None'],
+  ]);
+  content = applied.content;
+  updated.push(...applied.updated);
 
   if (updated.length > 0) {
     writeStateMd(statePath, content, cwd);
@@ -873,22 +833,16 @@ function cmdStateSnapshot(cwd, phaseFilter) {
     resume_file: null,
   };
 
-  const sessionMatch = content.match(/##\s*Session\s*\n([\s\S]*?)(?=\n##|$)/i);
+  const sessionMatch = content.match(
+    /##\s*Session(?:\s+Continuity)?\s*\n([\s\S]*?)(?=\n##|$)/i,
+  );
   if (sessionMatch) {
     const sessionSection = sessionMatch[1];
-    const lastDateMatch =
-      sessionSection.match(/\*\*Last Date:\*\*\s*(.+)/i) ||
-      sessionSection.match(/^Last Date:\s*(.+)/im);
-    const stoppedAtMatch =
-      sessionSection.match(/\*\*Stopped At:\*\*\s*(.+)/i) ||
-      sessionSection.match(/^Stopped At:\s*(.+)/im);
-    const resumeFileMatch =
-      sessionSection.match(/\*\*Resume File:\*\*\s*(.+)/i) ||
-      sessionSection.match(/^Resume File:\s*(.+)/im);
-
-    if (lastDateMatch) session.last_date = lastDateMatch[1].trim();
-    if (stoppedAtMatch) session.stopped_at = stoppedAtMatch[1].trim();
-    if (resumeFileMatch) session.resume_file = resumeFileMatch[1].trim();
+    session.last_date =
+      stateExtractField(sessionSection, 'Last Date') ||
+      stateExtractField(sessionSection, 'Last session');
+    session.stopped_at = stateExtractField(sessionSection, 'Stopped At');
+    session.resume_file = stateExtractField(sessionSection, 'Resume File');
   }
 
   const filteredDecisions = phaseFilter
@@ -1347,6 +1301,7 @@ function cmdStateAdjustQuickTable(cwd) {
 module.exports = {
   stateExtractField,
   stateReplaceField,
+  stateReplaceFields,
   stateReplaceFieldWithFallback,
   writeStateMd,
   cmdStateRebuildFrontmatter,
