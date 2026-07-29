@@ -2228,6 +2228,96 @@ describe('letter-suffix phase sorting', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// phase complete — rewrite landing verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete landing verification', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function completePhase1(roadmapContent) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('a conformant roadmap reports no missed targets', () => {
+    const output = completePhase1(`# Roadmap
+
+- [ ] **Phase 1: Foundation** - set up
+
+### Phase 1: Foundation
+**Goal**: Set up
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 1. Foundation | 0/1 | Planned |  |
+`);
+    assert.strictEqual(output.roadmap_updated, true, 'targets landed');
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'every target landed, so nothing should be reported',
+    );
+  });
+
+  test('names the Plans line when the label is not bold', () => {
+    const output = completePhase1(`# Roadmap
+
+- [ ] **Phase 1: Foundation** - set up
+
+### Phase 1: Foundation
+**Goal**: Set up
+Plans: TBD
+`);
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      ['plans-line'],
+      'a Plans line the rewrite cannot reach must be named',
+    );
+  });
+
+  test('does not claim the roadmap was updated when no target matched', () => {
+    const before = `# Roadmap
+
+### Phase 1: Foundation
+**Goal**: Set up
+Plans: TBD
+`;
+    const output = completePhase1(before);
+    assert.strictEqual(
+      output.roadmap_updated,
+      false,
+      'nothing was rewritten, so the command must not report an update',
+    );
+    assert.deepStrictEqual(output.roadmap_missed_targets, ['plans-line']);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a run that changed nothing must not rewrite the file',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // milestone-scoped next-phase in phase complete
 // ─────────────────────────────────────────────────────────────────────────────
 

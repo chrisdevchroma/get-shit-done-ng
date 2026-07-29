@@ -14,6 +14,9 @@ const {
   findPhaseInternal,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  hasPhaseTableRow,
+  hasPhasePlansLine,
+  isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,
   planningPaths,
 } = require('./core.cjs');
@@ -394,6 +397,8 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
 
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
   const phaseEscaped = escapeRegex(phaseNum);
+  const landed = [];
+  const missed = [];
 
   // Progress table row: update Plans/Status/Date columns (handles 4 or 5 column tables)
   const tableRowPattern = new RegExp(
@@ -401,7 +406,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
     'im',
   );
   const dateField = isComplete ? ` ${today} ` : '  ';
-  roadmapContent = replaceInCurrentMilestone(
+  const tableRow = replaceInCurrentMilestone(
     roadmapContent,
     tableRowPattern,
     (fullRow) => {
@@ -420,6 +425,10 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
       return '|' + cells.join('|') + '|';
     },
   );
+  roadmapContent = tableRow.content;
+  if (tableRow.changed) landed.push('progress-table');
+  else if (hasPhaseTableRow(roadmapContent, phaseNum))
+    missed.push('progress-table');
 
   // Update plan count in phase detail section
   const planCountPattern = new RegExp(
@@ -429,11 +438,15 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
   const planCountText = isComplete
     ? `${summaryCount}/${planCount} plans complete`
     : `${summaryCount}/${planCount} plans executed`;
-  roadmapContent = replaceInCurrentMilestone(
+  const plansLine = replaceInCurrentMilestone(
     roadmapContent,
     planCountPattern,
     `$1${planCountText}`,
   );
+  roadmapContent = plansLine.content;
+  if (plansLine.changed) landed.push('plans-line');
+  else if (hasPhasePlansLine(roadmapContent, phaseNum))
+    missed.push('plans-line');
 
   // If complete: check phase-level checkbox
   if (isComplete) {
@@ -441,11 +454,15 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
       `(-\\s*\\[)[ ](\\]\\s*.*Phase\\s+${phaseEscaped}[:\\s][^\\n]*)`,
       'i',
     );
-    roadmapContent = replaceInCurrentMilestone(
+    const checkbox = replaceInCurrentMilestone(
       roadmapContent,
       checkboxPattern,
       `$1x$2 (completed ${today})`,
     );
+    roadmapContent = checkbox.content;
+    if (checkbox.changed) landed.push('phase-checkbox');
+    else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
+      missed.push('phase-checkbox');
   }
 
   // Mark completed plan checkboxes (e.g. "- [ ] 50-01-PLAN.md" or "- [ ] 50-01:")
@@ -459,25 +476,36 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
       `(-\\s*\\[) (\\]\\s*${planEscaped})`,
       'i',
     );
-    roadmapContent = replaceInCurrentMilestone(
+    const planCheckbox = replaceInCurrentMilestone(
       roadmapContent,
       planCheckboxPattern,
       '$1x$2',
     );
+    roadmapContent = planCheckbox.content;
+    if (planCheckbox.changed && !landed.includes('plan-checkboxes'))
+      landed.push('plan-checkboxes');
   }
 
-  fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  if (landed.length > 0) {
+    fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  }
 
   output(
     {
-      updated: true,
+      updated: landed.length > 0,
+      ...(landed.length === 0
+        ? { reason: 'no rewrite target matched in ROADMAP.md' }
+        : {}),
       phase: phaseNum,
       plan_count: planCount,
       summary_count: summaryCount,
       status,
       complete: isComplete,
+      missed_targets: missed,
     },
-    `${summaryCount}/${planCount} ${status}`,
+    missed.length > 0
+      ? `${summaryCount}/${planCount} ${status} (missed: ${missed.join(', ')})`
+      : `${summaryCount}/${planCount} ${status}`,
   );
 }
 

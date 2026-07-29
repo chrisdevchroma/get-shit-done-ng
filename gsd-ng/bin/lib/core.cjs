@@ -409,6 +409,25 @@ function phaseFieldPattern(phaseEscaped, label) {
   );
 }
 
+// A phase number is written zero-padded in directory names and unpadded in
+// ROADMAP.md prose, and either spelling is a valid CLI argument. One fragment
+// matches both, so the same resolved number can drive the directory lookup and
+// the document rewrite.
+function phaseNumPattern(phaseNum) {
+  return (
+    String.raw`0*` + escapeRegex(String(phaseNum).replace(/^0+(?=\d)/, ''))
+  );
+}
+
+// Checkbox item for one phase in the roadmap's phase list. The prefix between
+// the box and the word `Phase` is bare or bold and nothing else: a permissive
+// prefix lets the match start inside another phase's description, which ticks
+// the wrong phase. `boxState` narrows the box itself, e.g. to `[ ]` to tick
+// only an unticked entry.
+function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
+  return String.raw`(-\s*\[)(${boxState})(\]\s*(?:\*\*)?Phase\s+${phaseNumPattern(phaseNum)}[:\s][^\n]*)`;
+}
+
 function normalizePhaseName(phase) {
   const match = String(phase).match(/^(\d+)([A-Z])?((?:\.\d+)*)/i);
   if (!match) return phase;
@@ -616,16 +635,66 @@ function extractCurrentMilestone(content) {
  * Replace a pattern only in the current milestone section of ROADMAP.md
  * (everything after the last </details> close tag). Used for write operations
  * that must not accidentally modify archived milestone checkboxes/tables.
+ *
+ * Returns `{ content, changed }`. `changed` reports whether the pattern found
+ * its target, not whether the bytes differ — a rewrite to the value already
+ * there still landed. Callers must inspect it: a pattern that matches nothing
+ * otherwise writes the file back unaltered and reports success, which is how
+ * every rewrite bug in this file has reached users.
  */
 function replaceInCurrentMilestone(content, pattern, replacement) {
-  const lastDetailsClose = content.lastIndexOf('</details>');
-  if (lastDetailsClose === -1) {
-    return content.replace(pattern, replacement);
-  }
-  const offset = lastDetailsClose + '</details>'.length;
+  const offset = currentMilestoneOffset(content);
   const before = content.slice(0, offset);
   const after = content.slice(offset);
-  return before + after.replace(pattern, replacement);
+  const changed = new RegExp(pattern.source, pattern.flags).test(after);
+  return { content: before + after.replace(pattern, replacement), changed };
+}
+
+function currentMilestoneOffset(content) {
+  const lastDetailsClose = content.lastIndexOf('</details>');
+  return lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
+}
+
+function currentMilestoneSlice(content) {
+  return content.slice(currentMilestoneOffset(content));
+}
+
+// ─── Rewrite target probes ───────────────────────────────────────────────────
+//
+// Deliberately looser than the patterns that do the rewriting, and used only to
+// decide whether a rewrite that matched nothing is worth reporting. A roadmap
+// with no progress table has not missed one; a roadmap whose table row is
+// written in a shape the rewrite cannot reach has.
+
+function hasPhaseTableRow(content, phaseNum) {
+  return new RegExp(
+    String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
+    'im',
+  ).test(currentMilestoneSlice(content));
+}
+
+function hasPhasePlansLine(content, phaseNum) {
+  const section = currentMilestoneSlice(content).match(
+    new RegExp(
+      String.raw`#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])(?:(?!\n#{2,4}\s*Phase\s)[\s\S])*`,
+      'i',
+    ),
+  );
+  return section ? /^\s*\*{0,2}Plans\*{0,2}\s*:/im.test(section[0]) : false;
+}
+
+// True when there is nothing to report: either the phase has no checkbox at
+// all, or it has one in the supported form and a tick that matched nothing
+// only means the box was already ticked. False when some checkbox line names
+// the phase in a shape the rewrite cannot reach.
+function isPhaseCheckboxSatisfied(content, phaseNum) {
+  const slice = currentMilestoneSlice(content);
+  const loose = new RegExp(
+    String.raw`-\s*\[[ x]\][^\n]*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])[:\s]`,
+    'i',
+  );
+  if (!loose.test(slice)) return true;
+  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(slice);
 }
 
 // ─── Roadmap & model utilities ────────────────────────────────────────────────
@@ -976,6 +1045,8 @@ module.exports = {
   escapeRegex,
   boldLabel,
   phaseFieldPattern,
+  phaseNumPattern,
+  phaseCheckboxPattern,
   normalizePhaseName,
   comparePhaseNum,
   searchPhaseInDir,
@@ -990,7 +1061,11 @@ module.exports = {
   getMilestoneInfo,
   getMilestonePhaseFilter,
   extractCurrentMilestone,
+  currentMilestoneSlice,
   replaceInCurrentMilestone,
+  hasPhaseTableRow,
+  hasPhasePlansLine,
+  isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,
   readVerificationStatus,
   toPosixPath,

@@ -1287,6 +1287,151 @@ describe('roadmap update-plan-progress command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// roadmap update-plan-progress — rewrite landing verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('roadmap update-plan-progress landing verification', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function completePhase50(roadmapContent) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+    const p50 = path.join(tmpDir, '.planning', 'phases', '50-build');
+    fs.mkdirSync(p50, { recursive: true });
+    fs.writeFileSync(path.join(p50, '50-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p50, '50-01-SUMMARY.md'), '# Summary');
+    const result = runGsdTools('roadmap update-plan-progress 50 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('a conformant roadmap reports no missed targets', () => {
+    const output = completePhase50(`# Roadmap
+
+- [ ] **Phase 50: Build** - build stuff
+
+### Phase 50: Build
+**Goal**: Build stuff
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+`);
+    assert.strictEqual(output.updated, true, 'should update');
+    assert.deepStrictEqual(
+      output.missed_targets,
+      [],
+      'every target landed, so nothing should be reported',
+    );
+  });
+
+  test('names the Plans line when the label is not bold', () => {
+    const output = completePhase50(`# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+Plans: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+`);
+    assert.deepStrictEqual(
+      output.missed_targets,
+      ['plans-line'],
+      'a Plans line the rewrite cannot reach must be named',
+    );
+  });
+
+  test('does not claim success when no target matched', () => {
+    const before = `# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+Plans: TBD
+`;
+    const output = completePhase50(before);
+    assert.strictEqual(
+      output.updated,
+      false,
+      'nothing was rewritten, so the command must not report an update',
+    );
+    assert.deepStrictEqual(output.missed_targets, ['plans-line']);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a run that changed nothing must not rewrite the file',
+    );
+  });
+
+  test('a phase with no Plans line at all is not reported as missed', () => {
+    const output = completePhase50(`# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+`);
+    assert.strictEqual(output.updated, true, 'the table row still landed');
+    assert.deepStrictEqual(
+      output.missed_targets,
+      [],
+      'an absent Plans line is not a missed target',
+    );
+  });
+
+  test('an already-ticked checkbox is not reported as missed', () => {
+    const output = completePhase50(`# Roadmap
+
+- [x] **Phase 50: Build** - build stuff
+
+### Phase 50: Build
+**Goal**: Build stuff
+**Plans**: TBD
+`);
+    assert.deepStrictEqual(
+      output.missed_targets,
+      [],
+      're-running against a ticked checkbox must stay silent',
+    );
+  });
+
+  test('a roadmap with no progress table is not reported as missed', () => {
+    const output = completePhase50(`# Roadmap
+
+### Phase 50: Build
+**Goal**: Build stuff
+**Plans**: TBD
+`);
+    assert.strictEqual(output.updated, true, 'the Plans line landed');
+    assert.deepStrictEqual(
+      output.missed_targets,
+      [],
+      'an absent progress table is not a missed target',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze --current filtering
 // ─────────────────────────────────────────────────────────────────────────────
 
