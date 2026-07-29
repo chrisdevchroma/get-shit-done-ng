@@ -62,6 +62,24 @@ function tableSectionPattern(namePattern) {
   );
 }
 
+const BLOCKER_HEADINGS = '(?:Blockers|Blockers/Concerns|Concerns)';
+
+const QUICK_TASKS_HEADING = /###[ \t]*Quick Tasks Completed[ \t]*\r?\n/i;
+
+/**
+ * Index of the table header row within the lines following a heading, or -1 when
+ * the section holds no table. Stops at the next heading: an unbounded scan reads
+ * and migrates a table that belongs to a later section.
+ */
+function findTableHeaderIndex(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimStart();
+    if (line.startsWith('#')) return -1;
+    if (line.startsWith('|')) return i;
+  }
+  return -1;
+}
+
 function cmdStateLoad(cwd) {
   const config = loadConfig(cwd);
   const {
@@ -540,8 +558,7 @@ function cmdStateRecordMetric(cwd, options) {
   }
 
   // Find Performance Metrics section and its table
-  const metricsPattern =
-    /(##\s*Performance Metrics[\s\S]*?\n\|[^\n]+\n\|[-|\s]+\n)([\s\S]*?)(?=\n##|\n$|$)/i;
+  const metricsPattern = tableSectionPattern('Performance Metrics');
   const metricsMatch = content.match(metricsPattern);
 
   if (metricsMatch) {
@@ -662,9 +679,11 @@ function cmdStateAddDecision(cwd, options) {
   const entry = `- [Phase ${phase || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
 
   // Find Decisions section (various heading patterns)
-  const sectionPattern =
-    /(###?\s*(?:Decisions|Decisions Made|Accumulated.*Decisions)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(
+    '(?:Decisions|Decisions Made|Accumulated.*Decisions)',
+    '###?',
+  );
+  const match = content.match(pattern);
 
   if (match) {
     let sectionBody = match[2];
@@ -674,7 +693,7 @@ function cmdStateAddDecision(cwd, options) {
       .replace(/No decisions yet\.?\s*\n?/gi, '');
     sectionBody = sectionBody.trimEnd() + '\n' + entry + '\n';
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${sectionBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -717,9 +736,8 @@ function cmdStateAddBlocker(cwd, text) {
   let content = fs.readFileSync(statePath, 'utf-8');
   const entry = `- ${blockerText}`;
 
-  const sectionPattern =
-    /(###?\s*(?:Blockers|Blockers\/Concerns|Concerns)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(BLOCKER_HEADINGS, '###?');
+  const match = content.match(pattern);
 
   if (match) {
     let sectionBody = match[2];
@@ -728,7 +746,7 @@ function cmdStateAddBlocker(cwd, text) {
       .replace(/None yet\.?\s*\n?/gi, '');
     sectionBody = sectionBody.trimEnd() + '\n' + entry + '\n';
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${sectionBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -754,9 +772,8 @@ function cmdStateResolveBlocker(cwd, text) {
 
   let content = fs.readFileSync(statePath, 'utf-8');
 
-  const sectionPattern =
-    /(###?\s*(?:Blockers|Blockers\/Concerns|Concerns)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(BLOCKER_HEADINGS, '###?');
+  const match = content.match(pattern);
 
   if (match) {
     const sectionBody = match[2];
@@ -773,7 +790,7 @@ function cmdStateResolveBlocker(cwd, text) {
     }
 
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${newBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -1252,7 +1269,7 @@ function adjustQuickTable(cwd) {
   }
 
   // Find the ### Quick Tasks Completed section
-  const sectionMatch = content.match(/###\s*Quick Tasks Completed\s*\n/i);
+  const sectionMatch = content.match(QUICK_TASKS_HEADING);
   if (!sectionMatch) {
     return {
       adjusted: false,
@@ -1267,8 +1284,8 @@ function adjustQuickTable(cwd) {
   );
   const lines = afterSection.split('\n');
 
-  // Find the header line (first line starting with |)
-  const headerIdx = lines.findIndex((l) => l.trimStart().startsWith('|'));
+  // Find the header line (first line starting with |, within this section)
+  const headerIdx = findTableHeaderIndex(lines);
   if (headerIdx === -1) {
     // Section exists but has no table
     return {
@@ -1357,6 +1374,10 @@ function cmdStateAdjustQuickTable(cwd) {
 }
 
 module.exports = {
+  QUICK_TASKS_HEADING,
+  findTableHeaderIndex,
+  sectionPattern,
+  tableSectionPattern,
   stateExtractField,
   stateReplaceField,
   stateReplaceFields,

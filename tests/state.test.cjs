@@ -5250,3 +5250,244 @@ describe('state-snapshot section boundaries', () => {
     assert.deepStrictEqual(out.decisions, []);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section boundaries on the write paths
+//
+// Same header-group bug as the read paths, with worse consequences: the writer
+// replaces the swallowed body, so an empty section could delete the section that
+// followed it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state write paths keep to their own section', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function run(args, content) {
+    fs.writeFileSync(statePath, content);
+    const result = runGsdTools(args, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return {
+      output: JSON.parse(result.output),
+      state: fs.readFileSync(statePath, 'utf-8'),
+    };
+  }
+
+  const TAIL = '## Accumulated Context\n\n### Pending Todos\n\nNone yet.\n';
+
+  test('record-metric writes into an empty table, not past it', () => {
+    const { output, state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '1',
+        '--plan',
+        '1',
+        '--duration',
+        '5 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '',
+        TAIL,
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.recorded, true);
+    assert.ok(
+      state.includes(TAIL),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('| Phase 1 P1 |') < state.indexOf('## Accumulated Context'),
+      `the row must land in the metrics table (got: ${state})`,
+    );
+  });
+
+  test('record-metric appends after existing rows', () => {
+    const { state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '2',
+        '--plan',
+        '3',
+        '--duration',
+        '9 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| Phase 1 P1 | 5 min | - tasks | - files |',
+        '',
+        TAIL,
+      ].join('\n'),
+    );
+
+    assert.ok(
+      state.indexOf('| Phase 1 P1 |') < state.indexOf('| Phase 2 P3 |'),
+      `the new row must follow the old one (got: ${state})`,
+    );
+    assert.ok(state.includes(TAIL), `tail must survive (got: ${state})`);
+  });
+
+  test('record-metric reports no section when the table is elsewhere', () => {
+    const { output, state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '1',
+        '--plan',
+        '1',
+        '--duration',
+        '5 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        'None yet.',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '| 01 | keep me | intact |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.recorded, false);
+    assert.ok(
+      state.includes('| 01 | keep me | intact |'),
+      `another section's table must not be touched (got: ${state})`,
+    );
+  });
+
+  test('add-decision writes into an empty Decisions section', () => {
+    const { state } = run(
+      [
+        'state',
+        'add-decision',
+        '--phase',
+        '2',
+        '--summary',
+        'picked jose',
+        '--json',
+      ],
+      '# State\n\n### Decisions\n\n### Pending Todos\n\nNone yet.\n',
+    );
+
+    assert.ok(
+      state.indexOf('- [Phase 2]: picked jose') <
+        state.indexOf('### Pending Todos'),
+      `the decision must land under its own heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('### Pending Todos\n\nNone yet.\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('add-blocker writes into an empty Blockers section', () => {
+    const { state } = run(
+      ['state', 'add-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      state.indexOf('- db is down') < state.indexOf('## Session Continuity'),
+      `the blocker must land under its own heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('resolve-blocker leaves the section after an empty Blockers alone', () => {
+    const { state } = run(
+      ['state', 'resolve-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('None') < state.indexOf('## Session Continuity'),
+      `the placeholder must land under Blockers (got: ${state})`,
+    );
+  });
+
+  test('resolve-blocker removes only the named blocker', () => {
+    const { state } = run(
+      ['state', 'resolve-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n- db is down\n- api is slow\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      !state.includes('db is down'),
+      `resolved blocker must go (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('- api is slow'),
+      `other blocker must stay (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('adjust-quick-table ignores a table in a later section', () => {
+    const { output, state } = run(
+      ['state', 'adjust-quick-table', '--json'],
+      [
+        '# State',
+        '',
+        '### Quick Tasks Completed',
+        '',
+        '### Other Table',
+        '',
+        '| # | Description | Directory |',
+        '|---|-------------|-----------|',
+        '| 1 | keep me | ./x/ |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.adjusted, false);
+    assert.strictEqual(output.reason, 'section_not_found');
+    assert.ok(
+      state.includes('| # | Description | Directory |'),
+      `another section's table must not be migrated (got: ${state})`,
+    );
+  });
+});

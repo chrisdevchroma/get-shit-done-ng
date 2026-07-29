@@ -26,7 +26,12 @@ const {
 } = require('./core.cjs');
 const { DEFAULTS } = require('./defaults.cjs');
 const { validatePhaseNumber } = require('./security.cjs');
-const { adjustQuickTable, stateExtractField } = require('./state.cjs');
+const {
+  QUICK_TASKS_HEADING,
+  adjustQuickTable,
+  findTableHeaderIndex,
+  stateExtractField,
+} = require('./state.cjs');
 const { resolveGitContext } = require('./workspace.cjs');
 const { resolveTypeAlias, readTypeAliases } = require('./type-alias.cjs');
 
@@ -516,18 +521,15 @@ function cmdInitQuick(cwd, description, verifyMode) {
     try {
       const { state: statePath } = planningPaths(cwd);
       const stateContent = fs.readFileSync(statePath, 'utf-8');
-      const sectionMatch = stateContent.match(
-        /###\s*Quick Tasks Completed\s*\n/i,
-      );
+      const sectionMatch = stateContent.match(QUICK_TASKS_HEADING);
       if (sectionMatch) {
         const afterSection = stateContent.slice(
           sectionMatch.index + sectionMatch[0].length,
         );
-        const firstTableLine = afterSection
-          .split('\n')
-          .find((l) => l.trimStart().startsWith('|'));
-        if (firstTableLine) {
-          const headerCells = firstTableLine
+        const lines = afterSection.split('\n');
+        const headerIdx = findTableHeaderIndex(lines);
+        if (headerIdx !== -1) {
+          const headerCells = lines[headerIdx]
             .split('|')
             .map((c) => c.trim())
             .filter((c) => c !== '');
