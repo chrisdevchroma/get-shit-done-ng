@@ -2511,6 +2511,75 @@ describe('withFileLock', () => {
     assert.strictEqual(fs.existsSync(lockPath), false);
   });
 
+  test('an unidentifiable holder is waited for, not stolen', () => {
+    // A process killed between creating the lock and writing its payload leaves
+    // a lock nothing can be liveness-checked against. Stealing on that basis
+    // would treat every fresh lock as abandoned, so the age is all that counts.
+    fs.writeFileSync(lockPathFor(target), '');
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(caught.holder, null);
+    assert.match(caught.message, /unidentified process/);
+  });
+
+  test('an unidentifiable holder is still stolen once it is stale', () => {
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(lockPath, 'not json');
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
+  test('a holder on another host is judged by age, not by pid', () => {
+    // A pid from another machine says nothing about a process on this one, and
+    // on a shared filesystem it could collide with a live local pid.
+    const lockPath = lockPathFor(target);
+    const payload = JSON.stringify({
+      pid: process.pid,
+      host: 'some-other-host',
+      at: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(lockPath, payload);
+    assert.throws(
+      () =>
+        withFileLock(target, () => 'never', {
+          budgetMs: 100,
+          pollMs: 10,
+          staleMs: 60000,
+        }),
+      /some-other-host/,
+      'a fresh foreign-host lock must be waited for',
+    );
+
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
   test('a lock that cannot be created runs the body unserialised', () => {
     // Read-only tree, no permission, missing directory: refusing to write would
     // be worse than the lost update the lock exists to prevent.
