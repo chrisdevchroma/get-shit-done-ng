@@ -1201,6 +1201,89 @@ describe('milestone.cjs residuals (60-11)', () => {
   });
 });
 
+describe('milestone complete STATE.md field formats', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function scaffold(positionBlock) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n# v1.0 — first\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '---\nmilestone: v1.0\nmilestone_name: first\n---\n# Project State\n\n## Current Position\n\n' +
+        positionBlock,
+    );
+  }
+
+  function assertMilestoneFieldsMoved(state) {
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(
+      state,
+      /^(\*\*)?Status:(\*\*)?\s*v1\.0 milestone complete\s*$/m,
+      `Status should record the shipped milestone (got: ${state})`,
+    );
+    assert.match(
+      state,
+      new RegExp(`^(\\*\\*)?Last Activity:(\\*\\*)?\\s*${today}\\s*$`, 'm'),
+      `Last Activity should be today (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Last Activity Description:(\*\*)?\s*v1\.0 milestone completed and archived\s*$/m,
+      `Last Activity Description should be rewritten (got: ${state})`,
+    );
+  }
+
+  test('plain-format STATE.md: every field is updated', () => {
+    scaffold(
+      'Status: In progress\nLast Activity: 2025-01-01\nLast Activity Description: Working\n',
+    );
+    const r = runGsdTools(['milestone', 'complete', 'v1.0', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    assertMilestoneFieldsMoved(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'),
+    );
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(
+      out.state_fields_missing,
+      [],
+      `no field should be reported missing (got: ${r.output})`,
+    );
+  });
+
+  test('bold-format STATE.md: every field is updated', () => {
+    scaffold(
+      '**Status:** In progress\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n',
+    );
+    const r = runGsdTools(['milestone', 'complete', 'v1.0', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    assertMilestoneFieldsMoved(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'),
+    );
+  });
+
+  test('reports fields it could not find instead of silent success', () => {
+    scaffold('Status: In progress\n');
+    const r = runGsdTools(['milestone', 'complete', 'v1.0', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(out.state_fields_updated, ['Status']);
+    assert.ok(
+      out.state_fields_missing.includes('Last Activity'),
+      `absent fields should be reported (got: ${r.output})`,
+    );
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // validate consistency command
 // ─────────────────────────────────────────────────────────────────────────────

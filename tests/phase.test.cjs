@@ -3433,6 +3433,196 @@ describe('cmdPhaseComplete edge cases', () => {
   });
 });
 
+describe('cmdPhaseComplete STATE.md field formats', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const ROADMAP = `# Roadmap
+
+### Phase 1: Test
+**Goal:** Test
+**Plans:** 1 plans
+
+### Phase 2: Next
+**Goal:** Next
+**Plans:** 1 plans
+`;
+
+  function scaffold(stateContent) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+  }
+
+  function readState() {
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  }
+
+  function assertAllFieldsMoved(state) {
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(
+      state,
+      /^(\*\*)?Current Phase:(\*\*)?\s*0?2\s*$/m,
+      `Current Phase should advance to 2 (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Current Phase Name:(\*\*)?\s*next\s*$/im,
+      `Current Phase Name should advance (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Status:(\*\*)?\s*Ready to plan\s*$/m,
+      `Status should become "Ready to plan" (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Current Plan:(\*\*)?\s*Not started\s*$/m,
+      `Current Plan should reset (got: ${state})`,
+    );
+    assert.match(
+      state,
+      new RegExp(`^(\\*\\*)?Last Activity:(\\*\\*)?\\s*${today}\\s*$`, 'm'),
+      `Last Activity should be today (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Last Activity Description:(\*\*)?\s*Phase 1 complete, transitioned to Phase 2\s*$/m,
+      `Last Activity Description should be rewritten (got: ${state})`,
+    );
+  }
+
+  test('plain-format STATE.md: every field is updated', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Current Phase: 01',
+        'Current Phase Name: test',
+        'Current Plan: 01-01',
+        'Status: In progress',
+        'Last Activity: 2025-01-01',
+        'Last Activity Description: Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(
+      out.state_fields_missing,
+      [],
+      `no field should be reported missing (got: ${r.output})`,
+    );
+  });
+
+  test('bold-format STATE.md: every field is updated', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** test',
+        '**Current Plan:** 01-01',
+        '**Status:** In progress',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+  });
+
+  test('mixed-format STATE.md: plain Status moves with the bold fields', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** test',
+        '**Current Plan:** 01-01',
+        'Status: In progress',
+        '**Last Activity:** 2025-01-01',
+        'Last Activity Description: Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+  });
+
+  test('reports fields it could not find instead of silent success', () => {
+    scaffold('# Project State\n\n## Current Position\n\nStatus: In progress\n');
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(out.state_fields_updated, ['Status']);
+    assert.ok(
+      out.state_fields_missing.includes('Current Phase'),
+      `absent fields should be reported (got: ${r.output})`,
+    );
+  });
+});
+
+describe('cmdPhaseRemove Total Phases field formats', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('decrements a plain-format Total Phases field', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nTotal Phases: 2\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^Total Phases: 1$/m,
+      `plain Total Phases should be decremented (got: ${state})`,
+    );
+  });
+});
+
 // Tag for grep-based verification — the plan acceptance checklist requires
 // the literal string `describe('cmdPhaseMerge edge` to appear in the file.
 // phase.cjs has no cmdPhaseMerge function (the planner conflated the

@@ -14,7 +14,7 @@ const {
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { formatMilestoneHeading } = require('./milestone-format.cjs');
-const { writeStateMd } = require('./state.cjs');
+const { writeStateMd, stateReplaceFields } = require('./state.cjs');
 
 function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
   if (!reqIdsRaw || reqIdsRaw.length === 0) {
@@ -264,21 +264,21 @@ function cmdMilestoneComplete(cwd, version, options) {
   }
 
   // Update STATE.md
+  let stateFieldsUpdated = [];
+  let stateFieldsMissing = [];
   if (fs.existsSync(statePath)) {
-    let stateContent = fs.readFileSync(statePath, 'utf-8');
-    stateContent = stateContent.replace(
-      /(\*\*Status:\*\*\s*).*/,
-      `$1${version} milestone complete`,
-    );
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity:\*\*\s*).*/,
-      `$1${today}`,
-    );
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity Description:\*\*\s*).*/,
-      `$1${version} milestone completed and archived`,
-    );
-    writeStateMd(statePath, stateContent, cwd);
+    const stateContent = fs.readFileSync(statePath, 'utf-8');
+    const applied = stateReplaceFields(stateContent, [
+      ['Status', `${version} milestone complete`],
+      ['Last Activity', today],
+      [
+        'Last Activity Description',
+        `${version} milestone completed and archived`,
+      ],
+    ]);
+    stateFieldsUpdated = applied.updated;
+    stateFieldsMissing = applied.missing;
+    writeStateMd(statePath, applied.content, cwd);
   }
 
   // Archive phase directories if requested
@@ -325,6 +325,8 @@ function cmdMilestoneComplete(cwd, version, options) {
     },
     milestones_updated: true,
     state_updated: fs.existsSync(statePath),
+    state_fields_updated: stateFieldsUpdated,
+    state_fields_missing: stateFieldsMissing,
   };
 
   output(result);

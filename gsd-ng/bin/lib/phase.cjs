@@ -24,7 +24,12 @@ const {
   planningPaths,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
-const { writeStateMd } = require('./state.cjs');
+const {
+  writeStateMd,
+  stateExtractField,
+  stateReplaceField,
+  stateReplaceFields,
+} = require('./state.cjs');
 
 // VERIFICATION.md statuses that mean the verifier judged the phase goal NOT met.
 // Requirement closure is withheld for these so the traceability table keeps
@@ -1421,11 +1426,12 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
   if (fs.existsSync(statePath)) {
     let stateContent = fs.readFileSync(statePath, 'utf-8');
     // Update "Total Phases" field
-    const totalPattern = /(\*\*Total Phases:\*\*\s*)(\d+)/;
-    const totalMatch = stateContent.match(totalPattern);
-    if (totalMatch) {
-      const oldTotal = parseInt(totalMatch[2], 10);
-      stateContent = stateContent.replace(totalPattern, `$1${oldTotal - 1}`);
+    const totalRaw = stateExtractField(stateContent, 'Total Phases');
+    const oldTotal = totalRaw ? parseInt(totalRaw, 10) : NaN;
+    if (!isNaN(oldTotal)) {
+      stateContent =
+        stateReplaceField(stateContent, 'Total Phases', oldTotal - 1) ||
+        stateContent;
     }
     // Update "Phase: X of Y" pattern
     const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
@@ -1686,48 +1692,27 @@ function cmdPhaseComplete(cwd, phaseNum) {
   }
 
   // Update STATE.md
+  let stateFieldsUpdated = [];
+  let stateFieldsMissing = [];
   if (fs.existsSync(statePath)) {
-    let stateContent = fs.readFileSync(statePath, 'utf-8');
-
-    // Update Current Phase
-    stateContent = stateContent.replace(
-      /(\*\*Current Phase:\*\*\s*).*/,
-      `$1${nextPhaseNum || phaseNum}`,
-    );
-
-    // Update Current Phase Name
-    if (nextPhaseName) {
-      stateContent = stateContent.replace(
-        /(\*\*Current Phase Name:\*\*\s*).*/,
-        `$1${nextPhaseName.replace(/-/g, ' ')}`,
-      );
-    }
-
-    // Update Status
-    stateContent = stateContent.replace(
-      /(\*\*Status:\*\*\s*).*/,
-      `$1${isLastPhase ? 'Milestone complete' : 'Ready to plan'}`,
-    );
-
-    // Update Current Plan
-    stateContent = stateContent.replace(
-      /(\*\*Current Plan:\*\*\s*).*/,
-      `$1Not started`,
-    );
-
-    // Update Last Activity
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity:\*\*\s*).*/,
-      `$1${today}`,
-    );
-
-    // Update Last Activity Description
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity Description:\*\*\s*).*/,
-      `$1Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
-    );
-
-    writeStateMd(statePath, stateContent, cwd);
+    const stateContent = fs.readFileSync(statePath, 'utf-8');
+    const applied = stateReplaceFields(stateContent, [
+      ['Current Phase', nextPhaseNum || phaseNum],
+      [
+        'Current Phase Name',
+        nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
+      ],
+      ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
+      ['Current Plan', 'Not started'],
+      ['Last Activity', today],
+      [
+        'Last Activity Description',
+        `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
+      ],
+    ]);
+    stateFieldsUpdated = applied.updated;
+    stateFieldsMissing = applied.missing;
+    writeStateMd(statePath, applied.content, cwd);
   }
 
   const result = {
@@ -1742,6 +1727,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
     date: today,
     roadmap_updated: fs.existsSync(roadmapPath),
     state_updated: fs.existsSync(statePath),
+    state_fields_updated: stateFieldsUpdated,
+    state_fields_missing: stateFieldsMissing,
     requirements_updated: requirementsUpdated,
     requirements_closed: requirementIds,
     requirements_blocked_rows: requirementsBlockedRows,
