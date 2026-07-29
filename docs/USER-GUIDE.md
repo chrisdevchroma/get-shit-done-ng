@@ -541,6 +541,12 @@ GSD writes `STATE.md`, `ROADMAP.md`, `REQUIREMENTS.md` and `MILESTONES.md` by cr
 
 Neither is a bug you can configure away — it is how atomic replacement works. If you need one set of planning documents shared between two checkouts, point both at the same directory (a symlinked `.planning/` **directory** is fine — only linked files are affected).
 
+### A `.STATE.md.gsd-lock` File Appeared in `.planning/`
+
+Parallel executors in a wave all write to the same `STATE.md`, so each one takes a short lock while it reads the file, makes its change and writes it back. That is what stops two executors' entries overwriting each other. The lock is held for about a millisecond and removed straight after, including when a command fails or is interrupted.
+
+It only survives a hard kill (`kill -9`, a machine losing power). Nothing needs doing: the next GSD command sees the recorded process is gone and takes the lock over immediately. Deleting the file by hand is also safe as long as no GSD command is running.
+
 ### Subagent Appears to Fail but Work Was Done
 
 A known workaround exists for a Claude Code classification bug. GSD's orchestrators (execute-phase, quick) spot-check actual output before reporting failure. If you see a failure message but commits were made, check `git log` -- the work may have succeeded.

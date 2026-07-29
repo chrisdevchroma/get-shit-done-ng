@@ -156,6 +156,235 @@ function writeFileAtomic(filePath, content, encoding = 'utf-8') {
   }
 }
 
+// ─── File locks ──────────────────────────────────────────────────────────────
+
+// A dead holder is stolen from on sight, so this threshold only backstops the
+// cases where liveness cannot be established: a reused pid, a payload that never
+// got written, a lock from another host. Critical sections are a read, a regex
+// pass and a rename — about a millisecond — so 15s is four orders of magnitude
+// of headroom rather than a guess at how long the work takes.
+const LOCK_STALE_MS = 15 * 1000;
+
+// Longer than LOCK_STALE_MS on purpose. A budget shorter than the staleness
+// threshold lets a caller give up while waiting for a lock it was seconds away
+// from being entitled to steal, which fails a write that should have proceeded.
+const LOCK_ACQUIRE_BUDGET_MS = 20 * 1000;
+
+const LOCK_POLL_MS = 20;
+
+// Depth per lock path, not a boolean: one process calling two locked functions
+// would otherwise wait out its whole budget against itself.
+const heldLocks = new Map();
+let lockExitHookInstalled = false;
+
+/** Path of the lock guarding `filePath`. */
+function lockPathFor(filePath) {
+  return path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.gsd-lock`,
+  );
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function installLockExitHook() {
+  if (lockExitHookInstalled) return;
+  lockExitHookInstalled = true;
+  process.on('exit', () => {
+    for (const lockPath of [...heldLocks.keys()]) {
+      heldLocks.set(lockPath, 1);
+      releaseFileLock(lockPath);
+    }
+  });
+}
+
+function readLockHolder(lockPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the recorded holder is a process on this host that no longer exists.
+ *
+ * Signal 0 is an existence check on POSIX and on Windows. EPERM means the
+ * process is alive under another user, which is not dead. A pid from a different
+ * host says nothing, so it falls through to the staleness threshold.
+ */
+function lockHolderIsDead(holder) {
+  if (!holder || typeof holder.pid !== 'number') return false;
+  if (holder.pid === process.pid) return false;
+  if (holder.host && holder.host !== require('os').hostname()) return false;
+  try {
+    process.kill(holder.pid, 0);
+    return false;
+  } catch (err) {
+    return err.code === 'ESRCH';
+  }
+}
+
+function lockAgeMs(lockPath) {
+  try {
+    return Date.now() - fs.statSync(lockPath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create the lock, or report why not.
+ *
+ * `wx` is O_CREAT|O_EXCL on POSIX and CREATE_NEW on Windows — atomic on both,
+ * with no lock-directory-versus-lock-file portability question and nowhere to
+ * put the holder metadata but the file itself. The descriptor is closed before
+ * returning so a later unlink cannot be refused on Windows.
+ *
+ * @returns {'acquired'|'taken'|'unavailable'}
+ */
+function tryCreateLock(lockPath) {
+  let fd;
+  try {
+    fd = fs.openSync(lockPath, 'wx');
+  } catch (err) {
+    return err.code === 'EEXIST' ? 'taken' : 'unavailable';
+  }
+  try {
+    fs.writeSync(
+      fd,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // A lock with no readable payload still excludes; it just cannot be
+    // liveness-checked, so it falls back to the staleness threshold.
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {}
+  }
+  return 'acquired';
+}
+
+/**
+ * Take the lock at `lockPath`, waiting for a live holder to finish.
+ *
+ * Three outcomes, none of which can wedge a project:
+ * - `locked` / `reentrant` — held by this process, release it.
+ * - `unlocked` — the lock file could not be created at all (read-only tree,
+ *   missing directory, no permission). The caller runs unserialised, which is
+ *   what it did before locking existed, rather than refusing to write.
+ * - `timeout` — a live holder younger than the staleness threshold held on for
+ *   the whole budget. The caller fails loudly instead of clobbering it.
+ *
+ * @param {string} lockPath
+ * @param {object} [opts]
+ * @param {number} [opts.staleMs]
+ * @param {number} [opts.budgetMs]
+ * @param {number} [opts.pollMs]
+ * @returns {{mode: string, holder?: object, ageMs?: number}}
+ */
+function acquireFileLock(lockPath, opts = {}) {
+  const {
+    staleMs = LOCK_STALE_MS,
+    budgetMs = LOCK_ACQUIRE_BUDGET_MS,
+    pollMs = LOCK_POLL_MS,
+  } = opts;
+
+  const depth = heldLocks.get(lockPath);
+  if (depth) {
+    heldLocks.set(lockPath, depth + 1);
+    return { mode: 'reentrant' };
+  }
+
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const outcome = tryCreateLock(lockPath);
+    if (outcome === 'acquired') {
+      installLockExitHook();
+      heldLocks.set(lockPath, 1);
+      return { mode: 'locked' };
+    }
+    if (outcome === 'unavailable') return { mode: 'unlocked' };
+
+    const holder = readLockHolder(lockPath);
+    const ageMs = lockAgeMs(lockPath);
+    if (lockHolderIsDead(holder) || (ageMs !== null && ageMs > staleMs)) {
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {}
+    }
+    if (Date.now() >= deadline) return { mode: 'timeout', holder, ageMs };
+    sleepSync(pollMs);
+  }
+}
+
+/**
+ * Drop one level of the lock. Returns true when the lock file was removed.
+ */
+function releaseFileLock(lockPath) {
+  const depth = heldLocks.get(lockPath);
+  if (!depth) return false;
+  if (depth > 1) {
+    heldLocks.set(lockPath, depth - 1);
+    return false;
+  }
+  heldLocks.delete(lockPath);
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {}
+  return true;
+}
+
+/**
+ * Run `fn` with exclusive access to `filePath` across processes.
+ *
+ * writeFileAtomic makes a write indivisible, which stops a reader seeing half a
+ * file. It does nothing for a read-modify-write: parallel executors that each
+ * read STATE.md, append their own entry and write it back all succeed, and every
+ * entry but the last one's is discarded with nothing reported. Serialising the
+ * whole read-compute-write closes that, and because the loser re-reads after it
+ * wins the lock, its append composes with the winner's instead of replacing it.
+ *
+ * A lock rather than a compare-and-swap because half of these mutations are
+ * replacements — filtering a blocker out, setting Status from a value just read
+ * — and replaying one of those against content that changed underneath is a
+ * different operation, not a retry.
+ *
+ * @param {string} filePath - the file being mutated, not the lock path
+ * @param {Function} fn - the critical section; keep it to file I/O
+ * @param {object} [opts] - forwarded to acquireFileLock
+ */
+function withFileLock(filePath, fn, opts = {}) {
+  const lockPath = lockPathFor(filePath);
+  const acquired = acquireFileLock(lockPath, opts);
+  if (acquired.mode === 'timeout') {
+    const held = acquired.holder
+      ? `held by pid ${acquired.holder.pid} on ${acquired.holder.host || 'unknown host'} since ${acquired.holder.at || 'unknown time'}`
+      : 'held by an unidentified process';
+    const err = new Error(
+      `Timed out waiting for a lock on ${path.basename(filePath)} — ${held}. ` +
+        `Retry once that process has finished, or delete ${lockPath} if it is gone.`,
+    );
+    err.code = 'GSD_LOCK_TIMEOUT';
+    err.lockPath = lockPath;
+    err.holder = acquired.holder || null;
+    throw err;
+  }
+  try {
+    return fn();
+  } finally {
+    if (acquired.mode !== 'unlocked') releaseFileLock(lockPath);
+  }
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -1214,6 +1443,12 @@ module.exports = {
   reapStaleTempFiles,
   reapStaleAtomicTempFiles,
   writeFileAtomic,
+  lockPathFor,
+  acquireFileLock,
+  releaseFileLock,
+  withFileLock,
+  LOCK_STALE_MS,
+  LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,
   loadConfig,
   resolveTargetBranch,

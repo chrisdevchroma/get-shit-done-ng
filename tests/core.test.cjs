@@ -31,6 +31,10 @@ const {
   extractCurrentMilestone,
   writeFileAtomic,
   reapStaleAtomicTempFiles,
+  lockPathFor,
+  acquireFileLock,
+  releaseFileLock,
+  withFileLock,
   phaseCheckboxLinePattern,
   phaseCheckboxName,
   parsePhaseCheckboxes,
@@ -2271,6 +2275,373 @@ describe('writeFileAtomic', () => {
       result.bad,
       [],
       `reader observed partial content (byte lengths: ${result.bad.join(', ')})`,
+    );
+  });
+});
+
+// ─── withFileLock ─────────────────────────────────────────────────────────────
+//
+// writeFileAtomic stops a reader seeing half a file. It does nothing for a
+// read-modify-write, where every concurrent writer succeeds and all but the last
+// one's change is discarded. These cover the mechanism; the lost-update
+// regression itself is in state.test.cjs.
+
+describe('withFileLock', () => {
+  const { spawn } = require('node:child_process');
+  const CORE_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'core.cjs',
+  );
+  let tmpDir;
+  let target;
+
+  const LOCKER_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag, markerFile] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    withFileLock(target, () => { fs.writeFileSync(markerFile, ''); }, { pollMs: 5 });
+  `;
+
+  const HOLDER_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag] = process.argv.slice(1);
+    const { acquireFileLock, lockPathFor } = require(lib);
+    const result = acquireFileLock(lockPathFor(target));
+    if (result.mode !== 'locked') { fs.writeSync(2, 'not locked: ' + result.mode); process.exit(9); }
+    fs.writeFileSync(readyFlag, '');
+    setInterval(() => {}, 1000);
+  `;
+
+  const EXITER_SRC = `
+    const [lib, target] = process.argv.slice(1);
+    const { acquireFileLock, lockPathFor } = require(lib);
+    acquireFileLock(lockPathFor(target));
+    process.exit(0);
+  `;
+
+  function waitForFlag(flagPath) {
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (fs.existsSync(flagPath)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 5);
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-lock-test-'));
+    target = path.join(tmpDir, 'STATE.md');
+    fs.writeFileSync(target, 'content\n');
+  });
+
+  afterEach(() => {
+    releaseFileLock(lockPathFor(target));
+    cleanup(tmpDir);
+  });
+
+  test('runs the body and leaves no lock file behind', () => {
+    const seen = withFileLock(target, () => fs.readFileSync(target, 'utf-8'));
+    assert.strictEqual(seen, 'content\n');
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
+  });
+
+  test('releases the lock when the body throws', () => {
+    assert.throws(() => {
+      withFileLock(target, () => {
+        throw new Error('boom');
+      });
+    }, /boom/);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a nested acquire does not deadlock against itself', () => {
+    // A locked command calling another locked command is one process waiting for
+    // a lock it already holds. Without a depth count that is its whole budget.
+    const order = [];
+    withFileLock(
+      target,
+      () => {
+        order.push('outer');
+        withFileLock(
+          target,
+          () => {
+            order.push('inner');
+            assert.strictEqual(
+              fs.existsSync(lockPathFor(target)),
+              true,
+              'inner body still holds the lock',
+            );
+          },
+          { budgetMs: 200, pollMs: 5 },
+        );
+        assert.strictEqual(
+          fs.existsSync(lockPathFor(target)),
+          true,
+          'the inner release must not drop the outer hold',
+        );
+        order.push('outer-after');
+      },
+      { budgetMs: 200, pollMs: 5 },
+    );
+    assert.deepStrictEqual(order, ['outer', 'inner', 'outer-after']);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a second process waits for the holder instead of proceeding', async () => {
+    // Deterministic by construction: this process holds the lock for a window it
+    // controls, and the child announces readiness before it tries to take it, so
+    // the absence of the marker is evidence of exclusion rather than of a child
+    // that had not started.
+    const readyFlag = path.join(tmpDir, 'ready');
+    const marker = path.join(tmpDir, 'marker');
+    const acquired = acquireFileLock(lockPathFor(target));
+    assert.strictEqual(acquired.mode, 'locked');
+
+    const child = spawn(
+      process.execPath,
+      ['-e', LOCKER_SRC, '--', CORE_LIB, target, readyFlag, marker],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+
+    await waitForFlag(readyFlag);
+    await new Promise((r) => setTimeout(r, 300));
+    const enteredWhileHeld = fs.existsSync(marker);
+
+    releaseFileLock(lockPathFor(target));
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.strictEqual(
+      enteredWhileHeld,
+      false,
+      'the child entered the critical section while the lock was held',
+    );
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(marker),
+      true,
+      'the child should proceed once the lock is released',
+    );
+  });
+
+  test('a live foreign holder times out loudly rather than being clobbered', () => {
+    // pid of this process, which is alive and is not registered as a holder in
+    // this module's depth map — the shape of a real second GSD process.
+    fs.writeFileSync(
+      lockPathFor(target),
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(caught.holder.pid, process.pid);
+    assert.match(caught.message, new RegExp(`pid ${process.pid}`));
+    assert.match(caught.message, /STATE\.md/);
+  });
+
+  test('a holder that no longer exists is stolen at once', async () => {
+    // A pid that has certainly exited: spawn a process and wait for its close.
+    const corpse = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    const deadPid = corpse.pid;
+    await new Promise((r) => corpse.on('close', r));
+
+    fs.writeFileSync(
+      lockPathFor(target),
+      JSON.stringify({
+        pid: deadPid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    // Budget far below the staleness threshold, so only the liveness check can
+    // explain success — a crashed holder must not cost a wait.
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 60 * 60 * 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a lock older than the staleness threshold is stolen', () => {
+    const lockPath = lockPathFor(target);
+    // Payload pid is alive, so staleness is the only thing that can release it.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('an unidentifiable holder is waited for, not stolen', () => {
+    // A process killed between creating the lock and writing its payload leaves
+    // a lock nothing can be liveness-checked against. Stealing on that basis
+    // would treat every fresh lock as abandoned, so the age is all that counts.
+    fs.writeFileSync(lockPathFor(target), '');
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(caught.holder, null);
+    assert.match(caught.message, /unidentified process/);
+  });
+
+  test('an unidentifiable holder is still stolen once it is stale', () => {
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(lockPath, 'not json');
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
+  test('a holder on another host is judged by age, not by pid', () => {
+    // A pid from another machine says nothing about a process on this one, and
+    // on a shared filesystem it could collide with a live local pid.
+    const lockPath = lockPathFor(target);
+    const payload = JSON.stringify({
+      pid: process.pid,
+      host: 'some-other-host',
+      at: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(lockPath, payload);
+    assert.throws(
+      () =>
+        withFileLock(target, () => 'never', {
+          budgetMs: 100,
+          pollMs: 10,
+          staleMs: 60000,
+        }),
+      /some-other-host/,
+      'a fresh foreign-host lock must be waited for',
+    );
+
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
+  test('a lock that cannot be created runs the body unserialised', () => {
+    // Read-only tree, no permission, missing directory: refusing to write would
+    // be worse than the lost update the lock exists to prevent.
+    const unreachable = path.join(tmpDir, 'missing', 'STATE.md');
+    const ran = withFileLock(unreachable, () => 'ran', {
+      budgetMs: 100,
+      pollMs: 10,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, 'missing')), false);
+  });
+
+  test('a lock left by a hard-killed process needs no manual cleanup', async () => {
+    const readyFlag = path.join(tmpDir, 'ready');
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLDER_SRC, '--', CORE_LIB, target, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    await waitForFlag(readyFlag);
+
+    const lockPath = lockPathFor(target);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      `the child should hold the lock: ${stderr}`,
+    );
+
+    child.kill('SIGKILL');
+    await new Promise((r) => child.on('close', r));
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      'SIGKILL cannot run a release, so the lock file must still be there',
+    );
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 60 * 60 * 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('a lock held at process exit is released by the exit hook', async () => {
+    const child = spawn(
+      process.execPath,
+      ['-e', EXITER_SRC, '--', CORE_LIB, target],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(lockPathFor(target)),
+      false,
+      'process.exit inside a locked command must not leak the lock',
     );
   });
 });
