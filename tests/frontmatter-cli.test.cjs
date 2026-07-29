@@ -302,6 +302,68 @@ describe('frontmatter get --format newline', () => {
   });
 });
 
+// ─── frontmatter writers are atomic ─────────────────────────────────────────
+//
+// set / merge / array-append can all be pointed at STATE.md, and all three used
+// a plain writeFileSync, which truncates before it writes: a reader racing the
+// write sees an empty file. Routing them through writeFileAtomic replaces the
+// target by rename instead, so the old version stays whole and visible until
+// the new one is complete.
+
+describe('frontmatter writers replace the file rather than truncating it', () => {
+  function assertReplacedNotTruncated(args, initial) {
+    const file = writeTempFile(initial);
+    const originalIno = fs.statSync(file).ino;
+    // An fd opened before the write pins the old inode: after a rename it still
+    // reads the whole previous file, after an in-place truncate it does not.
+    const held = fs.openSync(file, 'r');
+    const result = runGsdTools(args.map((a) => (a === '@file' ? file : a)));
+    const heldContent = fs.readFileSync(held, 'utf-8');
+    fs.closeSync(held);
+
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.notStrictEqual(
+      fs.statSync(file).ino,
+      originalIno,
+      'an in-place truncating write keeps the inode; an atomic replace does not',
+    );
+    assert.strictEqual(
+      heldContent,
+      initial,
+      'a reader holding the file open must still see the whole previous version',
+    );
+  }
+
+  test('frontmatter set', () => {
+    assertReplacedNotTruncated(
+      ['frontmatter', 'set', '@file', '--field', 'status', '--value', 'active'],
+      '---\nphase: 01\n---\nbody\n',
+    );
+  });
+
+  test('frontmatter merge', () => {
+    assertReplacedNotTruncated(
+      ['frontmatter', 'merge', '@file', '--data', '{"status":"active"}'],
+      '---\nphase: 01\n---\nbody\n',
+    );
+  });
+
+  test('frontmatter array-append', () => {
+    assertReplacedNotTruncated(
+      [
+        'frontmatter',
+        'array-append',
+        '@file',
+        '--field',
+        'related',
+        '--value',
+        'b.md',
+      ],
+      '---\nrelated:\n  - a.md\n---\nbody\n',
+    );
+  });
+});
+
 // ─── frontmatter set validates field name ────────────────────────────────────
 
 describe('frontmatter set validates field name', () => {

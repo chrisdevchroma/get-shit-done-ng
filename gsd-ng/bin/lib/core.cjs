@@ -113,6 +113,14 @@ function reapStaleAtomicTempFiles(
  * The temp file must live in the same directory as the target — rename across
  * filesystems is not atomic, and on Linux fails outright.
  *
+ * Replacing by rename swaps the directory entry, so the target is a new inode
+ * afterwards. Two consequences, inherent to the technique rather than bugs, and
+ * both verified: a symlinked planning document is replaced by a regular file
+ * holding the new content while the link target keeps the old one, and a
+ * hardlinked copy stops tracking after the first write (link count drops to 1
+ * and the other name keeps the old content). Anyone sharing a planning document
+ * between projects by linking it needs to know that; see the user guide.
+ *
  * @param {string} filePath - target path
  * @param {string} content - full file contents
  * @param {string} [encoding] - defaults to utf-8

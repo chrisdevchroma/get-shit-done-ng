@@ -4,7 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeReadFile, output, error } = require('./core.cjs');
+const { safeReadFile, output, error, writeFileAtomic } = require('./core.cjs');
 const { validateFieldName, validatePath } = require('./security.cjs');
 
 // ─── Parsing engine ───────────────────────────────────────────────────────────
@@ -347,7 +347,7 @@ function cmdFrontmatterSet(cwd, filePath, field, value) {
   }
   fm[field] = parsedValue;
   const newContent = spliceFrontmatter(content, fm);
-  fs.writeFileSync(fullPath, newContent, 'utf-8');
+  writeFileAtomic(fullPath, newContent);
   output({ updated: true, field, value: parsedValue }, 'true');
 }
 
@@ -379,7 +379,7 @@ function cmdFrontmatterMerge(cwd, filePath, data) {
   }
   Object.assign(fm, mergeData);
   const newContent = spliceFrontmatter(content, fm);
-  fs.writeFileSync(fullPath, newContent, 'utf-8');
+  writeFileAtomic(fullPath, newContent);
   output({ merged: true, fields: Object.keys(mergeData) }, 'true');
 }
 
@@ -435,7 +435,7 @@ function cmdFrontmatterArrayAppend(cwd, filePath, field, value) {
   }
   fm[field] = arr;
   const newContent = spliceFrontmatter(content, fm);
-  fs.writeFileSync(fullPath, newContent, 'utf-8');
+  writeFileAtomic(fullPath, newContent);
   output({ appended: added, field, value, length: arr.length }, 'true');
 }
 
