@@ -5685,3 +5685,215 @@ describe('state begin-phase writes Current focus as a field', () => {
     );
   });
 });
+
+// ─── Concurrent mutation ──────────────────────────────────────────────────────
+//
+// Parallel executors in a wave all mutate the one STATE.md, and every mutating
+// command reads the whole file and writes the whole file back. Atomic writes
+// stop a reader seeing half a file; they do nothing here, because all the
+// writers succeed and only the last one's copy survives. Measured against the
+// unserialised library, one of eight appends survived in five runs out of five,
+// with every child reporting success.
+//
+// Children are released by a flag-file barrier so the reads genuinely overlap.
+// The assertion — every entry is present — holds whether or not the race lands,
+// so the test cannot pass by missing its window.
+
+describe('concurrent STATE.md mutations', () => {
+  const STATE_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'state.cjs',
+  );
+
+  const MUTATOR_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, goFlag, command, arg] = process.argv.slice(1);
+    const state = require(lib);
+    const actions = {
+      decision: () => state.cmdStateAddDecision(cwd, { phase: '1', summary: arg }),
+      blocker: () => state.cmdStateAddBlocker(cwd, { text: arg }),
+      metric: () => state.cmdStateRecordMetric(cwd, { phase: '1', plan: arg, duration: '2m', tasks: '3', files: '4' }),
+      advance: () => state.cmdStateAdvancePlan(cwd),
+    };
+    fs.writeFileSync(readyFlag, '');
+    const spin = new Int32Array(new SharedArrayBuffer(4));
+    while (!fs.existsSync(goFlag)) { Atomics.wait(spin, 0, 0, 1); }
+    actions[command]();
+  `;
+
+  let tmpDir;
+  let statePath;
+  let flagDir;
+
+  const SEEDED_STATE =
+    [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '**Status:** Executing',
+      '**Last Activity:** 2026-01-01',
+      '',
+      '## Performance Metrics',
+      '',
+      '| Plan | Duration | Tasks | Files |',
+      '| ---- | -------- | ----- | ----- |',
+      '| None yet | - | - | - |',
+      '',
+      '## Decisions',
+      '',
+      'None yet.',
+      '',
+      '## Blockers',
+      '',
+      'None',
+    ].join('\n') + '\n';
+
+  /**
+   * Start one child per mutation, wait until every one of them is loaded and
+   * parked on the barrier, then release them all at once.
+   *
+   * @param {Array<[string, string]>} specs - [command, argument] pairs
+   */
+  async function raceMutations(specs) {
+    const goFlag = path.join(flagDir, 'go');
+    const children = specs.map(([command, arg], i) => {
+      const readyFlag = path.join(flagDir, `ready-${i}`);
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          MUTATOR_SRC,
+          '--',
+          STATE_LIB,
+          tmpDir,
+          readyFlag,
+          goFlag,
+          command,
+          arg || '',
+        ],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      child._readyFlag = readyFlag;
+      child._stderr = '';
+      child.stderr.on('data', (d) => (child._stderr += d));
+      return child;
+    });
+
+    while (!children.every((c) => fs.existsSync(c._readyFlag))) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    fs.writeFileSync(goFlag, '');
+
+    const codes = await Promise.all(
+      children.map((c) => new Promise((r) => c.on('close', r))),
+    );
+    return {
+      codes,
+      stderr: children.map((c) => c._stderr.trim()).filter(Boolean),
+      content: fs.readFileSync(statePath, 'utf-8'),
+    };
+  }
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, SEEDED_STATE, 'utf-8');
+    flagDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-barrier-'));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(flagDir);
+  });
+
+  test('every concurrent decision survives', async () => {
+    const labels = Array.from({ length: 8 }, (_, i) => `race-decision-${i}`);
+    const { codes, stderr, content } = await raceMutations(
+      labels.map((l) => ['decision', l]),
+    );
+
+    assert.deepStrictEqual(
+      codes,
+      labels.map(() => 0),
+      `every child should succeed (stderr: ${stderr.join(' | ')})`,
+    );
+    const missing = labels.filter((l) => !content.includes(l));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `decisions reported as added but absent from STATE.md: ${missing.join(', ')}`,
+    );
+  });
+
+  test('concurrent appends to different sections all survive', async () => {
+    const specs = [
+      ['decision', 'race-mixed-decision-a'],
+      ['decision', 'race-mixed-decision-b'],
+      ['metric', 'race-mixed-metric-a'],
+      ['metric', 'race-mixed-metric-b'],
+      ['blocker', 'race-mixed-blocker-a'],
+      ['blocker', 'race-mixed-blocker-b'],
+    ];
+    const { codes, stderr, content } = await raceMutations(specs);
+
+    assert.deepStrictEqual(
+      codes,
+      specs.map(() => 0),
+      `every child should succeed (stderr: ${stderr.join(' | ')})`,
+    );
+    const missing = specs
+      .map(([, arg]) => arg)
+      .filter((a) => !content.includes(a));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `entries reported as added but absent from STATE.md: ${missing.join(', ')}`,
+    );
+  });
+
+  test('advance-plan does not discard a decision written beside it', async () => {
+    // advance-plan derives its own answer from disk, so its position converges
+    // under a race. It still rewrites the whole file, so an append that landed
+    // between its read and its write is gone — the loss is between commands.
+    const { codes, stderr, content } = await raceMutations([
+      ['advance', ''],
+      ['decision', 'race-alongside-advance'],
+    ]);
+
+    assert.deepStrictEqual(
+      codes,
+      [0, 0],
+      `every child should succeed (stderr: ${stderr.join(' | ')})`,
+    );
+    assert.ok(
+      content.includes('race-alongside-advance'),
+      'the decision must survive the concurrent advance-plan',
+    );
+    assert.match(
+      content,
+      /\*\*Current Plan:\*\* 3/,
+      'the position must still advance',
+    );
+  });
+
+  test('a wave of mutations leaves no lock file behind', async () => {
+    await raceMutations([
+      ['decision', 'race-cleanup-a'],
+      ['metric', 'race-cleanup-b'],
+      ['advance', ''],
+    ]);
+
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning')).sort(),
+      ['STATE.md', 'phases'],
+      'the lock and any atomic-write temp file must be gone',
+    );
+  });
+});
