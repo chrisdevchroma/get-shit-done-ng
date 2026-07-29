@@ -417,16 +417,6 @@ function cmdStateAdvancePlan(cwd) {
     return;
   }
 
-  const replaceField = (c, primary, fallback, value) => {
-    let r = stateReplaceField(c, primary, value);
-    if (r) return r;
-    if (fallback) {
-      r = stateReplaceField(c, fallback, value);
-      if (r) return r;
-    }
-    return stateReplaceFieldWithFallback(c, primary, value);
-  };
-
   // Wave execution runs several executors against one STATE.md concurrently, so
   // the position is counted from disk rather than incremented — that keeps a
   // repeat call idempotent where read-then-write-plus-one races.
@@ -445,13 +435,12 @@ function cmdStateAdvancePlan(cwd) {
     : currentPlan >= totalPlans;
 
   if (atEndOfPhase) {
-    content = replaceField(
+    content = stateReplaceFieldWithFallback(
       content,
       'Status',
-      null,
       'Phase complete — ready for verification',
     );
-    content = replaceField(content, 'Last Activity', 'Last activity', today);
+    content = stateReplaceFieldWithFallback(content, 'Last Activity', today);
     writeStateMd(statePath, content, cwd);
     output(
       {
@@ -476,8 +465,12 @@ function cmdStateAdvancePlan(cwd) {
         formatPlanPosition(legacyPlanRaw, nextPlan) || String(nextPlan);
       content = stateReplaceField(content, 'Current Plan', newValue) || content;
     }
-    content = replaceField(content, 'Status', null, 'Ready to execute');
-    content = replaceField(content, 'Last Activity', 'Last activity', today);
+    content = stateReplaceFieldWithFallback(
+      content,
+      'Status',
+      'Ready to execute',
+    );
+    content = stateReplaceFieldWithFallback(content, 'Last Activity', today);
     writeStateMd(statePath, content, cwd);
     // Deriving from disk can land *behind* the stored value — a STATE.md that
     // claims more progress than the summaries on disk support gets corrected
