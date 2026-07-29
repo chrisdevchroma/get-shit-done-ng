@@ -959,6 +959,18 @@ function detectFileOverlaps(plans) {
   return overlaps;
 }
 
+// Index of the first line belonging to the current milestone. Line-based
+// rewrites start here so they cannot reach into an archived section.
+function currentMilestoneStartLine(content) {
+  const offset = currentMilestoneOffset(content);
+  if (offset === 0) return 0;
+  let line = 0;
+  for (let i = 0; i < offset; i++) {
+    if (content[i] === '\n') line++;
+  }
+  return line + 1;
+}
+
 /**
  * Insert a `- [ ] **Phase N: Description**` checkbox line into the phases list
  * section of ROADMAP.md content.
@@ -973,6 +985,10 @@ function detectFileOverlaps(plans) {
 function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   const checkboxLine = `- [ ] **Phase ${phaseNum}: ${description}**`;
   const lines = rawContent.split('\n');
+  // The list being appended to is the current milestone's. Scanning from the top
+  // of the document put the new phase inside a shipped <details> section
+  // whenever that section held the last checkbox in the file.
+  const first = currentMilestoneStartLine(rawContent);
 
   if (afterPhase != null) {
     // For insert: the parent phase's checkbox line, or the last decimal of that
@@ -983,7 +999,7 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
     );
     let insertAfterIdx = -1;
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = first; i < lines.length; i++) {
       if (parentPattern.test(lines[i])) {
         insertAfterIdx = i;
       }
@@ -998,7 +1014,7 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   // For add (or insert fallback): append after last checkbox line in the phases list
   const anyCheckbox = new RegExp(phaseCheckboxLinePattern(), 'i');
   let lastCheckboxIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = first; i < lines.length; i++) {
     if (anyCheckbox.test(lines[i])) {
       lastCheckboxIdx = i;
     }
@@ -1006,7 +1022,21 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
 
   if (lastCheckboxIdx >= 0) {
     lines.splice(lastCheckboxIdx + 1, 0, checkboxLine);
+    return lines.join('\n');
   }
+
+  // This milestone has no phase list yet. The list belongs above the detail
+  // sections; returning the content untouched instead left `phase add`
+  // reporting a phase that the roadmap never listed.
+  const headerPattern = /^#{2,4}\s*Phase\s+\d/i;
+  for (let i = first; i < lines.length; i++) {
+    if (headerPattern.test(lines[i])) {
+      lines.splice(i, 0, checkboxLine, '');
+      return lines.join('\n');
+    }
+  }
+
+  lines.push(checkboxLine);
   return lines.join('\n');
 }
 

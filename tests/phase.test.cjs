@@ -6053,3 +6053,146 @@ describe('phase remove milestone scoping', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The phase list a new checkbox joins is the current milestone's. Scanning the
+// whole document put new phases inside a shipped <details> section whenever it
+// held the last checkbox in the file.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add and insert milestone scoping', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeRoadmap(currentLines) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '<details>',
+        '<summary>v0.1 — Legacy (Shipped)</summary>',
+        '',
+        '## Roadmap v0.1: Legacy',
+        '',
+        '- [x] Phase 1: Ancient',
+        '- [x] **Phase 2: Older**',
+        '',
+        '</details>',
+        '',
+        '## Roadmap v0.2: Current',
+        '',
+      ]
+        .concat(currentLines)
+        .join('\n'),
+    );
+  }
+
+  function split(roadmap) {
+    const close = roadmap.lastIndexOf('</details>') + '</details>'.length;
+    return { archived: roadmap.slice(0, close), current: roadmap.slice(close) };
+  }
+
+  test('phase add lists the new phase in the current milestone', () => {
+    writeRoadmap(['### Phase 1: Alpha', '**Goal:** a', '']);
+
+    const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.ok(
+      !/Gamma work/.test(archived),
+      'a shipped milestone section is not where a new phase goes',
+    );
+    assert.match(
+      current,
+      /- \[ \] \*\*Phase 2: Gamma work\*\*/,
+      'the current milestone gets the checkbox even with no list to append to',
+    );
+  });
+
+  test('phase add appends to the current list, not the archived one', () => {
+    writeRoadmap([
+      '- [ ] **Phase 1: Alpha**',
+      '',
+      '### Phase 1: Alpha',
+      '**Goal:** a',
+      '',
+    ]);
+
+    const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.deepStrictEqual(
+      archived.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
+      ['- [x] Phase 1: Ancient', '- [x] **Phase 2: Older**'],
+      'the archived list is left as it was',
+    );
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
+      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 2: Gamma work**'],
+      'the new checkbox follows the current milestone list',
+    );
+  });
+
+  test('phase insert ignores a parent checkbox in a shipped section', () => {
+    // The parent is listed in the shipped section and carries only a header
+    // here, so the parent lookup used to find the archived line and splice the
+    // new decimal in beneath it, inside <details>.
+    writeRoadmap(['### Phase 1: Alpha', '**Goal:** a', '']);
+
+    const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.ok(
+      !/Hotfix/.test(archived),
+      'the shipped section must not gain a phase',
+    );
+    assert.match(
+      current,
+      /- \[ \] \*\*Phase 01\.1: Hotfix \(INSERTED\)\*\*/,
+      'the decimal is listed in the current milestone',
+    );
+  });
+
+  test('phase insert places the decimal in the current milestone', () => {
+    writeRoadmap([
+      '- [ ] **Phase 1: Alpha**',
+      '',
+      '### Phase 1: Alpha',
+      '**Goal:** a',
+      '',
+    ]);
+
+    const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.ok(
+      !/Hotfix/.test(archived),
+      'the inserted phase must not land in the shipped section',
+    );
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
+      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 01.1: Hotfix (INSERTED)**'],
+      'the decimal follows its parent inside the current milestone',
+    );
+  });
+});
