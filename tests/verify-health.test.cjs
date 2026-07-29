@@ -719,6 +719,151 @@ describe('validate health --repair command', () => {
     );
   });
 
+  // The regenerated file used to be a three-line skeleton carrying
+  // "**Current phase:** (determining...)" and no Total Phases / Current Plan /
+  // Progress, so the one command whose purpose is to hand back a healthy
+  // STATE.md handed back one the progression engine could not advance.
+  test('regenerated STATE.md carries every field the writers rewrite', () => {
+    writeValidConfigJson(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n**Plans:** 2 plans\n\n### Phase 2: B\n**Goal:** b\n**Plans:** 1 plans\n',
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-a');
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.rmSync(statePath, { force: true });
+
+    const repair = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(repair.success, `Command failed: ${repair.error}`);
+
+    const regenerated = fs.readFileSync(statePath, 'utf-8');
+    const labels = [
+      'Current Phase',
+      'Current Phase Name',
+      'Total Phases',
+      'Current Plan',
+      'Total Plans in Phase',
+      'Status',
+      'Last Activity',
+      'Last Activity Description',
+      'Progress',
+    ];
+    for (const label of labels) {
+      assert.match(
+        regenerated,
+        new RegExp(`^\\*\\*${label}:\\*\\* \\S`, 'm'),
+        `${label} must be a canonical bold field with a value:\n${regenerated}`,
+      );
+    }
+    assert.doesNotMatch(regenerated, /determining/i, regenerated);
+    assert.match(regenerated, /^\*\*Current Phase:\*\* 01$/m, regenerated);
+    assert.match(regenerated, /^\*\*Total Phases:\*\* 2$/m, regenerated);
+    assert.match(regenerated, /^\*\*Current Plan:\*\* 01-02$/m, regenerated);
+    assert.match(
+      regenerated,
+      /^\*\*Total Plans in Phase:\*\* 2$/m,
+      regenerated,
+    );
+    assert.match(regenerated, /^\*\*Progress:\*\* \[█+░+\] 50%$/m, regenerated);
+
+    const progress = runGsdTools(['state', 'update-progress', '--json'], tmpDir);
+    assert.ok(progress.success, `Command failed: ${progress.error}`);
+    assert.strictEqual(
+      JSON.parse(progress.output).updated,
+      true,
+      `update-progress must find the Progress field (got: ${progress.output})`,
+    );
+
+    const advance = runGsdTools(['state', 'advance-plan', '--json'], tmpDir);
+    assert.ok(advance.success, `Command failed: ${advance.error}`);
+    assert.strictEqual(
+      JSON.parse(advance.output).error,
+      undefined,
+      `advance-plan must parse a repaired STATE.md (got: ${advance.output})`,
+    );
+
+    const complete = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(complete.success, `Command failed: ${complete.error}`);
+    assert.deepStrictEqual(
+      JSON.parse(complete.output).state_fields_missing,
+      [],
+      `every field must be reachable in a repaired STATE.md (got: ${complete.output})`,
+    );
+  });
+
+  test('regenerated STATE.md stays on the last phase when every plan is done', () => {
+    writeValidConfigJson(tmpDir);
+    writeMinimalRoadmap(tmpDir, ['1']);
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-a');
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-SUMMARY.md'), '# Summary\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.rmSync(statePath, { force: true });
+
+    const repair = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(repair.success, `Command failed: ${repair.error}`);
+
+    const regenerated = fs.readFileSync(statePath, 'utf-8');
+    assert.match(regenerated, /^\*\*Current Phase:\*\* 01$/m, regenerated);
+    assert.match(regenerated, /^\*\*Current Phase Name:\*\* a$/m, regenerated);
+    assert.match(regenerated, /^\*\*Current Plan:\*\* 01-02$/m, regenerated);
+    assert.match(regenerated, /^\*\*Progress:\*\* \[█{10}\] 100%$/m, regenerated);
+  });
+
+  test('regenerated STATE.md is still rewritable with no phase directories', () => {
+    writeValidConfigJson(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\nNo phases scoped yet.\n',
+    );
+    fs.rmSync(path.join(tmpDir, '.planning', 'phases', '01-a'), {
+      recursive: true,
+      force: true,
+    });
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.rmSync(statePath, { force: true });
+
+    const repair = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(repair.success, `Command failed: ${repair.error}`);
+
+    const regenerated = fs.readFileSync(statePath, 'utf-8');
+    assert.match(regenerated, /^\*\*Current Phase:\*\* 01$/m, regenerated);
+    assert.match(
+      regenerated,
+      /^\*\*Current Phase Name:\*\* unknown$/m,
+      regenerated,
+    );
+    assert.match(regenerated, /^\*\*Total Phases:\*\* 0$/m, regenerated);
+    assert.match(
+      regenerated,
+      /^\*\*Current Plan:\*\* Not started$/m,
+      regenerated,
+    );
+    assert.match(
+      regenerated,
+      /^\*\*Total Plans in Phase:\*\* 0$/m,
+      regenerated,
+    );
+    assert.match(regenerated, /^\*\*Progress:\*\* \[░{10}\] 0%$/m, regenerated);
+
+    // Even with nothing to place, the labels must be there for a writer to find.
+    const update = runGsdTools(
+      ['state', 'update', 'Current Phase', '03', '--json'],
+      tmpDir,
+    );
+    assert.ok(update.success, `Command failed: ${update.error}`);
+    assert.strictEqual(
+      JSON.parse(update.output).updated,
+      true,
+      `state update must find Current Phase (got: ${update.output})`,
+    );
+  });
+
   test('backs up existing STATE.md before regenerating', () => {
     writeValidConfigJson(tmpDir);
     const statePath = path.join(tmpDir, '.planning', 'STATE.md');

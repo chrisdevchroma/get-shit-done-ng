@@ -532,6 +532,15 @@ Set `commit_docs: false` during `/gsd:new-project` or via `/gsd:settings`. Add `
 
 The installer backs up locally modified GSD files to `gsd-local-patches/` before overwriting them. Run `/gsd:reapply-patches` to merge your changes back into the freshly installed copies.
 
+### Symlinked or Hardlinked Planning Files Stop Updating
+
+GSD writes `STATE.md`, `ROADMAP.md`, `REQUIREMENTS.md` and `MILESTONES.md` by creating a temporary file next to the target and renaming it over the top. That is what stops a parallel executor from reading a half-written file, and it replaces the file rather than rewriting it in place. So if you have linked a planning document instead of copying it:
+
+- **Symlink** — the first write replaces the symlink with a regular file. The new content is at the symlink's path; the link target keeps the old content, so whatever else pointed at that target stops seeing updates.
+- **Hardlink** — the first write breaks the link. The path GSD wrote to has the new content, the other name keeps the old.
+
+Neither is a bug you can configure away — it is how atomic replacement works. If you need one set of planning documents shared between two checkouts, point both at the same directory (a symlinked `.planning/` **directory** is fine — only linked files are affected).
+
 ### Subagent Appears to Fail but Work Was Done
 
 A known workaround exists for a Claude Code classification bug. GSD's orchestrators (execute-phase, quick) spot-check actual output before reporting failure. If you see a failure message but commits were made, check `git log` -- the work may have succeeded.
