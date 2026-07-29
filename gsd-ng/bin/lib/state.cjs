@@ -328,8 +328,11 @@ function stateAppendFieldToSection(content, sectionName, fieldName, value) {
     ? content.slice(frontmatterMatch[0].length)
     : content;
   const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // The header group ends at the heading's own newline. A trailing \s* there
+  // eats the blank line after it, and an empty section body then cannot see the
+  // \n## that terminates it — the lazy body runs on into the next section.
   const sectionPattern = new RegExp(
-    `(##\\s*${escaped}\\s*\\n)([\\s\\S]*?)(?=\\n##|$)`,
+    `(##[ \\t]*${escaped}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
     'i',
   );
   if (!sectionPattern.test(body)) {
@@ -338,11 +341,10 @@ function stateAppendFieldToSection(content, sectionName, fieldName, value) {
   const line = `**${fieldName}:** ${value}`;
   return (
     frontmatter +
-    body.replace(
-      sectionPattern,
-      (_match, header, sectionBody) =>
-        `${header}${sectionBody.replace(/\s*$/, '')}\n${line}\n`,
-    )
+    body.replace(sectionPattern, (_match, header, sectionBody) => {
+      const eol = header.endsWith('\r\n') ? '\r\n' : '\n';
+      return `${header}${sectionBody.replace(/\s*$/, '')}${eol}${line}${eol}`;
+    })
   );
 }
 
