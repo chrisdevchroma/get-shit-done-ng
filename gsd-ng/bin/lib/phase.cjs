@@ -1431,13 +1431,19 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
   const statePath = planningPaths(cwd).state;
   if (fs.existsSync(statePath)) {
     let stateContent = fs.readFileSync(statePath, 'utf-8');
-    // Update "Total Phases" field
+    // Update "Total Phases" field. stateReplaceField rewrites the whole value,
+    // so anything trailing the count — "7 phases" — is carried over rather than
+    // dropped.
     const totalRaw = stateExtractField(stateContent, 'Total Phases');
-    const oldTotal = totalRaw ? parseInt(totalRaw, 10) : NaN;
-    if (!isNaN(oldTotal)) {
+    const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
+    if (totalMatch) {
+      const newTotal = parseInt(totalMatch[1], 10) - 1;
       stateContent =
-        stateReplaceField(stateContent, 'Total Phases', oldTotal - 1) ||
-        stateContent;
+        stateReplaceField(
+          stateContent,
+          'Total Phases',
+          `${newTotal}${totalMatch[2]}`,
+        ) || stateContent;
     }
     // Update "Phase: X of Y" pattern
     const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;

@@ -3897,6 +3897,58 @@ describe('cmdPhaseRemove Total Phases field formats', () => {
       `plain Total Phases should be decremented (got: ${state})`,
     );
   });
+
+  test('keeps text trailing the count', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Total Phases:** 7 phases\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^\*\*Total Phases:\*\* 6 phases$/m,
+      `the suffix must survive the decrement (got: ${state})`,
+    );
+  });
+
+  test('leaves a non-numeric placeholder alone', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Total Phases:** [Y]\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^\*\*Total Phases:\*\* \[Y\]$/m,
+      `an unfilled placeholder must not be rewritten (got: ${state})`,
+    );
+  });
 });
 
 // Tag for grep-based verification — the plan acceptance checklist requires
