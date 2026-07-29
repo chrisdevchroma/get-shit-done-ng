@@ -153,6 +153,38 @@ describe('milestone complete command', () => {
     );
   });
 
+  test('harness litter in phases/ is not counted as a phase', () => {
+    // Roadmap with no phase entries at all: the milestone filter has nothing to
+    // match against and falls back to accepting whatever is on disk.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap v1.0 MVP\n\nNo phases written yet.\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Status:** In progress\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n`,
+    );
+
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    for (const name of ['01-alpha', '02-beta']) {
+      fs.mkdirSync(path.join(phasesDir, name), { recursive: true });
+    }
+    fs.mkdirSync(path.join(phasesDir, '.claude', '.cc-writes'), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(phasesDir, 'node_modules'), { recursive: true });
+
+    const result = runGsdTools('milestone complete v1.0 --name MVP --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phases,
+      2,
+      'only the two real phase directories should count',
+    );
+  });
+
   test('prepends to existing MILESTONES.md (reverse chronological)', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'MILESTONES.md'),

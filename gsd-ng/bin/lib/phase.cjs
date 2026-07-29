@@ -22,6 +22,7 @@ const {
   output,
   error,
   planningPaths,
+  writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const {
@@ -521,7 +522,7 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
 
   if (reqContent === originalContent) return result;
 
-  fs.writeFileSync(reqPath, reqContent, 'utf-8');
+  writeFileAtomic(reqPath, reqContent);
   result.updated = true;
   return result;
 }
@@ -1060,7 +1061,7 @@ function cmdPhaseAdd(cwd, description) {
     null,
   );
 
-  fs.writeFileSync(roadmapPath, updatedContent, 'utf-8');
+  writeFileAtomic(roadmapPath, updatedContent);
 
   const result = {
     phase_number: newPhaseNum,
@@ -1160,7 +1161,7 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
     afterPhase,
   );
 
-  fs.writeFileSync(roadmapPath, updatedContent, 'utf-8');
+  writeFileAtomic(roadmapPath, updatedContent);
 
   const result = {
     phase_number: decimalPhase,
@@ -1419,7 +1420,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     }
   }
 
-  fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  writeFileAtomic(roadmapPath, roadmapContent);
 
   // Update STATE.md phase count
   const statePath = planningPaths(cwd).state;
@@ -1529,7 +1530,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
       `$1${summaryCount}/${planCount} plans complete`,
     );
 
-    fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+    writeFileAtomic(roadmapPath, roadmapContent);
   }
 
   // ── Requirement closure ───────────────────────────────────────────────────

@@ -16,6 +16,7 @@ const {
   replaceInCurrentMilestone,
   getPhaseCompletionStatus,
   planningPaths,
+  writeFileAtomic,
 } = require('./core.cjs');
 
 const FIELD_VALUE = String.raw`\s*([^\n]+)`;
@@ -466,7 +467,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
     );
   }
 
-  fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  writeFileAtomic(roadmapPath, roadmapContent);
 
   output(
     {

@@ -15,6 +15,7 @@ const {
   error,
   planningPaths,
   readTextArgOrFile,
+  writeFileAtomic,
 } = require('./core.cjs');
 const {
   extractFrontmatter,
@@ -1052,7 +1053,7 @@ function writeStateMd(statePath, content, cwd) {
   // Sync YAML frontmatter from body on every write so top YAML and body bold stay in lockstep.
   // syncStateFrontmatter is idempotent and read-only on the body — only constructs FM from it.
   const synced = syncStateFrontmatter(content, cwd);
-  fs.writeFileSync(statePath, synced, 'utf-8');
+  writeFileAtomic(statePath, synced);
 }
 
 function cmdStateRebuildFrontmatter(cwd) {
@@ -1063,7 +1064,7 @@ function cmdStateRebuildFrontmatter(cwd) {
   }
   let content = fs.readFileSync(statePath, 'utf-8');
   const synced = syncStateFrontmatter(content, cwd);
-  fs.writeFileSync(statePath, synced, 'utf-8');
+  writeFileAtomic(statePath, synced);
   output({ rebuilt: true });
 }
 

@@ -29,6 +29,7 @@ const {
   findPhaseInternal,
   planningPaths,
   extractCurrentMilestone,
+  writeFileAtomic,
 } = require('../gsd-ng/bin/lib/core.cjs');
 
 // ─── loadConfig ────────────────────────────────────────────────────────────────
@@ -831,14 +832,17 @@ describe('getMilestonePhaseFilter', () => {
     assert.strictEqual(filter('04-phase-4'), false);
   });
 
-  test('returns pass-all filter when ROADMAP.md is missing', () => {
+  test('accepts every phase-shaped directory when ROADMAP.md is missing', () => {
     const filter = getMilestonePhaseFilter(tmpDir);
 
     assert.strictEqual(filter('01-foundation'), true);
     assert.strictEqual(filter('99-anything'), true);
+    assert.strictEqual(filter('5-unpadded'), true);
+    assert.strictEqual(filter('03A-sub-feature'), true);
+    assert.strictEqual(filter('05.1-patch'), true);
   });
 
-  test('returns pass-all filter when ROADMAP has no phase headings', () => {
+  test('accepts every phase-shaped directory when ROADMAP has no phase headings', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       '# Roadmap\n\nSome content without phases.\n',
@@ -848,6 +852,38 @@ describe('getMilestonePhaseFilter', () => {
 
     assert.strictEqual(filter('01-foundation'), true);
     assert.strictEqual(filter('05-api'), true);
+  });
+
+  test('rejects non-phase directories when ROADMAP.md is missing', () => {
+    const filter = getMilestonePhaseFilter(tmpDir);
+
+    for (const stray of [
+      '.claude',
+      'node_modules',
+      '.git',
+      'not-a-phase',
+      '.gitkeep',
+    ]) {
+      assert.strictEqual(
+        filter(stray),
+        false,
+        `${stray} must not count as a phase`,
+      );
+    }
+  });
+
+  test('rejects non-phase directories when ROADMAP has no phase entries', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\nSome content without phases.\n',
+    );
+
+    const filter = getMilestonePhaseFilter(tmpDir);
+
+    assert.strictEqual(filter('.claude'), false);
+    assert.strictEqual(filter('node_modules'), false);
+    assert.strictEqual(filter('01-alpha'), true);
+    assert.strictEqual(filter('02-beta'), true);
   });
 
   test('handles letter-suffix phases (e.g. 3A)', () => {
@@ -2033,5 +2069,120 @@ describe('core.cjs residuals (60-11)', () => {
     try {
       fs.unlinkSync(filePath);
     } catch {}
+  });
+});
+
+// ─── writeFileAtomic ───────────────────────────────────────────────────────────
+
+describe('writeFileAtomic', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-atomic-test-'));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('writes content and replaces an existing file', () => {
+    const target = path.join(tmpDir, 'STATE.md');
+    writeFileAtomic(target, 'first\n');
+    assert.strictEqual(fs.readFileSync(target, 'utf-8'), 'first\n');
+    writeFileAtomic(target, 'second\n');
+    assert.strictEqual(fs.readFileSync(target, 'utf-8'), 'second\n');
+  });
+
+  test('leaves no temp file behind', () => {
+    const target = path.join(tmpDir, 'STATE.md');
+    writeFileAtomic(target, 'content\n');
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
+  });
+
+  test('preserves the existing file mode', () => {
+    const target = path.join(tmpDir, 'STATE.md');
+    fs.writeFileSync(target, 'original\n');
+    fs.chmodSync(target, 0o640);
+    writeFileAtomic(target, 'replacement\n');
+    assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
+  });
+
+  test('removes the temp file and rethrows when the rename target is a directory', () => {
+    const target = path.join(tmpDir, 'STATE.md');
+    fs.mkdirSync(target);
+    assert.throws(() => writeFileAtomic(target, 'content\n'));
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
+  });
+
+  // The regression this exists for: fs.writeFileSync truncates before it writes,
+  // so a reader racing the write sees an empty or half-written file. Parallel
+  // executors rewriting STATE.md hit exactly that, and it surfaces as a field
+  // parsed as undefined.
+  test('a concurrent reader never observes a partial file', async () => {
+    const { spawn } = require('node:child_process');
+    const target = path.join(tmpDir, 'STATE.md');
+    const doneFlag = path.join(tmpDir, 'done');
+
+    const lenA = 512 * 1024;
+    const lenB = 512 * 1024 + 8192;
+    const contentA = 'A'.repeat(lenA - 1) + '\n';
+    const contentB = 'B'.repeat(lenB - 1) + '\n';
+    fs.writeFileSync(target, contentA);
+
+    const readyFlag = path.join(tmpDir, 'ready');
+    const readerSrc = `
+      const fs = require('fs');
+      const [target, doneFlag, readyFlag, lenA, lenB] = process.argv.slice(1);
+      const a = 'A'.repeat(Number(lenA) - 1) + '\\n';
+      const b = 'B'.repeat(Number(lenB) - 1) + '\\n';
+      let reads = 0;
+      const bad = [];
+      fs.writeFileSync(readyFlag, '');
+      while (!fs.existsSync(doneFlag)) {
+        let c;
+        try { c = fs.readFileSync(target, 'utf-8'); } catch { continue; }
+        reads++;
+        if (c !== a && c !== b && bad.length < 5) bad.push(c.length);
+      }
+      process.stdout.write(JSON.stringify({ reads, bad }));
+    `;
+
+    const reader = spawn(
+      process.execPath,
+      [
+        '-e',
+        readerSrc,
+        '--',
+        target,
+        doneFlag,
+        readyFlag,
+        String(lenA),
+        String(lenB),
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    let readerOut = '';
+    reader.stdout.on('data', (d) => (readerOut += d));
+
+    // Without this the writer loop can finish before the reader process is up,
+    // leaving nothing observed and nothing asserted.
+    while (!fs.existsSync(readyFlag)) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    for (let i = 0; i < 120; i++) {
+      writeFileAtomic(target, i % 2 === 0 ? contentB : contentA);
+      await new Promise((r) => setImmediate(r));
+    }
+    fs.writeFileSync(doneFlag, '');
+    await new Promise((r) => reader.on('close', r));
+
+    const result = JSON.parse(readerOut);
+    assert.ok(result.reads > 0, 'reader should have observed the file');
+    assert.deepStrictEqual(
+      result.bad,
+      [],
+      `reader observed partial content (byte lengths: ${result.bad.join(', ')})`,
+    );
   });
 });

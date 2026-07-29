@@ -11,6 +11,7 @@ const {
   output,
   error,
   planningPaths,
+  writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { formatMilestoneHeading } = require('./milestone-format.cjs');
@@ -101,7 +102,7 @@ function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
   }
 
   if (updated.length > 0) {
-    fs.writeFileSync(reqPath, reqContent, 'utf-8');
+    writeFileAtomic(reqPath, reqContent);
   }
 
   output(
@@ -234,33 +235,21 @@ function cmdMilestoneComplete(cwd, version, options) {
     const existing = fs.readFileSync(milestonesPath, 'utf-8');
     if (!existing.trim()) {
       // Empty file — treat like new
-      fs.writeFileSync(
-        milestonesPath,
-        `# Milestones\n\n${milestoneEntry}`,
-        'utf-8',
-      );
+      writeFileAtomic(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
     } else {
       // Insert after the header line(s) for reverse chronological order (newest first)
       const headerMatch = existing.match(/^(#{1,3}\s+[^\n]*\n\n?)/);
       if (headerMatch) {
         const header = headerMatch[1];
         const rest = existing.slice(header.length);
-        fs.writeFileSync(
-          milestonesPath,
-          header + milestoneEntry + rest,
-          'utf-8',
-        );
+        writeFileAtomic(milestonesPath, header + milestoneEntry + rest);
       } else {
         // No recognizable header — prepend the entry
-        fs.writeFileSync(milestonesPath, milestoneEntry + existing, 'utf-8');
+        writeFileAtomic(milestonesPath, milestoneEntry + existing);
       }
     }
   } else {
-    fs.writeFileSync(
-      milestonesPath,
-      `# Milestones\n\n${milestoneEntry}`,
-      'utf-8',
-    );
+    writeFileAtomic(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
 
   // Update STATE.md
