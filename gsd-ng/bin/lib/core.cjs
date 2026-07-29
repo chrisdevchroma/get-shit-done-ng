@@ -827,10 +827,17 @@ function getMilestoneInfo(cwd) {
   }
 }
 
+/** A phase directory starts with its (optionally zero-padded) phase number. */
+const PHASE_DIR_ANCHOR = /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;
+
 /**
  * Returns a filter function that checks whether a phase directory belongs
  * to the current milestone based on ROADMAP.md phase headings.
- * If no ROADMAP exists or no phases are listed, returns a pass-all filter.
+ *
+ * If no ROADMAP exists or no phases are listed, the filter accepts every
+ * directory whose name is shaped like a phase. That keeps a project whose
+ * roadmap is not yet written able to see its own phases, without counting
+ * whatever else lands in .planning/phases/ — `.claude`, `node_modules`, `.git`.
  */
 function getMilestonePhaseFilter(cwd) {
   const milestonePhaseNums = new Set();
@@ -856,9 +863,9 @@ function getMilestonePhaseFilter(cwd) {
   } catch {}
 
   if (milestonePhaseNums.size === 0) {
-    const passAll = () => true;
-    passAll.phaseCount = 0;
-    return passAll;
+    const anyPhaseDir = (dirName) => PHASE_DIR_ANCHOR.test(dirName);
+    anyPhaseDir.phaseCount = 0;
+    return anyPhaseDir;
   }
 
   const normalized = new Set(
@@ -868,7 +875,7 @@ function getMilestonePhaseFilter(cwd) {
   );
 
   function isDirInMilestone(dirName) {
-    const m = dirName.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
+    const m = dirName.match(PHASE_DIR_ANCHOR);
     if (!m) return false;
     return normalized.has(m[1].toLowerCase());
   }

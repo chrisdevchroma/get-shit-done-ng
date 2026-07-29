@@ -831,14 +831,17 @@ describe('getMilestonePhaseFilter', () => {
     assert.strictEqual(filter('04-phase-4'), false);
   });
 
-  test('returns pass-all filter when ROADMAP.md is missing', () => {
+  test('accepts every phase-shaped directory when ROADMAP.md is missing', () => {
     const filter = getMilestonePhaseFilter(tmpDir);
 
     assert.strictEqual(filter('01-foundation'), true);
     assert.strictEqual(filter('99-anything'), true);
+    assert.strictEqual(filter('5-unpadded'), true);
+    assert.strictEqual(filter('03A-sub-feature'), true);
+    assert.strictEqual(filter('05.1-patch'), true);
   });
 
-  test('returns pass-all filter when ROADMAP has no phase headings', () => {
+  test('accepts every phase-shaped directory when ROADMAP has no phase headings', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       '# Roadmap\n\nSome content without phases.\n',
@@ -848,6 +851,38 @@ describe('getMilestonePhaseFilter', () => {
 
     assert.strictEqual(filter('01-foundation'), true);
     assert.strictEqual(filter('05-api'), true);
+  });
+
+  test('rejects non-phase directories when ROADMAP.md is missing', () => {
+    const filter = getMilestonePhaseFilter(tmpDir);
+
+    for (const stray of [
+      '.claude',
+      'node_modules',
+      '.git',
+      'not-a-phase',
+      '.gitkeep',
+    ]) {
+      assert.strictEqual(
+        filter(stray),
+        false,
+        `${stray} must not count as a phase`,
+      );
+    }
+  });
+
+  test('rejects non-phase directories when ROADMAP has no phase entries', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\nSome content without phases.\n',
+    );
+
+    const filter = getMilestonePhaseFilter(tmpDir);
+
+    assert.strictEqual(filter('.claude'), false);
+    assert.strictEqual(filter('node_modules'), false);
+    assert.strictEqual(filter('01-alpha'), true);
+    assert.strictEqual(filter('02-beta'), true);
   });
 
   test('handles letter-suffix phases (e.g. 3A)', () => {
