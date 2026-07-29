@@ -13,6 +13,7 @@ const {
   planningPaths,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
+const { formatMilestoneHeading } = require('./milestone-format.cjs');
 const { writeStateMd } = require('./state.cjs');
 
 function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
@@ -227,7 +228,7 @@ function cmdMilestoneComplete(cwd, version, options) {
 
   // Create/append MILESTONES.md entry
   const accomplishmentsList = accomplishments.map((a) => `- ${a}`).join('\n');
-  const milestoneEntry = `## ${version} ${milestoneName} (Shipped: ${today})\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
+  const milestoneEntry = `${formatMilestoneHeading(version, milestoneName, today)}\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
 
   if (fs.existsSync(milestonesPath)) {
     const existing = fs.readFileSync(milestonesPath, 'utf-8');

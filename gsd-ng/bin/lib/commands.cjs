@@ -31,6 +31,7 @@ const {
   resolveTargetBranch,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
+const { parseCompletedMilestones } = require('./milestone-format.cjs');
 const { MODEL_PROFILES, EFFORT_PROFILES } = require('./model-profiles.cjs');
 const {
   validatePath,
@@ -3774,7 +3775,7 @@ function discoverTestCommand(cwd) {
  * Archive phase directories from completed milestones into .planning/milestones/vX.Y-phases/.
  *
  * Algorithm:
- * 1. Read MILESTONES.md, extract completed milestone versions (- [x] **vX.Y...)
+ * 1. Read MILESTONES.md, extract completed milestones via milestone-format.cjs
  * 2. Skip milestones that already have a vX.Y-phases/ archive directory
  * 3. For each unarchived milestone, read vX.Y-ROADMAP.md to extract phase numbers
  * 4. Cross-reference against .planning/phases/ directories that still exist
@@ -3802,20 +3803,10 @@ function cmdCleanup(cwd, options) {
     return;
   }
 
-  // Extract completed milestone versions: - [x] **vX.Y ... or table format | vX.Y | ... | Complete |
-  const completedVersions = [];
-  const listPattern = /^-\s*\[x\]\s*\*\*(v[\d.]+)[^*]*/gim;
-  let m;
-  while ((m = listPattern.exec(milestonesContent)) !== null) {
-    completedVersions.push(m[1]);
-  }
-  // Table format fallback: | vX.Y | ... | Complete |
-  const tablePattern = /^\|\s*(v[\d.]+)\s*\|[^|]+\|\s*Complete\s*\|/gim;
-  while ((m = tablePattern.exec(milestonesContent)) !== null) {
-    if (!completedVersions.includes(m[1])) completedVersions.push(m[1]);
-  }
+  // Completed milestones, in whichever of the shared formats the file uses
+  const completedMilestones = parseCompletedMilestones(milestonesContent);
 
-  if (completedVersions.length === 0) {
+  if (completedMilestones.length === 0) {
     const result = { milestones: [], nothing_to_do: true };
     output(result, 'No completed milestones found. Nothing to clean up.');
     return;
@@ -3842,7 +3833,8 @@ function cmdCleanup(cwd, options) {
 
   const milestoneResults = [];
 
-  for (const version of completedVersions) {
+  for (const milestone of completedMilestones) {
+    const version = milestone.version;
     // Skip already-archived milestones
     if (existingArchives.has(version)) continue;
 
@@ -3904,7 +3896,7 @@ function cmdCleanup(cwd, options) {
         `\\*\\*${version.replace('.', '\\.')}\\s*[—–-]?\\s*([^*]+)\\*\\*`,
       ),
     );
-    const name = nameLine ? nameLine[1].trim() : version;
+    const name = milestone.name || (nameLine ? nameLine[1].trim() : version);
 
     milestoneResults.push({
       version,

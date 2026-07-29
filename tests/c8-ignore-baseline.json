@@ -10,6 +10,7 @@
   "gsd-ng/bin/lib/frontmatter.cjs": 0,
   "gsd-ng/bin/lib/guard.cjs": 0,
   "gsd-ng/bin/lib/init.cjs": 0,
+  "gsd-ng/bin/lib/milestone-format.cjs": 0,
   "gsd-ng/bin/lib/milestone.cjs": 0,
   "gsd-ng/bin/lib/model-profiles.cjs": 0,
   "gsd-ng/bin/lib/phase.cjs": 0,
