@@ -41,6 +41,51 @@ function planningPaths(cwd) {
   };
 }
 
+// ─── Atomic file writes ──────────────────────────────────────────────────────
+
+let atomicWriteCounter = 0;
+
+/**
+ * Write a file so that no concurrent reader can observe it half-written.
+ *
+ * fs.writeFileSync truncates and then writes, so any other process reading the
+ * same path during that gap sees an empty or partial file. The planning
+ * documents are read and rewritten by parallel executors, where that shows up
+ * as a field parsed as undefined. Writing a temp file alongside the target and
+ * renaming over it closes the gap: rename is atomic on POSIX, so a reader gets
+ * either the whole old file or the whole new one.
+ *
+ * The temp file must live in the same directory as the target — rename across
+ * filesystems is not atomic, and on Linux fails outright.
+ *
+ * @param {string} filePath - target path
+ * @param {string} content - full file contents
+ * @param {string} [encoding] - defaults to utf-8
+ */
+function writeFileAtomic(filePath, content, encoding = 'utf-8') {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.${process.pid}.${atomicWriteCounter++}.tmp`,
+  );
+
+  let mode;
+  try {
+    mode = fs.statSync(filePath).mode;
+  } catch {}
+
+  try {
+    fs.writeFileSync(tmpPath, content, encoding);
+    if (mode !== undefined) fs.chmodSync(tmpPath, mode);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw err;
+  }
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -974,6 +1019,7 @@ module.exports = {
   setJsonMode,
   error,
   reapStaleTempFiles,
+  writeFileAtomic,
   safeReadFile,
   loadConfig,
   resolveTargetBranch,
