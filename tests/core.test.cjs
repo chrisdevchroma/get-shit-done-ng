@@ -30,6 +30,7 @@ const {
   planningPaths,
   extractCurrentMilestone,
   writeFileAtomic,
+  reapStaleAtomicTempFiles,
 } = require('../gsd-ng/bin/lib/core.cjs');
 
 // ─── loadConfig ────────────────────────────────────────────────────────────────
@@ -2126,6 +2127,69 @@ describe('writeFileAtomic', () => {
     fs.chmodSync(target, 0o640);
     writeFileAtomic(target, 'replacement\n');
     assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
+  });
+
+  // A kill between the write and the rename leaves the temp file behind. Those
+  // land next to the target — in the user's .planning/ — where the os.tmpdir()
+  // reaper never looked, so they accumulated forever, invisible until someone
+  // listed the directory.
+  test('reapStaleAtomicTempFiles collects an orphan from an interrupted write', () => {
+    const orphan = path.join(tmpDir, '.STATE.md.gsd-999999.0.tmp');
+    fs.writeFileSync(orphan, 'half-written\n');
+    const past = Date.now() / 1000 - 7200;
+    fs.utimesSync(orphan, past, past);
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, ['.STATE.md.gsd-999999.0.tmp']);
+    assert.strictEqual(fs.existsSync(orphan), false);
+  });
+
+  // Deleting a temp file a writer is still holding would turn litter into
+  // corruption, so the threshold has to be far longer than any real write.
+  test('reapStaleAtomicTempFiles leaves a fresh temp file alone', () => {
+    const inFlight = path.join(tmpDir, '.STATE.md.gsd-999999.1.tmp');
+    fs.writeFileSync(inFlight, 'being written\n');
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, []);
+    assert.strictEqual(fs.existsSync(inFlight), true);
+    assert.strictEqual(
+      fs.readFileSync(inFlight, 'utf-8'),
+      'being written\n',
+      'a live writer’s temp file must be untouched',
+    );
+  });
+
+  test('reapStaleAtomicTempFiles ignores files it did not write', () => {
+    const foreign = [
+      path.join(tmpDir, '.STATE.md.swp'),
+      path.join(tmpDir, 'notes.tmp'),
+      path.join(tmpDir, '.STATE.md.999999.0.tmp'),
+    ];
+    const past = Date.now() / 1000 - 7200;
+    for (const f of foreign) {
+      fs.writeFileSync(f, 'not ours\n');
+      fs.utimesSync(f, past, past);
+    }
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, []);
+    for (const f of foreign) {
+      assert.strictEqual(fs.existsSync(f), true, `${f} must survive`);
+    }
+  });
+
+  test('an atomic write sweeps orphans in the directory it writes to', () => {
+    const orphan = path.join(tmpDir, '.STATE.md.gsd-999999.2.tmp');
+    fs.writeFileSync(orphan, 'half-written\n');
+    const past = Date.now() / 1000 - 7200;
+    fs.utimesSync(orphan, past, past);
+
+    const target = path.join(tmpDir, 'STATE.md');
+    writeFileAtomic(target, 'fresh\n');
+
+    assert.strictEqual(fs.existsSync(orphan), false);
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
   });
 
   test('removes the temp file and rethrows when the rename target is a directory', () => {

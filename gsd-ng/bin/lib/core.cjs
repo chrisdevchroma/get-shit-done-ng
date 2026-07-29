@@ -45,6 +45,61 @@ function planningPaths(cwd) {
 
 let atomicWriteCounter = 0;
 
+// The `gsd-` segment namespaces the temp files so a sweep of a directory GSD
+// writes into cannot match anything it did not create itself.
+const ATOMIC_TEMP_PATTERN = /^\..+\.gsd-\d+\.\d+\.tmp$/;
+
+// An atomic write is writeFileSync followed immediately by renameSync — both
+// synchronous, both sub-second even for a large planning document. Nothing
+// matching the temp pattern that has sat untouched for an hour can be a write
+// in flight, and deleting one that was would turn litter into a lost file, so
+// the threshold is set orders of magnitude above the real window rather than
+// close to it.
+const ATOMIC_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+const sweptDirs = new Set();
+
+/**
+ * Delete atomic-write temp files left behind in `dir` by an interrupted write.
+ *
+ * A kill between the write and the rename leaves `.STATE.md.gsd-<pid>.<n>.tmp`
+ * next to the target. Those live in the user's `.planning/`, not in
+ * `os.tmpdir()`, so `reapStaleTempFiles` never saw them and they accumulated
+ * for the life of the project.
+ *
+ * @param {string} dir - directory to sweep
+ * @param {object} [opts]
+ * @param {number} [opts.maxAgeMs] - minimum age before a file is collected
+ * @returns {string[]} names of the files removed
+ */
+function reapStaleAtomicTempFiles(
+  dir,
+  { maxAgeMs = ATOMIC_TEMP_MAX_AGE_MS } = {},
+) {
+  const removed = [];
+  const now = Date.now();
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!ATOMIC_TEMP_PATTERN.test(entry)) continue;
+    const fullPath = path.join(dir, entry);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (!stat.isFile()) continue;
+      if (now - stat.mtimeMs < maxAgeMs) continue;
+      fs.unlinkSync(fullPath);
+      removed.push(entry);
+    } catch {
+      // skip entries we cannot stat or delete
+    }
+  }
+  return removed;
+}
+
 /**
  * Write a file so that no concurrent reader can observe it half-written.
  *
@@ -64,9 +119,16 @@ let atomicWriteCounter = 0;
  */
 function writeFileAtomic(filePath, content, encoding = 'utf-8') {
   const dir = path.dirname(filePath);
+  // Opportunistic, once per directory per process: the sweep is a readdir of a
+  // small directory, and orphans only appear when a process dies, so there is
+  // nothing to gain from repeating it on every write.
+  if (!sweptDirs.has(dir)) {
+    sweptDirs.add(dir);
+    reapStaleAtomicTempFiles(dir);
+  }
   const tmpPath = path.join(
     dir,
-    `.${path.basename(filePath)}.${process.pid}.${atomicWriteCounter++}.tmp`,
+    `.${path.basename(filePath)}.gsd-${process.pid}.${atomicWriteCounter++}.tmp`,
   );
 
   let mode;
@@ -1088,6 +1150,7 @@ module.exports = {
   setJsonMode,
   error,
   reapStaleTempFiles,
+  reapStaleAtomicTempFiles,
   writeFileAtomic,
   safeReadFile,
   loadConfig,
