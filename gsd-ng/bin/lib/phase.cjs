@@ -11,6 +11,8 @@ const {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  parsePhaseCheckboxes,
   comparePhaseNum,
   findPhaseInternal,
   getArchivedPhaseDirs,
@@ -971,22 +973,16 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   const lines = rawContent.split('\n');
 
   if (afterPhase != null) {
-    // For insert: find the parent phase's checkbox line (or last decimal of parent)
-    const escapedParent = String(afterPhase).replace(/\./g, '\\.');
+    // For insert: the parent phase's checkbox line, or the last decimal of that
+    // parent (e.g. 36.1, 36.2) — one pattern covers both.
     const parentPattern = new RegExp(
-      `^- \\[[ x]\\] \\*\\*Phase\\s+${escapedParent}[.:]`,
-    );
-    const decimalPattern = new RegExp(
-      `^- \\[[ x]\\] \\*\\*Phase\\s+${escapedParent}\\.\\d+[.:]`,
+      phaseCheckboxLinePattern(afterPhase, { withDecimals: true }),
+      'i',
     );
     let insertAfterIdx = -1;
 
     for (let i = 0; i < lines.length; i++) {
       if (parentPattern.test(lines[i])) {
-        insertAfterIdx = i;
-      }
-      // Also match existing decimal phases of this parent (e.g. 36.1, 36.2)
-      if (decimalPattern.test(lines[i])) {
         insertAfterIdx = i;
       }
     }
@@ -998,9 +994,10 @@ function insertCheckboxLine(rawContent, phaseNum, description, afterPhase) {
   }
 
   // For add (or insert fallback): append after last checkbox line in the phases list
+  const anyCheckbox = new RegExp(phaseCheckboxLinePattern(), 'i');
   let lastCheckboxIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (/^- \[[ x]\] \*\*Phase\s+\d/.test(lines[i])) {
+    if (anyCheckbox.test(lines[i])) {
       lastCheckboxIdx = i;
     }
   }
@@ -1659,11 +1656,12 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
   // Fallback: if filesystem found no next phase, check ROADMAP.md
   // for phases that are defined but not yet planned (no directory on disk).
-  // Union of two patterns:
+  // Union of two sources:
   //   1. Header pattern: `### Phase N: Title` (post-planning, when Details section exists)
-  //   2. Bullet pattern: `- [ ] **Phase N: Title**` (pre-planning, bullet-only entry)
+  //   2. Checkbox lines (pre-planning, bullet-only entry), read through the
+  //      shared helper so both supported forms — bare and bold — are seen here.
   // Note on normalization: the header pattern returns whatever is written (e.g. '06'),
-  // while the bullet pattern returns whatever is written (e.g. '6'). We do NOT pad here —
+  // while the checkbox returns whatever is written (e.g. '6'). We do NOT pad here —
   // comparePhaseNum handles both forms semantically. When both a header and bullet reference
   // the same phase, the header entry is preferred (via sort-stable dedup).
   if (isLastPhase && fs.existsSync(roadmapPath)) {
@@ -1673,17 +1671,18 @@ function cmdPhaseComplete(cwd, phaseNum) {
       );
       const headerPattern =
         /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:\s*([^\n]+)/gi;
-      // Bullet pattern also captures the name (between `:` and the closing `**`)
-      const bulletPattern =
-        /^[-*]\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*):\s*([^*\n]+?)\*\*/gim;
 
       const candidates = [];
       let pm;
       while ((pm = headerPattern.exec(roadmapForPhases)) !== null) {
         candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
       }
-      while ((pm = bulletPattern.exec(roadmapForPhases)) !== null) {
-        candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
+      for (const entry of parsePhaseCheckboxes(roadmapForPhases)) {
+        candidates.push({
+          index: entry.index,
+          num: entry.num,
+          name: entry.name || '',
+        });
       }
       // Sort by phase number ascending (comparePhaseNum handles padded/unpadded forms).
       // At equal phase number, preserve document order (header tends to appear after bullet
@@ -1707,11 +1706,12 @@ function cmdPhaseComplete(cwd, phaseNum) {
       for (const c of unique) {
         if (comparePhaseNum(c.num, phaseNum) > 0) {
           nextPhaseNum = c.num;
-          nextPhaseName = c.name
-            .replace(/\(INSERTED\)/i, '')
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, '-');
+          nextPhaseName =
+            c.name
+              .replace(/\(INSERTED\)/i, '')
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, '-') || null;
           isLastPhase = false;
           break;
         }

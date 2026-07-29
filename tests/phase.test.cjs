@@ -5649,3 +5649,153 @@ describe('executor docs record delivery, not declaration', () => {
     });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bare and bold are both supported roadmap checkbox forms. Every reader must
+// agree on that: a bold-only reader reported a milestone finished with a phase
+// still outstanding.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('checkbox form parity: bare and bold', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FORMS = [
+    { label: 'bare', line: (n, name) => `- [ ] Phase ${n}: ${name}` },
+    { label: 'bold', line: (n, name) => `- [ ] **Phase ${n}: ${name}**` },
+  ];
+
+  for (const form of FORMS) {
+    test(`phase complete finds the next unscaffolded phase (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          form.line(2, 'Beta'),
+          '',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        '# State\n\n**Current Phase:** 1\n**Status:** Ready to plan\n',
+      );
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+
+      const result = runGsdTools('phase complete 1 --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      assert.deepStrictEqual(
+        output.next_phase,
+        { number: '2', name: 'beta' },
+        `${form.label} form: Phase 2 is in the roadmap and must be the next phase`,
+      );
+      assert.strictEqual(
+        output.is_last_phase,
+        false,
+        `${form.label} form: a phase is outstanding, so this is not the last one`,
+      );
+
+      const state = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        'utf-8',
+      );
+      assert.match(
+        state,
+        /\*\*Status:\*\* Ready to plan/,
+        `${form.label} form: Status must not go to "Milestone complete"`,
+      );
+    });
+
+    test(`phase add appends after the last checkbox (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          '',
+          '### Phase 1: Alpha',
+          '**Goal:** a',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const roadmap = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        'utf-8',
+      );
+      assert.match(
+        roadmap,
+        /- \[ \] \*\*Phase 2: Gamma work\*\*/,
+        `${form.label} form: the new phase needs its checkbox line`,
+      );
+      const lines = roadmap.split('\n');
+      const alphaIdx = lines.findIndex((l) => /\[ \] .*Phase 1:/.test(l));
+      const gammaIdx = lines.findIndex((l) => /Phase 2: Gamma work/.test(l));
+      assert.ok(
+        alphaIdx >= 0 && gammaIdx === alphaIdx + 1,
+        `${form.label} form: the new checkbox belongs right after the last one ` +
+          `(alpha at ${alphaIdx}, gamma at ${gammaIdx})`,
+      );
+    });
+
+    test(`phase insert lands after the parent checkbox (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          form.line(2, 'Beta'),
+          '',
+          '### Phase 1: Alpha',
+          '**Goal:** a',
+          '',
+          '### Phase 2: Beta',
+          '**Goal:** b',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const roadmap = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        'utf-8',
+      );
+      const lines = roadmap.split('\n');
+      const parentIdx = lines.findIndex((l) => /\[ \] .*Phase 1:/.test(l));
+      const insertedIdx = lines.findIndex((l) =>
+        /\[ \] .*Phase 0?1\.1: Hotfix/.test(l),
+      );
+      assert.ok(
+        parentIdx >= 0 && insertedIdx === parentIdx + 1,
+        `${form.label} form: 1.1's checkbox belongs directly after 1's ` +
+          `(parent at ${parentIdx}, inserted at ${insertedIdx})`,
+      );
+    });
+
+  }
+});

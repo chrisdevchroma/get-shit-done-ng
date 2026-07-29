@@ -10,6 +10,9 @@ const {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
   normalizePhaseName,
   output,
   error,
@@ -66,8 +69,8 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
     if (!headerMatch) {
       // Fallback: check if phase exists in summary list but missing detail section
       const checklistPattern = new RegExp(
-        `-\\s*\\[[ x]\\]\\s*\\*\\*Phase\\s+${escapedPhase}:\\s*([^*]+)\\*\\*`,
-        'i',
+        phaseCheckboxLinePattern(phaseNum),
+        'im',
       );
       const checklistMatch = content.match(checklistPattern);
 
@@ -81,7 +84,7 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
           {
             found: false,
             phase_number: phaseNum,
-            phase_name: checklistMatch[1].trim(),
+            phase_name: phaseCheckboxName(checklistMatch[3]),
             error: 'malformed_roadmap',
             message: `Phase ${phaseNum} exists in summary list but missing "### Phase ${phaseNum}:" detail section. ROADMAP.md needs both formats.`,
           },
@@ -304,12 +307,9 @@ function cmdRoadmapAnalyze(cwd, phaseFilter) {
   ).length;
 
   // Detect phases in summary list without detail sections (malformed ROADMAP)
-  const checklistPattern = /-\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*)/gi;
-  const checklistPhases = new Set();
-  let checklistMatch;
-  while ((checklistMatch = checklistPattern.exec(content)) !== null) {
-    checklistPhases.add(checklistMatch[1]);
-  }
+  const checklistPhases = new Set(
+    parsePhaseCheckboxes(content).map((entry) => entry.num),
+  );
   const detailPhases = new Set(phases.map((p) => p.number));
   const missingDetails = [...checklistPhases].filter(
     (p) => !detailPhases.has(p),
