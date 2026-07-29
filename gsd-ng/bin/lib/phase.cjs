@@ -9,6 +9,7 @@ const {
   normalizePhaseName,
   boldLabel,
   phaseFieldPattern,
+  phaseCheckboxPattern,
   comparePhaseNum,
   findPhaseInternal,
   getArchivedPhaseDirs,
@@ -1360,7 +1361,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
 
   // Remove from phase list (checkbox)
   const checkboxPattern = new RegExp(
-    `\\n?-\\s*\\[[ x]\\]\\s*.*Phase\\s+${targetEscaped}[:\\s][^\\n]*`,
+    String.raw`\n?` + phaseCheckboxPattern(targetPhase),
     'gi',
   );
   roadmapContent = roadmapContent.replace(checkboxPattern, '');
@@ -1484,13 +1485,13 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
     // Checkbox: - [ ] Phase N: → - [x] Phase N: (...completed DATE)
     const checkboxPattern = new RegExp(
-      `(-\\s*\\[)[ ](\\]\\s*.*Phase\\s+${escapeRegex(phaseNum)}[:\\s][^\\n]*)`,
+      phaseCheckboxPattern(phaseNum, '[ ]'),
       'i',
     );
     const checkbox = replaceInCurrentMilestone(
       roadmapContent,
       checkboxPattern,
-      `$1x$2 (completed ${today})`,
+      `$1x$3 (completed ${today})`,
     );
     roadmapContent = checkbox.content;
     if (checkbox.changed) roadmapLanded.push('phase-checkbox');

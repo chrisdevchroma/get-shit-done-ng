@@ -2228,6 +2228,99 @@ describe('letter-suffix phase sorting', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// phase checkbox anchoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase checkbox anchoring', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The cross-referencing entry comes first on purpose: it is the earlier
+  // match, which wins when the pattern is allowed to start mid-line.
+  const CROSS_REFERENCING_ROADMAP = `# Roadmap
+
+- [ ] **Phase 4: Alpha** - groundwork that blocks Phase 5
+- [ ] **Phase 5: Five** - the real one
+
+## Phase Details
+
+### Phase 4: Alpha
+**Goal**: Do four
+**Plans**: TBD
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`;
+
+  function writeFixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      CROSS_REFERENCING_ROADMAP,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '04-alpha'), {
+      recursive: true,
+    });
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+  }
+
+  function readRoadmap() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+  }
+
+  test('phase complete does not tick a phase that merely mentions it', () => {
+    writeFixture();
+
+    const result = runGsdTools('phase complete 5 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = readRoadmap();
+    assert.match(
+      roadmap,
+      /^- \[ \] \*\*Phase 4: Alpha\*\*/m,
+      "Phase 4's checkbox must stay unticked",
+    );
+    assert.match(
+      roadmap,
+      /^- \[x\] \*\*Phase 5: Five\*\*/m,
+      "Phase 5's checkbox is the one that should be ticked",
+    );
+  });
+
+  test('phase remove does not delete a phase that merely mentions it', () => {
+    writeFixture();
+
+    const result = runGsdTools('phase remove 5 --force --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = readRoadmap();
+    assert.match(
+      roadmap,
+      /^- \[ \] \*\*Phase 4: Alpha\*\*/m,
+      "Phase 4's checkbox line must survive removing phase 5",
+    );
+    assert.doesNotMatch(
+      roadmap,
+      /\*\*Phase 5: Five\*\*/,
+      "Phase 5's checkbox line should be gone",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase complete — rewrite landing verification
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@ const {
   escapeRegex,
   boldLabel,
   phaseFieldPattern,
+  phaseCheckboxPattern,
   normalizePhaseName,
   output,
   error,
@@ -239,12 +240,12 @@ function cmdRoadmapAnalyze(cwd, phaseFilter) {
     } catch {}
 
     // Check ROADMAP checkbox status
-    const checkboxPattern = new RegExp(
-      `-\\s*\\[(x| )\\]\\s*.*Phase\\s+${escapeRegex(phaseNum)}[:\\s]`,
-      'i',
+    const checkboxMatch = content.match(
+      new RegExp(phaseCheckboxPattern(phaseNum), 'i'),
     );
-    const checkboxMatch = content.match(checkboxPattern);
-    const roadmapComplete = checkboxMatch ? checkboxMatch[1] === 'x' : false;
+    const roadmapComplete = checkboxMatch
+      ? checkboxMatch[2].toLowerCase() === 'x'
+      : false;
 
     // If roadmap marks phase complete, trust that over disk file structure.
     // Phases completed before GSD tracking (or via external tools) may lack
@@ -451,13 +452,13 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
   // If complete: check phase-level checkbox
   if (isComplete) {
     const checkboxPattern = new RegExp(
-      `(-\\s*\\[)[ ](\\]\\s*.*Phase\\s+${phaseEscaped}[:\\s][^\\n]*)`,
+      phaseCheckboxPattern(phaseNum, '[ ]'),
       'i',
     );
     const checkbox = replaceInCurrentMilestone(
       roadmapContent,
       checkboxPattern,
-      `$1x$2 (completed ${today})`,
+      `$1x$3 (completed ${today})`,
     );
     roadmapContent = checkbox.content;
     if (checkbox.changed) landed.push('phase-checkbox');

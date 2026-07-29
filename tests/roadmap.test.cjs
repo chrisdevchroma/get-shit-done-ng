@@ -1432,6 +1432,146 @@ Plans: TBD
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// phase checkbox anchoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('roadmap phase checkbox anchoring', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The cross-referencing entry comes first on purpose: it is the earlier
+  // match, which wins when the pattern is allowed to start mid-line.
+  const CROSS_REFERENCING_ROADMAP = `# Roadmap
+
+- [ ] **Phase 4: Alpha** - groundwork that blocks Phase 5 and Phase 6
+- [ ] **Phase 5: Five** - the real one
+
+## Phase Details
+
+### Phase 4: Alpha
+**Goal**: Do four
+**Plans**: TBD
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`;
+
+  function completePhase5(roadmapContent) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+    const result = runGsdTools('roadmap update-plan-progress 5 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return {
+      output: JSON.parse(result.output),
+      roadmap: fs.readFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        'utf-8',
+      ),
+    };
+  }
+
+  test('completing a phase does not tick a phase that merely mentions it', () => {
+    const { roadmap } = completePhase5(CROSS_REFERENCING_ROADMAP);
+    assert.match(
+      roadmap,
+      /^- \[ \] \*\*Phase 4: Alpha\*\*/m,
+      "Phase 4's checkbox must stay unticked",
+    );
+    assert.match(
+      roadmap,
+      /^- \[x\] \*\*Phase 5: Five\*\*/m,
+      "Phase 5's checkbox is the one that should be ticked",
+    );
+  });
+
+  test('reading a checkbox does not read a phase that merely mentions it', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      CROSS_REFERENCING_ROADMAP.replace(
+        '- [ ] **Phase 4: Alpha**',
+        '- [x] **Phase 4: Alpha**',
+      ),
+    );
+
+    const result = runGsdTools('roadmap analyze --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const four = output.phases.find((p) => p.number === '4');
+    const five = output.phases.find((p) => p.number === '5');
+    assert.strictEqual(four.roadmap_complete, true, 'phase 4 is ticked');
+    assert.strictEqual(
+      five.roadmap_complete,
+      false,
+      "phase 5 must not inherit phase 4's checkbox state",
+    );
+  });
+
+  // The supported prefixes between the checkbox and the word `Phase` are
+  // nothing and `**`, which is everything the templates and the roadmapper
+  // emit. Anything else is deliberately unsupported and reported as a missed
+  // target rather than silently matching a neighbouring phase.
+  test('ticks the bold checkbox form', () => {
+    const { roadmap } = completePhase5(`# Roadmap
+
+- [ ] **Phase 5: Five** - the real one
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`);
+    assert.match(roadmap, /^- \[x\] \*\*Phase 5: Five\*\*/m);
+  });
+
+  test('ticks the bare checkbox form', () => {
+    const { roadmap } = completePhase5(`# Roadmap
+
+- [ ] Phase 5: Five - the real one
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`);
+    assert.match(roadmap, /^- \[x\] Phase 5: Five/m);
+  });
+
+  test('reports an unsupported checkbox prefix instead of ticking it', () => {
+    const { output, roadmap } = completePhase5(`# Roadmap
+
+- [ ] [WIP] Phase 5: Five - the real one
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`);
+    assert.match(
+      roadmap,
+      /^- \[ \] \[WIP\] Phase 5: Five/m,
+      'an unsupported prefix is not matched',
+    );
+    assert.deepStrictEqual(
+      output.missed_targets,
+      ['phase-checkbox'],
+      'and the drop is reported rather than silent',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze --current filtering
 // ─────────────────────────────────────────────────────────────────────────────
 
