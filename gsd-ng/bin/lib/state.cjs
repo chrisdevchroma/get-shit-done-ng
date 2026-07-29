@@ -300,6 +300,52 @@ function stateReplaceFieldWithFallback(content, fieldName, newValue) {
 }
 
 /**
+ * Apply a set of fields, adding the ones the file does not carry to a section.
+ *
+ * Same replace pass as stateReplaceFields; the difference is where a missing
+ * field lands. stateReplaceFieldWithFallback appends at end of file, which for
+ * Current Position fields puts them after Session Continuity. Writing them into
+ * the section that owns them keeps the file in the canonical shape a later
+ * writer can find. Falls back to end of file when the section is absent.
+ */
+function stateApplyFieldsToSection(content, sectionName, fields) {
+  const applied = stateReplaceFields(content, fields);
+  let result = applied.content;
+  const added = [];
+  for (const [field, value] of fields) {
+    if (!applied.missing.includes(field)) continue;
+    result = stateAppendFieldToSection(result, sectionName, field, value);
+    added.push(field);
+  }
+  return { content: result, updated: applied.updated, added };
+}
+
+function stateAppendFieldToSection(content, sectionName, fieldName, value) {
+  const frontmatterMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/);
+  const frontmatter = frontmatterMatch ? frontmatterMatch[0] : '';
+  const body = frontmatterMatch
+    ? content.slice(frontmatterMatch[0].length)
+    : content;
+  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sectionPattern = new RegExp(
+    `(##\\s*${escaped}\\s*\\n)([\\s\\S]*?)(?=\\n##|$)`,
+    'i',
+  );
+  if (!sectionPattern.test(body)) {
+    return stateReplaceFieldWithFallback(content, fieldName, value);
+  }
+  const line = `**${fieldName}:** ${value}`;
+  return (
+    frontmatter +
+    body.replace(
+      sectionPattern,
+      (_match, header, sectionBody) =>
+        `${header}${sectionBody.replace(/\s*$/, '')}\n${line}\n`,
+    )
+  );
+}
+
+/**
  * Count completed plans for a phase by counting SUMMARY files on disk.
  *
  * Returns null when the phase cannot be located, which lets callers fall back
@@ -1091,8 +1137,8 @@ function cmdStateJson(cwd) {
  * Update STATE.md to reflect the start of a new phase.
  *
  * Sets: Status, Last Activity, Last Activity Description, Current Phase,
- * Current Phase Name, Current Plan, Total Plans in Phase, Current focus body,
- * and Current Position section.
+ * Current Phase Name, Current Plan, Total Plans in Phase, and the Current focus
+ * body. Fields the file does not already carry are added to Current Position.
  */
 function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   const { state: statePath } = planningPaths(cwd);
@@ -1118,7 +1164,11 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   const firstPlan = `${phaseNum}-01`;
   const description = `Starting Phase ${phaseNum}: ${phaseName}`;
 
-  // Update flat fields
+  // ## Current Position is written a field at a time, never wholesale. The
+  // section holds fields this command knows nothing about — Total Phases,
+  // Progress — so replacing its body dropped them, and the compound lines it
+  // wrote in their place carried two facts each, which no later field writer
+  // can update without destroying one of them.
   const replacements = [
     ['Status', 'In progress'],
     ['Last Activity', today],
@@ -1129,21 +1179,12 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
     ['Total Plans in Phase', String(planCount)],
   ];
 
-  const failed = [];
-  for (const [field, value] of replacements) {
-    content = stateReplaceFieldWithFallback(content, field, value);
-  }
-
-  // Update ## Current Position section body
-  const positionSectionPattern =
-    /(##\s*Current Position\s*\n)([\s\S]*?)(?=\n##|$)/i;
-  const positionBody = `\nPhase ${phaseNum} of ?? (${phaseName}) — In Progress\nPlan: 1 of ${planCount} — executing\nStatus: Phase ${phaseNum} starting — ${phaseName}\n`;
-  if (positionSectionPattern.test(content)) {
-    content = content.replace(
-      positionSectionPattern,
-      (_match, header) => `${header}${positionBody}`,
-    );
-  }
+  const applied = stateApplyFieldsToSection(
+    content,
+    'Current Position',
+    replacements,
+  );
+  content = applied.content;
 
   // Update ## Current focus section body
   const focusSectionPattern = /(##\s*Current focus\s*\n)([\s\S]*?)(?=\n##|$)/i;
@@ -1162,7 +1203,8 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
       phase: phaseNum,
       name: phaseName,
       plans: planCount,
-      failed,
+      fields_updated: applied.updated,
+      fields_added: applied.added,
     },
     'true',
   );
@@ -1303,6 +1345,7 @@ module.exports = {
   stateReplaceField,
   stateReplaceFields,
   stateReplaceFieldWithFallback,
+  stateApplyFieldsToSection,
   writeStateMd,
   cmdStateRebuildFrontmatter,
   cmdStateLoad,

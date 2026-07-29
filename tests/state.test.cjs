@@ -4758,4 +4758,74 @@ describe('templates/state.md round trip', () => {
     assert.strictEqual(snap.session.stopped_at, 'Finished 01-01');
     assert.strictEqual(snap.session.resume_file, 'None');
   });
+
+  test('begin-phase leaves every field reachable by phase complete', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 2: Beta\n**Goal:** b\n**Plans:** 1 plans\n\n### Phase 3: Gamma\n**Goal:** g\n**Plans:** 1 plans\n',
+    );
+    const p2 = path.join(tmpDir, '.planning', 'phases', '02-beta');
+    fs.mkdirSync(p2, { recursive: true });
+    fs.writeFileSync(path.join(p2, '02-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p2, '02-01-SUMMARY.md'), '# Summary');
+
+    const begin = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '2',
+        '--name',
+        'Beta',
+        '--plans',
+        '1',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(begin.success, `Command failed: ${begin.error}`);
+    const beginOut = JSON.parse(begin.output);
+    assert.deepStrictEqual(
+      beginOut.fields_added,
+      [],
+      `template fields must all be found in place (got: ${begin.output})`,
+    );
+
+    // Fields begin-phase does not set must survive it — the wholesale rewrite of
+    // the Current Position body used to drop them.
+    const afterBegin = fs.readFileSync(statePath(), 'utf-8');
+    assert.match(afterBegin, /^\*\*Current Phase:\*\* 02$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Current Phase Name:\*\* Beta$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Current Plan:\*\* 02-01$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Total Plans in Phase:\*\* 1$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Status:\*\* In progress$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Total Phases:\*\* \[Y\]$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Progress:\*\* \[░+\] 0%$/m, afterBegin);
+
+    const complete = runGsdTools(['phase', 'complete', '2', '--json'], tmpDir);
+    assert.ok(complete.success, `Command failed: ${complete.error}`);
+    assert.deepStrictEqual(
+      JSON.parse(complete.output).state_fields_missing,
+      [],
+      `every field must still be reachable after begin-phase (got: ${complete.output})`,
+    );
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(state, /^\*\*Current Phase:\*\* 3$/m, state);
+    assert.match(state, /^\*\*Current Phase Name:\*\* gamma$/m, state);
+    assert.match(state, /^\*\*Status:\*\* Ready to plan$/m, state);
+    assert.match(state, /^\*\*Current Plan:\*\* Not started$/m, state);
+    assert.match(
+      state,
+      new RegExp(`^\\*\\*Last Activity:\\*\\* ${today}$`, 'm'),
+      state,
+    );
+    assert.match(
+      state,
+      /^\*\*Last Activity Description:\*\* Phase 2 complete, transitioned to Phase 3$/m,
+      state,
+    );
+  });
 });
