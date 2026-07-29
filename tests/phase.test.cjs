@@ -4,7 +4,7 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -6195,4 +6195,110 @@ describe('phase add and insert milestone scoping', () => {
       'the decimal follows its parent inside the current milestone',
     );
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROADMAP.md mutations wait for the lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every one of these reads ROADMAP.md, computes from it and from the phase
+// directories, and writes the whole file back. Unserialised, two of them
+// overlapping means the loser's whole contribution is discarded — for phase add
+// and phase insert that is a section and a checkbox nothing recomputes, and for
+// phase complete a tick and a completion date read before a straggler's plan
+// count landed.
+//
+// The lock is held by the test process, so the child's wait is guaranteed rather
+// than raced for: it cannot write until the holder lets go, whatever the timing.
+
+describe('ROADMAP.md mutations wait for the lock', () => {
+  let tmpDir;
+  let roadmapPath;
+  let lockPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    lockPath = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** Goal one',
+        '**Plans:** TBD',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** Goal two',
+        '**Plans:** TBD',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 01\n**Current Phase Name:** Alpha\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2026-01-01\n**Last Activity Description:** Working\n**Total Phases:** 2 phases\n',
+    );
+    for (const [num, name] of [
+      ['01', 'alpha'],
+      ['02', 'beta'],
+    ]) {
+      const dir = path.join(tmpDir, '.planning', 'phases', `${num}-${name}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-01-PLAN.md`), '# Plan');
+      fs.writeFileSync(path.join(dir, `${num}-01-SUMMARY.md`), '# Summary');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const CASES = [
+    { label: 'phase add', args: ['phase', 'add', 'Gamma'] },
+    { label: 'phase insert', args: ['phase', 'insert', '1', 'Urgent'] },
+    { label: 'phase remove', args: ['phase', 'remove', '2', '--force'] },
+    { label: 'phase complete', args: ['phase', 'complete', '1'] },
+  ];
+
+  for (const c of CASES) {
+    test(`${c.label} does not rewrite ROADMAP.md while another writer holds it`, async () => {
+      const before = fs.readFileSync(roadmapPath, 'utf-8');
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          host: require('os').hostname(),
+          at: new Date().toISOString(),
+        }),
+      );
+
+      const child = spawn(process.execPath, [TOOLS_PATH, ...c.args], {
+        cwd: tmpDir,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (d) => (stderr += d));
+      const exited = new Promise((r) => child.on('close', r));
+
+      await new Promise((r) => setTimeout(r, 600));
+      assert.strictEqual(
+        fs.readFileSync(roadmapPath, 'utf-8'),
+        before,
+        `${c.label} rewrote ROADMAP.md while another writer held the lock`,
+      );
+
+      fs.unlinkSync(lockPath);
+      const code = await exited;
+      assert.strictEqual(code, 0, `${c.label} should succeed: ${stderr.trim()}`);
+      assert.notStrictEqual(
+        fs.readFileSync(roadmapPath, 'utf-8'),
+        before,
+        `${c.label} should have rewritten ROADMAP.md once the lock was free`,
+      );
+    });
+  }
 });

@@ -385,6 +385,28 @@ function withFileLock(filePath, fn, opts = {}) {
   }
 }
 
+/**
+ * Run a ROADMAP.md read-modify-write as one indivisible step.
+ *
+ * Every executor in a wave calls `roadmap update-plan-progress`, which reads the
+ * whole roadmap and writes the whole roadmap back. Its numbers come from disk
+ * rather than from the file it is rewriting, so racers converge on a valid count
+ * — but a caller that read before a sibling's summary landed writes its lower
+ * count over the higher one, and the next call is the only thing that repairs it.
+ * A caller updating a different phase is worse off than that: its row is not
+ * recomputed by anyone, so the sibling's whole-file write drops it.
+ *
+ * Held across the disk reads too, not only the file rewrite. The stale value is
+ * produced by counting summaries, so a lock taken after that count has already
+ * been taken serialises the write of an answer that is already out of date.
+ *
+ * The section must span the read, so callers wrap their whole body rather than
+ * the write; planningPaths is called inside to keep the one lock path per project.
+ */
+function withRoadmapLock(cwd, fn) {
+  return withFileLock(planningPaths(cwd).roadmap, fn);
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -1447,6 +1469,7 @@ module.exports = {
   acquireFileLock,
   releaseFileLock,
   withFileLock,
+  withRoadmapLock,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,
