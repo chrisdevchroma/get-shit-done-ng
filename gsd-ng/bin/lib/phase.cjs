@@ -9,6 +9,7 @@ const {
   normalizePhaseName,
   boldLabel,
   phaseFieldPattern,
+  phaseNumPattern,
   phaseCheckboxPattern,
   comparePhaseNum,
   findPhaseInternal,
@@ -248,7 +249,7 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     !withheldFromPlans &&
     getPhaseCompletionStatus(phaseDir).isComplete
   ) {
-    const phaseEsc = escapeRegex(phaseNum);
+    const phaseEsc = phaseNumPattern(phaseNum);
     const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
       new RegExp(
         `(#{2,4}\\s*Phase\\s+${phaseEsc}[:\\s][\\s\\S]*?)(?=#{2,4}\\s*Phase\\s+|$)`,
@@ -1352,7 +1353,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
 
   // Remove the target phase section
-  const targetEscaped = escapeRegex(targetPhase);
+  const targetEscaped = phaseNumPattern(targetPhase);
   const sectionPattern = new RegExp(
     `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
     'i',
@@ -1499,7 +1500,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
       roadmapMissed.push('phase-checkbox');
 
     // Progress table: update Status to Complete, add date (handles 4 or 5 column tables)
-    const phaseEscaped = escapeRegex(phaseNum);
+    const phaseEscaped = phaseNumPattern(phaseNum);
     const tableRowPattern = new RegExp(
       `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
       'im',

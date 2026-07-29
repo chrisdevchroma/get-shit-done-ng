@@ -8,6 +8,7 @@ const {
   escapeRegex,
   boldLabel,
   phaseFieldPattern,
+  phaseNumPattern,
   phaseCheckboxPattern,
   normalizePhaseName,
   output,
@@ -51,8 +52,8 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
       fs.readFileSync(roadmapPath, 'utf-8'),
     );
 
-    // Escape special regex chars in phase number, handle decimal
-    const escapedPhase = escapeRegex(phaseNum);
+    // Escape special regex chars in phase number, handle decimal and padding
+    const escapedPhase = phaseNumPattern(phaseNum);
 
     // Match "## Phase X:", "### Phase X:", or "#### Phase X:" with optional name
     const phasePattern = new RegExp(
@@ -397,7 +398,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
   }
 
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-  const phaseEscaped = escapeRegex(phaseNum);
+  const phaseEscaped = phaseNumPattern(phaseNum);
   const landed = [];
   const missed = [];
 

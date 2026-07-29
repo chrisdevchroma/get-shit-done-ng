@@ -2228,6 +2228,99 @@ describe('letter-suffix phase sorting', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// zero-padded phase arguments
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete zero-padded phase arguments', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function seedPhase5() {
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+  }
+
+  test('a padded argument rewrites the same targets as a bare one', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 5: Five** - the real one
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 5. Five | 0/1 | Planned |  |
+`,
+    );
+    seedPhase5();
+
+    const result = runGsdTools('phase complete 05 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.roadmap_updated, true, 'targets landed');
+    assert.deepStrictEqual(output.roadmap_missed_targets, []);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: 1\/1 plans complete$/m,
+      'the detail section must agree with the progress table',
+    );
+    assert.match(roadmap, /^- \[x\] \*\*Phase 5: Five\*\*/m);
+    assert.match(roadmap, /^\| 5\. Five \| 0\/1 \| Complete/m);
+  });
+
+  test('a padded argument still rejects a longer phase number', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 50: Fifty
+**Goal**: Fifty stuff
+**Plans**: TBD-FIFTY
+
+### Phase 5: Five
+**Goal**: Five stuff
+**Plans**: TBD-FIVE
+`,
+    );
+    seedPhase5();
+
+    const result = runGsdTools('phase complete 05', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD-FIFTY$/m,
+      "the longer phase's Plans line must be left alone",
+    );
+    assert.match(roadmap, /^\*\*Plans\*\*: 1\/1 plans complete$/m);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase checkbox anchoring
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -708,7 +708,7 @@ function getRoadmapPhaseInternal(cwd, phaseNum) {
     const content = extractCurrentMilestone(
       fs.readFileSync(roadmapPath, 'utf-8'),
     );
-    const escapedPhase = escapeRegex(phaseNum.toString());
+    const escapedPhase = phaseNumPattern(phaseNum.toString());
     const phasePattern = new RegExp(
       `#{2,4}\\s*Phase\\s+${escapedPhase}:\\s*([^\\n]+)`,
       'i',
@@ -1061,7 +1061,6 @@ module.exports = {
   getMilestoneInfo,
   getMilestonePhaseFilter,
   extractCurrentMilestone,
-  currentMilestoneSlice,
   replaceInCurrentMilestone,
   hasPhaseTableRow,
   hasPhasePlansLine,
