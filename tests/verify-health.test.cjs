@@ -3043,3 +3043,161 @@ describe('validate health — phase checkbox forms (W017/W018)', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — the Memories section repair stays inside its own section
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// syncCLAUDEmdMemories replaces the `## Memories` section of the project rules
+// file. It located that section by substring: `## Memories` matched inside a
+// `### Memories ...` heading, and the terminator `\n## ` skipped past every
+// deeper heading, so the replacement either spliced into the middle of a
+// heading or swallowed the sections below it. It is matched by a section
+// pattern now, of the shape STATE.md's readers and writers use.
+
+describe('validate health — Memories section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phases\n\n- [ ] Phase 1: Alpha\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'PROJECT.md'),
+      '# Project\n\n## What This Is\n\nX.\n\n## Core Value\n\nY.\n\n## Requirements\n\nZ.\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Session State\n\nPhase 1 in progress.\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ model_profile: 'balanced', commit_docs: true }, null, 2),
+    );
+    const memDir = path.join(tmpDir, '.claude', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(memDir, 'feedback_new.md'),
+      '---\nname: New\ndescription: A newly added memory\ntype: feedback\n---\n\nBody.\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The unreferenced memory file above raises W011, whose repair is the section
+  // rewrite under test.
+  function repairAndRead(rulesContent) {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), rulesContent);
+    const result = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    const action = (parsed.repairs_performed || []).find(
+      (r) => r.action === 'syncCLAUDEmdMemories',
+    );
+    assert.ok(
+      action && action.success,
+      `Expected a successful syncCLAUDEmdMemories: ${JSON.stringify(parsed)}`,
+    );
+    return fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  test('an empty Memories section does not consume the section below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n## Conventions\n\nTwo spaces.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+  });
+
+  test('a populated Memories section does not consume the section below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n\n## Conventions\n\nTwo spaces.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      !after.includes('gone.md'),
+      `Stale entry should be replaced: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+  });
+
+  test('a Memories section last in the file is replaced whole', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Conventions\n\nTwo spaces.\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      !after.includes('gone.md'),
+      `Stale entry should be replaced: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+    assert.strictEqual(
+      after.match(/^## Memories$/gm).length,
+      1,
+      `Exactly one Memories heading: ${after}`,
+    );
+  });
+
+  test('a Memories section terminates at a level-3 heading below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n\n### Appendix\n\nKeep me.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      after.includes('### Appendix') && after.includes('Keep me.'),
+      `Level-3 section below Memories should survive: ${after}`,
+    );
+  });
+
+  test('a level-3 heading that starts with Memories is not the section', () => {
+    const after = repairAndRead(
+      '# Project\n\n### Memories Overview\n\nContext.\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n',
+    );
+
+    assert.ok(
+      after.includes('### Memories Overview') && after.includes('Context.'),
+      `The level-3 heading should be untouched: ${after}`,
+    );
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.strictEqual(
+      after.match(/^## Memories$/gm).length,
+      1,
+      `Exactly one Memories heading: ${after}`,
+    );
+  });
+});
