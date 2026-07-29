@@ -1170,8 +1170,9 @@ function cmdStateJson(cwd) {
  * Update STATE.md to reflect the start of a new phase.
  *
  * Sets: Status, Last Activity, Last Activity Description, Current Phase,
- * Current Phase Name, Current Plan, Total Plans in Phase, and the Current focus
- * body. Fields the file does not already carry are added to Current Position.
+ * Current Phase Name, Current Plan, Total Plans in Phase and Current focus.
+ * Fields the file does not already carry are added to the section that owns
+ * them; no section body is replaced.
  */
 function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   const { state: statePath } = planningPaths(cwd);
@@ -1219,14 +1220,28 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   );
   content = applied.content;
 
-  // Update ## Current focus section body
-  const focusSectionPattern = /(##\s*Current focus\s*\n)([\s\S]*?)(?=\n##|$)/i;
-  const focusBody = `\n${phaseName} — ${planCount} plan${planCount !== 1 ? 's' : ''} to execute\n`;
-  if (focusSectionPattern.test(content)) {
-    content = content.replace(
-      focusSectionPattern,
-      (_match, header) => `${header}${focusBody}`,
+  // Current focus is a field too — the canonical file carries it under
+  // ## Project Reference. Replacing the body of a ## Current focus section
+  // instead discarded whatever else lived there, and left nothing a later
+  // writer could update by label. A file carrying neither the field nor the
+  // section is left alone rather than given a field of unknown provenance.
+  const plural = Number(planCount) === 1 ? '' : 's';
+  const focusValue = `${phaseName} — ${planCount} plan${plural} to execute`;
+  let focus = 'absent';
+  const focusApplied = stateReplaceFields(content, [
+    ['Current focus', focusValue],
+  ]);
+  if (focusApplied.updated.length > 0) {
+    content = focusApplied.content;
+    focus = 'updated';
+  } else if (sectionPattern('Current focus').test(content)) {
+    content = stateAppendFieldToSection(
+      content,
+      'Current focus',
+      'Current focus',
+      focusValue,
     );
+    focus = 'added';
   }
 
   writeStateMd(statePath, content, cwd);
@@ -1238,6 +1253,7 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
       plans: planCount,
       fields_updated: applied.updated,
       fields_added: applied.added,
+      focus,
     },
     'true',
   );

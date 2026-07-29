@@ -5491,3 +5491,197 @@ describe('state write paths keep to their own section', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// begin-phase and ## Current focus
+//
+// The body of the section was replaced wholesale, and its header group ate the
+// blank line after the heading, so a begin-phase against an empty Current focus
+// deleted the section that followed it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state begin-phase writes Current focus as a field', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function beginPhase(content, name = 'API Layer', plans = '4') {
+    fs.writeFileSync(statePath, content);
+    const result = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '3',
+        '--name',
+        name,
+        '--plans',
+        plans,
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return {
+      output: JSON.parse(result.output),
+      state: fs.readFileSync(statePath, 'utf-8'),
+    };
+  }
+
+  const DECISIONS = '## Decisions\n\n- [Phase 1]: keep me\n';
+
+  test('an empty Current focus section keeps the section after it', () => {
+    const { state } = beginPhase(`# State\n\n## Current focus\n\n${DECISIONS}`);
+
+    assert.ok(
+      state.includes(DECISIONS),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('an empty Current focus section gains the field', () => {
+    const { output, state } = beginPhase(
+      `# State\n\n## Current focus\n\n${DECISIONS}`,
+    );
+
+    assert.strictEqual(output.focus, 'added');
+    assert.ok(
+      state.includes('**Current focus:** API Layer — 4 plans to execute'),
+      `the field must be written (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('**Current focus:**') < state.indexOf('## Decisions'),
+      `the field must land under its own heading (got: ${state})`,
+    );
+  });
+
+  test('prose already in the section survives', () => {
+    const { state } = beginPhase(
+      `# State\n\n## Current focus\n\nFoundation work in progress.\n\n${DECISIONS}`,
+    );
+
+    assert.ok(
+      state.includes('Foundation work in progress.'),
+      `the existing body must survive (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('the canonical field is replaced where it already lives', () => {
+    const { output, state } = beginPhase(
+      [
+        '# State',
+        '',
+        '## Project Reference',
+        '',
+        '**Core value:** ship it',
+        '**Current focus:** Foundation',
+        '',
+        DECISIONS,
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.focus, 'updated');
+    assert.ok(
+      state.includes('**Current focus:** API Layer — 4 plans to execute'),
+      `the field must be rewritten in place (got: ${state})`,
+    );
+    assert.ok(!state.includes('**Current focus:** Foundation'), state);
+    assert.ok(
+      state.includes('**Core value:** ship it'),
+      `neighbouring fields must survive (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('a second run replaces the field rather than adding another', () => {
+    beginPhase(`# State\n\n## Current focus\n\n${DECISIONS}`);
+    fs.copyFileSync(statePath, path.join(tmpDir, 'first.md'));
+    const first = fs.readFileSync(statePath, 'utf-8');
+
+    const result = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '4',
+        '--name',
+        'Deploy',
+        '--plans',
+        '1',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const state = fs.readFileSync(statePath, 'utf-8');
+
+    assert.strictEqual(JSON.parse(result.output).focus, 'updated');
+    assert.strictEqual(
+      (state.match(/\*\*Current focus:\*\*/g) || []).length,
+      1,
+      `exactly one Current focus field (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Current focus:** Deploy — 1 plan to execute'),
+      `singular plan wording (got: ${state}; first run: ${first})`,
+    );
+  });
+
+  test('a file with neither the field nor the section is left alone', () => {
+    const { output, state } = beginPhase(
+      `# State\n\n## Current Position\n\n**Current Phase:** 01\n\n${DECISIONS}`,
+    );
+
+    assert.strictEqual(output.focus, 'absent');
+    assert.ok(
+      !state.includes('**Current focus:**'),
+      `no field may be invented (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('a Current focus section that ends the file gains the field', () => {
+    const { state } = beginPhase(
+      `# State\n\n## Current Position\n\n**Current Phase:** 01\n\n${DECISIONS}\n## Current focus\n\nold prose\n`,
+    );
+
+    assert.match(
+      state,
+      /## Current focus\n\nold prose\n\*\*Current focus:\*\* API Layer — 4 plans to execute\n$/,
+      `field appended at the end of the last section (got: ${state})`,
+    );
+  });
+
+  test('an empty Current focus section followed by a deeper heading', () => {
+    const { state } = beginPhase(
+      '# State\n\n## Current focus\n\n### Detail\n\nnotes\n',
+    );
+
+    assert.ok(
+      state.indexOf('**Current focus:**') < state.indexOf('### Detail'),
+      `the field must precede the deeper heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('### Detail\n\nnotes\n'),
+      `the nested section must survive (got: ${state})`,
+    );
+  });
+});
