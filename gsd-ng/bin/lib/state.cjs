@@ -27,6 +27,41 @@ const {
   securityWarningFor,
 } = require('./security.cjs');
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Match one markdown section: group 1 is the heading line, group 2 the body.
+ *
+ * The header group ends at the heading's own newline. A trailing \s* there eats
+ * the blank line after it, and an empty section body then cannot see the \n##
+ * that terminates it — the lazy body runs on into the next section, which a
+ * reader reports as its own and a writer replaces. Every section matcher in this
+ * file is built here so that shape cannot come back at one site.
+ *
+ * namePattern is a regex fragment, not a literal — callers pass alternations.
+ * The terminator stops at any heading of level 2 or deeper.
+ */
+function sectionPattern(namePattern, level = '##') {
+  return new RegExp(
+    `(${level}[ \\t]*${namePattern}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
+    'i',
+  );
+}
+
+/**
+ * Match a section whose body is the rows of a markdown table: group 1 runs to the
+ * end of the separator row, group 2 holds the rows. The run between heading and
+ * table cannot cross a heading, so an empty section never adopts a later table.
+ */
+function tableSectionPattern(namePattern) {
+  return new RegExp(
+    `(##[ \\t]*${namePattern}[ \\t]*\\r?\\n(?:(?!\\r?\\n#{2})[\\s\\S])*?\\|[^\\n]+\\r?\\n\\|[-|: \\t]+\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
+    'i',
+  );
+}
+
 function cmdStateLoad(cwd) {
   const config = loadConfig(cwd);
   const {
@@ -119,7 +154,7 @@ function cmdStateGet(cwd, section) {
 
   try {
     const content = fs.readFileSync(statePath, 'utf-8');
-    const fieldEscaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const fieldEscaped = escapeRegex(section);
 
     // Check for **field:** value (bold format)
     const boldPattern = new RegExp(`\\*\\*${fieldEscaped}:\\*\\*\\s*(.*)`, 'i');
@@ -140,13 +175,9 @@ function cmdStateGet(cwd, section) {
     }
 
     // Check for ## Section -- parse into structured data
-    const sectionPattern = new RegExp(
-      `##\\s*${fieldEscaped}\\s*\n([\\s\\S]*?)(?=\\n##|$)`,
-      'i',
-    );
-    const sectionMatch = content.match(sectionPattern);
+    const sectionMatch = content.match(sectionPattern(fieldEscaped));
     if (sectionMatch) {
-      const sectionContent = sectionMatch[1].trim();
+      const sectionContent = sectionMatch[2].trim();
       // Parse the untrusted body before attaching the banner: parseSectionContent
       // reads the banner's own "key: value" shape as a field and swallows the
       // `[SECURITY WARNING:` marker callers match on.
@@ -327,21 +358,14 @@ function stateAppendFieldToSection(content, sectionName, fieldName, value) {
   const body = frontmatterMatch
     ? content.slice(frontmatterMatch[0].length)
     : content;
-  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // The header group ends at the heading's own newline. A trailing \s* there
-  // eats the blank line after it, and an empty section body then cannot see the
-  // \n## that terminates it — the lazy body runs on into the next section.
-  const sectionPattern = new RegExp(
-    `(##[ \\t]*${escaped}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
-    'i',
-  );
-  if (!sectionPattern.test(body)) {
+  const pattern = sectionPattern(escapeRegex(sectionName));
+  if (!pattern.test(body)) {
     return stateReplaceFieldWithFallback(content, fieldName, value);
   }
   const line = `**${fieldName}:** ${value}`;
   return (
     frontmatter +
-    body.replace(sectionPattern, (_match, header, sectionBody) => {
+    body.replace(pattern, (_match, header, sectionBody) => {
       const eol = header.endsWith('\r\n') ? '\r\n' : '\n';
       return `${header}${sectionBody.replace(/\s*$/, '')}${eol}${line}${eol}`;
     })
@@ -831,11 +855,9 @@ function cmdStateSnapshot(cwd, phaseFilter) {
 
   // Extract decisions table
   const decisions = [];
-  const decisionsMatch = content.match(
-    /##\s*Decisions Made[\s\S]*?\n\|[^\n]+\n\|[-|\s]+\n([\s\S]*?)(?=\n##|\n$|$)/i,
-  );
+  const decisionsMatch = content.match(tableSectionPattern('Decisions Made'));
   if (decisionsMatch) {
-    const tableBody = decisionsMatch[1];
+    const tableBody = decisionsMatch[2];
     const rows = tableBody
       .trim()
       .split('\n')
@@ -857,11 +879,9 @@ function cmdStateSnapshot(cwd, phaseFilter) {
 
   // Extract blockers list
   const blockers = [];
-  const blockersMatch = content.match(
-    /##\s*Blockers\s*\n([\s\S]*?)(?=\n##|$)/i,
-  );
+  const blockersMatch = content.match(sectionPattern('Blockers'));
   if (blockersMatch) {
-    const blockersSection = blockersMatch[1];
+    const blockersSection = blockersMatch[2];
     const items = blockersSection.match(/^-\s+(.+)$/gm) || [];
     for (const item of items) {
       blockers.push(item.replace(/^-\s+/, '').trim());
@@ -876,10 +896,10 @@ function cmdStateSnapshot(cwd, phaseFilter) {
   };
 
   const sessionMatch = content.match(
-    /##\s*Session(?:\s+Continuity)?\s*\n([\s\S]*?)(?=\n##|$)/i,
+    sectionPattern('Session(?:[ \\t]+Continuity)?'),
   );
   if (sessionMatch) {
-    const sessionSection = sessionMatch[1];
+    const sessionSection = sessionMatch[2];
     session.last_date =
       stateExtractField(sessionSection, 'Last Date') ||
       stateExtractField(sessionSection, 'Last session');

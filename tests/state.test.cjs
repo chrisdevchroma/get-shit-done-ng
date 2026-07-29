@@ -5059,3 +5059,194 @@ describe('state begin-phase writes into an empty Current Position', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section boundaries on the read paths
+//
+// An empty section must read as empty. The header groups ended in \s*, which ate
+// the blank line after the heading, so the lazy body could not see the \n## that
+// terminates it and every read reported the *next* section's content instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state get section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function write(content) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+  }
+
+  function get(section) {
+    const result = runGsdTools(['state', 'get', section, '--json'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('an empty section does not read as the section after it', () => {
+    write(
+      '# State\n\n## Current focus\n\n## Decisions\n\n- [Phase 1]: keep me\n',
+    );
+
+    assert.deepStrictEqual(
+      get('Current focus'),
+      { 'Current focus': '' },
+      'an empty section reads as empty',
+    );
+    assert.deepStrictEqual(get('Decisions'), {
+      Decisions: ['[Phase 1]: keep me'],
+    });
+  });
+
+  test('a populated section reads its own body only', () => {
+    write('# State\n\n## Blockers\n\n- one\n- two\n\n## Notes\n\n- three\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: ['one', 'two'] });
+  });
+
+  test('a section that ends the file reads its body', () => {
+    write('# State\n\n## Notes\n\n- three\n\n## Blockers\n\n- one\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: ['one'] });
+  });
+
+  test('an empty section followed by a deeper heading reads as empty', () => {
+    write('# State\n\n## Blockers\n\n### Detail\n\n- nested\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: '' });
+  });
+
+  test('a section below frontmatter reads its own body only', () => {
+    write(
+      '---\nphase: 2\n---\n\n# State\n\n## Blockers\n\n## Notes\n\n- three\n',
+    );
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: '' });
+  });
+});
+
+describe('state-snapshot section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function snapshot(content) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+    const result = runGsdTools(['state-snapshot', '--json'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('an empty Blockers section reports no blockers', () => {
+    const out = snapshot(
+      '# State\n\n## Blockers\n\n## Pending Todos\n\n- not a blocker\n',
+    );
+
+    assert.deepStrictEqual(out.blockers, []);
+  });
+
+  test('a populated Blockers section reports its own items', () => {
+    const out = snapshot(
+      '# State\n\n## Blockers\n\n- real one\n\n## Pending Todos\n\n- not a blocker\n',
+    );
+
+    assert.deepStrictEqual(out.blockers, ['real one']);
+  });
+
+  test('an empty Session section reports no session fields', () => {
+    const out = snapshot(
+      '# State\n\n## Session Continuity\n\n## Notes\n\n**Stopped At:** wrong section\n',
+    );
+
+    assert.strictEqual(out.session.stopped_at, null);
+    assert.strictEqual(out.session.last_date, null);
+  });
+
+  test('a populated Session section reports its own fields', () => {
+    const out = snapshot(
+      '# State\n\n## Session Continuity\n\n**Stopped At:** right here\n\n## Notes\n\n- x\n',
+    );
+
+    assert.strictEqual(out.session.stopped_at, 'right here');
+  });
+
+  test('an empty Decisions Made table reports no decisions', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, []);
+  });
+
+  test('a populated Decisions Made table reports its own rows', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '| 01 | picked jose | smaller |',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, [
+      { phase: '01', summary: 'picked jose', rationale: 'smaller' },
+    ]);
+  });
+
+  test('a Decisions Made section without a table reports no decisions', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        'None yet.',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, []);
+  });
+});
