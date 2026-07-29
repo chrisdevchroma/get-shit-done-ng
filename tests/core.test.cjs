@@ -1876,15 +1876,36 @@ describe('core.cjs residuals (60-11)', () => {
       '<details>\n## Phase 1: foo\nold\n</details>\n\n## Phase 2: bar\nold-active';
     const r = replaceInCurrentMilestone(before, /old-active/, 'new-active');
     // Replacement happens AFTER the last </details>
-    assert.match(r, /new-active/);
+    assert.match(r.content, /new-active/);
     // The </details> region remains untouched
-    assert.match(r, /old\n<\/details>/);
+    assert.match(r.content, /old\n<\/details>/);
+    assert.strictEqual(r.changed, true, 'the rewrite landed');
   });
 
   test('replaceInCurrentMilestone: no </details> falls back to plain replace', () => {
     const { replaceInCurrentMilestone } = require('../gsd-ng/bin/lib/core.cjs');
     const r = replaceInCurrentMilestone('plain content', /content/, 'replaced');
-    assert.match(r, /replaced/);
+    assert.match(r.content, /replaced/);
+    assert.strictEqual(r.changed, true, 'the rewrite landed');
+  });
+
+  test('replaceInCurrentMilestone: reports a pattern that matched nothing', () => {
+    const { replaceInCurrentMilestone } = require('../gsd-ng/bin/lib/core.cjs');
+    const r = replaceInCurrentMilestone('plain content', /absent/, 'replaced');
+    assert.strictEqual(r.content, 'plain content', 'content is untouched');
+    assert.strictEqual(r.changed, false, 'a no-match must be reported');
+  });
+
+  test('replaceInCurrentMilestone: a match inside an archived milestone is not a landing', () => {
+    const { replaceInCurrentMilestone } = require('../gsd-ng/bin/lib/core.cjs');
+    const before = '<details>\n**Plans**: TBD\n</details>\n\n## Phase 2: bar\n';
+    const r = replaceInCurrentMilestone(before, /TBD/, 'done');
+    assert.match(r.content, /\*\*Plans\*\*: TBD/, 'archive stays untouched');
+    assert.strictEqual(
+      r.changed,
+      false,
+      'a match outside the current milestone must not read as a landing',
+    );
   });
 
   // getRoadmapPhaseInternal catch (lines 604-605)
