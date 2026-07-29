@@ -41,6 +41,51 @@ function planningPaths(cwd) {
   };
 }
 
+// ─── Atomic file writes ──────────────────────────────────────────────────────
+
+let atomicWriteCounter = 0;
+
+/**
+ * Write a file so that no concurrent reader can observe it half-written.
+ *
+ * fs.writeFileSync truncates and then writes, so any other process reading the
+ * same path during that gap sees an empty or partial file. The planning
+ * documents are read and rewritten by parallel executors, where that shows up
+ * as a field parsed as undefined. Writing a temp file alongside the target and
+ * renaming over it closes the gap: rename is atomic on POSIX, so a reader gets
+ * either the whole old file or the whole new one.
+ *
+ * The temp file must live in the same directory as the target — rename across
+ * filesystems is not atomic, and on Linux fails outright.
+ *
+ * @param {string} filePath - target path
+ * @param {string} content - full file contents
+ * @param {string} [encoding] - defaults to utf-8
+ */
+function writeFileAtomic(filePath, content, encoding = 'utf-8') {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.${process.pid}.${atomicWriteCounter++}.tmp`,
+  );
+
+  let mode;
+  try {
+    mode = fs.statSync(filePath).mode;
+  } catch {}
+
+  try {
+    fs.writeFileSync(tmpPath, content, encoding);
+    if (mode !== undefined) fs.chmodSync(tmpPath, mode);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw err;
+  }
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -409,6 +454,25 @@ function phaseFieldPattern(phaseEscaped, label) {
   );
 }
 
+// A phase number is written zero-padded in directory names and unpadded in
+// ROADMAP.md prose, and either spelling is a valid CLI argument. One fragment
+// matches both, so the same resolved number can drive the directory lookup and
+// the document rewrite.
+function phaseNumPattern(phaseNum) {
+  return (
+    String.raw`0*` + escapeRegex(String(phaseNum).replace(/^0+(?=\d)/, ''))
+  );
+}
+
+// Checkbox item for one phase in the roadmap's phase list. The prefix between
+// the box and the word `Phase` is bare or bold and nothing else: a permissive
+// prefix lets the match start inside another phase's description, which ticks
+// the wrong phase. `boxState` narrows the box itself, e.g. to `[ ]` to tick
+// only an unticked entry.
+function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
+  return String.raw`(-\s*\[)(${boxState})(\]\s*(?:\*\*)?Phase\s+${phaseNumPattern(phaseNum)}[:\s][^\n]*)`;
+}
+
 function normalizePhaseName(phase) {
   const match = String(phase).match(/^(\d+)([A-Z])?((?:\.\d+)*)/i);
   if (!match) return phase;
@@ -616,16 +680,66 @@ function extractCurrentMilestone(content) {
  * Replace a pattern only in the current milestone section of ROADMAP.md
  * (everything after the last </details> close tag). Used for write operations
  * that must not accidentally modify archived milestone checkboxes/tables.
+ *
+ * Returns `{ content, changed }`. `changed` reports whether the pattern found
+ * its target, not whether the bytes differ — a rewrite to the value already
+ * there still landed. Callers must inspect it: a pattern that matches nothing
+ * otherwise writes the file back unaltered and reports success, which is how
+ * every rewrite bug in this file has reached users.
  */
 function replaceInCurrentMilestone(content, pattern, replacement) {
-  const lastDetailsClose = content.lastIndexOf('</details>');
-  if (lastDetailsClose === -1) {
-    return content.replace(pattern, replacement);
-  }
-  const offset = lastDetailsClose + '</details>'.length;
+  const offset = currentMilestoneOffset(content);
   const before = content.slice(0, offset);
   const after = content.slice(offset);
-  return before + after.replace(pattern, replacement);
+  const changed = new RegExp(pattern.source, pattern.flags).test(after);
+  return { content: before + after.replace(pattern, replacement), changed };
+}
+
+function currentMilestoneOffset(content) {
+  const lastDetailsClose = content.lastIndexOf('</details>');
+  return lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
+}
+
+function currentMilestoneSlice(content) {
+  return content.slice(currentMilestoneOffset(content));
+}
+
+// ─── Rewrite target probes ───────────────────────────────────────────────────
+//
+// Deliberately looser than the patterns that do the rewriting, and used only to
+// decide whether a rewrite that matched nothing is worth reporting. A roadmap
+// with no progress table has not missed one; a roadmap whose table row is
+// written in a shape the rewrite cannot reach has.
+
+function hasPhaseTableRow(content, phaseNum) {
+  return new RegExp(
+    String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
+    'im',
+  ).test(currentMilestoneSlice(content));
+}
+
+function hasPhasePlansLine(content, phaseNum) {
+  const section = currentMilestoneSlice(content).match(
+    new RegExp(
+      String.raw`#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])(?:(?!\n#{2,4}\s*Phase\s)[\s\S])*`,
+      'i',
+    ),
+  );
+  return section ? /^\s*\*{0,2}Plans\*{0,2}\s*:/im.test(section[0]) : false;
+}
+
+// True when there is nothing to report: either the phase has no checkbox at
+// all, or it has one in the supported form and a tick that matched nothing
+// only means the box was already ticked. False when some checkbox line names
+// the phase in a shape the rewrite cannot reach.
+function isPhaseCheckboxSatisfied(content, phaseNum) {
+  const slice = currentMilestoneSlice(content);
+  const loose = new RegExp(
+    String.raw`-\s*\[[ x]\][^\n]*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])[:\s]`,
+    'i',
+  );
+  if (!loose.test(slice)) return true;
+  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(slice);
 }
 
 // ─── Roadmap & model utilities ────────────────────────────────────────────────
@@ -639,7 +753,7 @@ function getRoadmapPhaseInternal(cwd, phaseNum) {
     const content = extractCurrentMilestone(
       fs.readFileSync(roadmapPath, 'utf-8'),
     );
-    const escapedPhase = escapeRegex(phaseNum.toString());
+    const escapedPhase = phaseNumPattern(phaseNum.toString());
     const phasePattern = new RegExp(
       `#{2,4}\\s*Phase\\s+${escapedPhase}:\\s*([^\\n]+)`,
       'i',
@@ -827,10 +941,17 @@ function getMilestoneInfo(cwd) {
   }
 }
 
+/** A phase directory starts with its (optionally zero-padded) phase number. */
+const PHASE_DIR_ANCHOR = /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;
+
 /**
  * Returns a filter function that checks whether a phase directory belongs
  * to the current milestone based on ROADMAP.md phase headings.
- * If no ROADMAP exists or no phases are listed, returns a pass-all filter.
+ *
+ * If no ROADMAP exists or no phases are listed, the filter accepts every
+ * directory whose name is shaped like a phase. That keeps a project whose
+ * roadmap is not yet written able to see its own phases, without counting
+ * whatever else lands in .planning/phases/ — `.claude`, `node_modules`, `.git`.
  */
 function getMilestonePhaseFilter(cwd) {
   const milestonePhaseNums = new Set();
@@ -856,9 +977,9 @@ function getMilestonePhaseFilter(cwd) {
   } catch {}
 
   if (milestonePhaseNums.size === 0) {
-    const passAll = () => true;
-    passAll.phaseCount = 0;
-    return passAll;
+    const anyPhaseDir = (dirName) => PHASE_DIR_ANCHOR.test(dirName);
+    anyPhaseDir.phaseCount = 0;
+    return anyPhaseDir;
   }
 
   const normalized = new Set(
@@ -868,7 +989,7 @@ function getMilestonePhaseFilter(cwd) {
   );
 
   function isDirInMilestone(dirName) {
-    const m = dirName.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
+    const m = dirName.match(PHASE_DIR_ANCHOR);
     if (!m) return false;
     return normalized.has(m[1].toLowerCase());
   }
@@ -967,6 +1088,7 @@ module.exports = {
   setJsonMode,
   error,
   reapStaleTempFiles,
+  writeFileAtomic,
   safeReadFile,
   loadConfig,
   resolveTargetBranch,
@@ -976,6 +1098,8 @@ module.exports = {
   escapeRegex,
   boldLabel,
   phaseFieldPattern,
+  phaseNumPattern,
+  phaseCheckboxPattern,
   normalizePhaseName,
   comparePhaseNum,
   searchPhaseInDir,
@@ -991,6 +1115,9 @@ module.exports = {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  hasPhaseTableRow,
+  hasPhasePlansLine,
+  isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,
   readVerificationStatus,
   toPosixPath,

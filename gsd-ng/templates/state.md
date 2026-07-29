@@ -18,12 +18,15 @@ See: .planning/PROJECT.md (updated [date])
 
 ## Current Position
 
-Phase: [X] of [Y] ([Phase name])
-Plan: [A] of [B] in current phase
-Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]
-Last activity: [YYYY-MM-DD] — [What happened]
-
-Progress: [░░░░░░░░░░] 0%
+**Current Phase:** [X]
+**Current Phase Name:** [Phase name]
+**Total Phases:** [Y]
+**Current Plan:** [A]
+**Total Plans in Phase:** [B]
+**Status:** [Ready to plan / Planning / Ready to execute / In progress / Phase complete]
+**Last Activity:** [YYYY-MM-DD]
+**Last Activity Description:** [What happened]
+**Progress:** [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -68,9 +71,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: [YYYY-MM-DD HH:MM]
-Stopped at: [Description of last completed action]
-Resume file: [Path to .continue-here*.md if exists, otherwise "None"]
+**Last session:** [YYYY-MM-DD HH:MM]
+**Stopped at:** [Description of last completed action]
+**Resume file:** [Path to .continue-here*.md if exists, otherwise "None"]
 ```
 
 <purpose>
@@ -124,13 +127,19 @@ Claude reads PROJECT.md directly for requirements, constraints, and decisions.
 
 ### Current Position
 Where we are right now:
-- Phase X of Y — which phase
-- Plan A of B — which plan within phase
+- Current Phase / Current Phase Name / Total Phases — which phase
+- Current Plan / Total Plans in Phase — which plan within phase
 - Status — current state
-- Last activity — what happened most recently
+- Last Activity / Last Activity Description — what happened most recently
 - Progress bar — visual indicator of overall completion
 
 Progress calculation: (completed plans) / (total plans across all phases) × 100%
+
+**Field format.** Fields are written as `**Label:** value`, one fact per line.
+gsd-tools writes each field back by label, so a line carrying two facts
+(`Phase: 2 of 7 (auth)`) cannot be updated without losing one of them. The
+plain `Label: value` form is still read, for STATE.md files written before this
+was settled.
 
 ### Performance Metrics
 Track velocity to understand execution patterns:

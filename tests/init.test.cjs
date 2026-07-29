@@ -964,6 +964,23 @@ describe('cmdInitProgress', () => {
     );
   });
 
+  test('paused_at detected from a plain STATE.md pause line', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nPaused At: Phase 2, Task 3 — implementing auth\n',
+    );
+
+    const result = runGsdTools('init progress --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(output.paused_at, 'paused_at should be set for the plain form');
+    assert.ok(
+      output.paused_at.includes('Phase 2, Task 3'),
+      'paused_at should contain pause location',
+    );
+  });
+
   test('no paused_at when STATE.md has no pause line', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
@@ -2347,20 +2364,66 @@ describe('init.cjs branch defaults (60-11)', () => {
     assert.ok(parsed.phase_suggestion || parsed.phase_found);
   });
 
-  // cmdInitProgress: non-numeric directory name (regex no-match → falsy fallback)
-  test('init progress: non-numeric phase dir name falls back to whole dir', () => {
+  // cmdInitProgress: only phase-shaped directories are listed, so stray
+  // directories under .planning/phases/ are not reported as phases.
+  test('init progress: non-phase-shaped directories are excluded', () => {
     const phasesDir = path.join(tmpDir, '.planning', 'phases');
     fs.mkdirSync(path.join(phasesDir, 'misc-orphan'), { recursive: true });
+    fs.mkdirSync(path.join(phasesDir, 'node_modules'), { recursive: true });
+    fs.mkdirSync(path.join(phasesDir, '04-real'), { recursive: true });
     const r = runGsdTools(['init', 'progress', '--json'], tmpDir);
     assert.ok(r.success, r.error);
     const parsed = JSON.parse(r.output);
-    // The non-numeric dir is included; phase regex doesn't match so name is null
-    const orphan = (parsed.phases || []).find(
-      (p) => p.directory && p.directory.includes('misc-orphan'),
+    assert.deepStrictEqual(
+      parsed.phases.map((p) => p.directory),
+      ['.planning/phases/04-real'],
     );
-    if (orphan) {
-      assert.strictEqual(orphan.name, null);
-    }
+    assert.strictEqual(parsed.phase_count, 1);
+  });
+
+  // cmdInitProgress: a phase directory that is only a number has no name part
+  test('init progress: phase directory without a name suffix reports null name', () => {
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03'), {
+      recursive: true,
+    });
+    const r = runGsdTools(['init', 'progress', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    const phase = parsed.phases.find((p) => p.number === '03');
+    assert.ok(phase, 'bare-numeric phase directory should be listed');
+    assert.strictEqual(phase.name, null);
+    assert.strictEqual(phase.directory, '.planning/phases/03');
+  });
+
+  // cmdInitProgress: phase zero normalizes to '0', not the empty string, on
+  // both the directory side and the ROADMAP side — otherwise the scaffolded
+  // phase and its roadmap entry fail to match and the phase is listed twice.
+  test('init progress: scaffolded phase 0 is not duplicated by its ROADMAP entry', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '# v1.0 — milestone',
+        '',
+        '## Phase 0: bootstrap',
+        '',
+        '## Phase 1: build',
+      ].join('\n'),
+    );
+    const phaseZero = path.join(tmpDir, '.planning', 'phases', '00-bootstrap');
+    fs.mkdirSync(phaseZero, { recursive: true });
+    fs.writeFileSync(path.join(phaseZero, '00-01-PLAN.md'), '---\n---\n');
+
+    const r = runGsdTools(['init', 'progress', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    const zeroPhases = parsed.phases.filter(
+      (p) => parseInt(p.number, 10) === 0,
+    );
+    assert.strictEqual(zeroPhases.length, 1);
+    assert.strictEqual(zeroPhases[0].directory, '.planning/phases/00-bootstrap');
+    assert.strictEqual(zeroPhases[0].status, 'in_progress');
   });
 
   // cmdInitProgress: phases dir absent → readdirSync catch
@@ -2396,6 +2459,32 @@ describe('init.cjs branch defaults (60-11)', () => {
     const parsed = JSON.parse(r.output);
     // currentPhase was set (phase 1), so nextPhase should remain unset for phase 2
     assert.ok(parsed.current_phase);
+  });
+
+  // cmdInitProgress: nothing scaffolded yet → the first ROADMAP phase is what
+  // the workflow should start on
+  test('init progress: first ROADMAP-only phase becomes next_phase when nothing is scaffolded', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '# v1.0 — milestone',
+        '',
+        '## Phase 1: discovery',
+        '',
+        '## Phase 2: build',
+      ].join('\n'),
+    );
+    const r = runGsdTools(['init', 'progress', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.strictEqual(parsed.current_phase, null);
+    assert.ok(parsed.next_phase, 'next_phase should come from the ROADMAP');
+    assert.strictEqual(parsed.next_phase.number, '1');
+    assert.strictEqual(parsed.next_phase.name, 'discovery');
+    assert.strictEqual(parsed.next_phase.status, 'not_started');
+    assert.strictEqual(parsed.next_phase.directory, null);
   });
 
   // cmdInitMilestoneOp: archive dir absent → readdirSync catch

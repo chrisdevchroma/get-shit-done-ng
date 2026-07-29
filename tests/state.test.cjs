@@ -4656,3 +4656,406 @@ describe('cmdStateAdvancePlan rewind reporting', () => {
     assert.strictEqual(currentPlanInState(), '07-02');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// templates/state.md round trip
+//
+// The template's own output must be reachable by every field writer. It was not:
+// the Current Position block was plain text with compound lines, and the writers
+// matched bold labels only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('templates/state.md round trip', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function templateStateMd() {
+    const template = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'templates', 'state.md'),
+      'utf-8',
+    );
+    const block = template.match(/```markdown\n([\s\S]*?)\n```/);
+    assert.ok(block, 'templates/state.md must contain a markdown file template');
+    return block[1] + '\n';
+  }
+
+  function statePath() {
+    return path.join(tmpDir, '.planning', 'STATE.md');
+  }
+
+  test('phase complete updates every field of a template-shaped STATE.md', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Alpha\n**Goal:** a\n**Plans:** 1 plans\n\n### Phase 2: Beta\n**Goal:** b\n**Plans:** 1 plans\n',
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(
+      out.state_fields_missing,
+      [],
+      `template fields must all be reachable (got: ${r.output})`,
+    );
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(state, /^\*\*Current Phase:\*\* 2$/m, state);
+    assert.match(state, /^\*\*Current Phase Name:\*\* beta$/m, state);
+    assert.match(state, /^\*\*Status:\*\* Ready to plan$/m, state);
+    assert.match(state, /^\*\*Current Plan:\*\* Not started$/m, state);
+    assert.match(state, new RegExp(`^\\*\\*Last Activity:\\*\\* ${today}$`, 'm'), state);
+    assert.match(
+      state,
+      /^\*\*Last Activity Description:\*\* Phase 1 complete, transitioned to Phase 2$/m,
+      state,
+    );
+  });
+
+  test('progress, session and read-back work against the template shape', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const progress = runGsdTools(['state', 'update-progress', '--json'], tmpDir);
+    assert.ok(progress.success, progress.error);
+    assert.strictEqual(JSON.parse(progress.output).updated, true);
+    assert.match(
+      fs.readFileSync(statePath(), 'utf-8'),
+      /^\*\*Progress:\*\* \[█+\] 100%$/m,
+    );
+
+    const session = runGsdTools(
+      ['state', 'record-session', '--stopped-at', 'Finished 01-01', '--json'],
+      tmpDir,
+    );
+    assert.ok(session.success, session.error);
+    const sessionOut = JSON.parse(session.output);
+    assert.ok(
+      sessionOut.updated.includes('Last session'),
+      `session fields must be found (got: ${session.output})`,
+    );
+    assert.ok(sessionOut.updated.includes('Stopped At'), session.output);
+    assert.ok(sessionOut.updated.includes('Resume File'), session.output);
+
+    const snapshot = runGsdTools(['state-snapshot', '--json'], tmpDir);
+    assert.ok(snapshot.success, snapshot.error);
+    const snap = JSON.parse(snapshot.output);
+    assert.strictEqual(snap.session.stopped_at, 'Finished 01-01');
+    assert.strictEqual(snap.session.resume_file, 'None');
+  });
+
+  test('begin-phase leaves every field reachable by phase complete', () => {
+    fs.writeFileSync(statePath(), templateStateMd());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 2: Beta\n**Goal:** b\n**Plans:** 1 plans\n\n### Phase 3: Gamma\n**Goal:** g\n**Plans:** 1 plans\n',
+    );
+    const p2 = path.join(tmpDir, '.planning', 'phases', '02-beta');
+    fs.mkdirSync(p2, { recursive: true });
+    fs.writeFileSync(path.join(p2, '02-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p2, '02-01-SUMMARY.md'), '# Summary');
+
+    const begin = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '2',
+        '--name',
+        'Beta',
+        '--plans',
+        '1',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(begin.success, `Command failed: ${begin.error}`);
+    const beginOut = JSON.parse(begin.output);
+    assert.deepStrictEqual(
+      beginOut.fields_added,
+      [],
+      `template fields must all be found in place (got: ${begin.output})`,
+    );
+
+    // Fields begin-phase does not set must survive it — the wholesale rewrite of
+    // the Current Position body used to drop them.
+    const afterBegin = fs.readFileSync(statePath(), 'utf-8');
+    assert.match(afterBegin, /^\*\*Current Phase:\*\* 02$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Current Phase Name:\*\* Beta$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Current Plan:\*\* 02-01$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Total Plans in Phase:\*\* 1$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Status:\*\* In progress$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Total Phases:\*\* \[Y\]$/m, afterBegin);
+    assert.match(afterBegin, /^\*\*Progress:\*\* \[░+\] 0%$/m, afterBegin);
+
+    const complete = runGsdTools(['phase', 'complete', '2', '--json'], tmpDir);
+    assert.ok(complete.success, `Command failed: ${complete.error}`);
+    assert.deepStrictEqual(
+      JSON.parse(complete.output).state_fields_missing,
+      [],
+      `every field must still be reachable after begin-phase (got: ${complete.output})`,
+    );
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(state, /^\*\*Current Phase:\*\* 3$/m, state);
+    assert.match(state, /^\*\*Current Phase Name:\*\* gamma$/m, state);
+    assert.match(state, /^\*\*Status:\*\* Ready to plan$/m, state);
+    assert.match(state, /^\*\*Current Plan:\*\* Not started$/m, state);
+    assert.match(
+      state,
+      new RegExp(`^\\*\\*Last Activity:\\*\\* ${today}$`, 'm'),
+      state,
+    );
+    assert.match(
+      state,
+      /^\*\*Last Activity Description:\*\* Phase 2 complete, transitioned to Phase 3$/m,
+      state,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// stateApplyFieldsToSection — which section an added field lands in
+//
+// The section body was matched with a header group ending in \s*, which ate the
+// blank line after the heading; an empty section's lazy body then ran past the
+// next heading and every added field was written into the following section.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('stateApplyFieldsToSection', () => {
+  const { stateApplyFieldsToSection } = require('../gsd-ng/bin/lib/state.cjs');
+
+  const METRICS = '## Performance Metrics\n\n**Velocity:**\n- Total plans completed: 0\n';
+
+  function apply(content, fields) {
+    return stateApplyFieldsToSection(content, 'Current Position', fields);
+  }
+
+  test('adds a field to an empty section, not to the section after it', () => {
+    const result = apply(`# State\n\n## Current Position\n\n${METRICS}`, [
+      ['Current Phase', '02'],
+    ]);
+
+    assert.strictEqual(
+      result.content,
+      `# State\n\n## Current Position\n\n**Current Phase:** 02\n\n${METRICS}`,
+      `field must land under its own heading (got: ${JSON.stringify(result.content)})`,
+    );
+    assert.ok(
+      result.content.indexOf('**Current Phase:** 02') <
+        result.content.indexOf('## Performance Metrics'),
+      'field must precede the next heading',
+    );
+    assert.deepStrictEqual(result.added, ['Current Phase']);
+    assert.deepStrictEqual(result.updated, []);
+  });
+
+  test('adds a field after the existing body of a populated section', () => {
+    const result = apply(
+      `# State\n\n## Current Position\n\n**Total Phases:** 7\n\n${METRICS}`,
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      `# State\n\n## Current Position\n\n**Total Phases:** 7\n**Current Phase:** 02\n\n${METRICS}`,
+      JSON.stringify(result.content),
+    );
+  });
+
+  test('adds a field to a section that ends the file', () => {
+    const result = apply(
+      `# State\n\n${METRICS}\n## Current Position\n\n**Total Phases:** 7\n`,
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      `# State\n\n${METRICS}\n## Current Position\n\n**Total Phases:** 7\n**Current Phase:** 02\n`,
+      JSON.stringify(result.content),
+    );
+  });
+
+  test('stops at a deeper heading nested in the section', () => {
+    const result = apply(
+      '# State\n\n## Current Position\n\n**Total Phases:** 7\n\n### Detail\n\nnotes\n',
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      '# State\n\n## Current Position\n\n**Total Phases:** 7\n**Current Phase:** 02\n\n### Detail\n\nnotes\n',
+      JSON.stringify(result.content),
+    );
+  });
+
+  test('adds a field to an empty section followed by a deeper heading', () => {
+    const result = apply(
+      '# State\n\n## Current Position\n\n### Detail\n\nnotes\n',
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      '# State\n\n## Current Position\n\n**Current Phase:** 02\n\n### Detail\n\nnotes\n',
+      JSON.stringify(result.content),
+    );
+  });
+
+  test('keeps the file on CRLF line endings', () => {
+    const result = apply(
+      '# State\r\n\r\n## Current Position\r\n\r\n**Total Phases:** 7\r\n\r\n## Performance Metrics\r\n\r\n- x\r\n',
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      '# State\r\n\r\n## Current Position\r\n\r\n**Total Phases:** 7\r\n**Current Phase:** 02\r\n\r\n## Performance Metrics\r\n\r\n- x\r\n',
+      JSON.stringify(result.content),
+    );
+    assert.ok(
+      !/[^\r]\n/.test(result.content),
+      `no bare LF may be introduced (got: ${JSON.stringify(result.content)})`,
+    );
+  });
+
+  test('adds below the frontmatter block, not inside it', () => {
+    const result = apply(
+      '---\nphase: 2\n---\n\n## Current Position\n\n## Next\n\n- x\n',
+      [['Current Phase', '02']],
+    );
+
+    assert.strictEqual(
+      result.content,
+      '---\nphase: 2\n---\n\n## Current Position\n\n**Current Phase:** 02\n\n## Next\n\n- x\n',
+      JSON.stringify(result.content),
+    );
+  });
+
+  test('appends at end of file when the section is absent', () => {
+    const result = apply('# State\n\n## Other\n\n- x\n', [
+      ['Current Phase', '02'],
+    ]);
+
+    assert.strictEqual(
+      result.content,
+      '# State\n\n## Other\n\n- x\n**Current Phase:** 02\n',
+      JSON.stringify(result.content),
+    );
+    assert.deepStrictEqual(result.added, ['Current Phase']);
+  });
+
+  test('replaces fields already present and adds only the rest', () => {
+    const result = apply(
+      `# State\n\n## Current Position\n\n**Current Phase:** 01\n\n${METRICS}`,
+      [
+        ['Current Phase', '02'],
+        ['Current Plan', '02-01'],
+      ],
+    );
+
+    assert.strictEqual(
+      result.content,
+      `# State\n\n## Current Position\n\n**Current Phase:** 02\n**Current Plan:** 02-01\n\n${METRICS}`,
+      JSON.stringify(result.content),
+    );
+    assert.deepStrictEqual(result.updated, ['Current Phase']);
+    assert.deepStrictEqual(result.added, ['Current Plan']);
+  });
+
+  test('adds several fields in order without nesting them', () => {
+    const result = apply(`# State\n\n## Current Position\n\n${METRICS}`, [
+      ['Current Phase', '02'],
+      ['Current Phase Name', 'Beta'],
+      ['Current Plan', '02-01'],
+    ]);
+
+    assert.strictEqual(
+      result.content,
+      `# State\n\n## Current Position\n\n**Current Phase:** 02\n**Current Phase Name:** Beta\n**Current Plan:** 02-01\n\n${METRICS}`,
+      JSON.stringify(result.content),
+    );
+  });
+});
+
+describe('state begin-phase writes into an empty Current Position', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('every added field lands in the section, not in the next one', () => {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      '# Project State\n\n## Current Position\n\n## Performance Metrics\n\n**Velocity:**\n- Total plans completed: 0\n',
+    );
+
+    const result = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '2',
+        '--name',
+        'Beta',
+        '--plans',
+        '1',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const added = JSON.parse(result.output).fields_added;
+    assert.deepStrictEqual(
+      added.sort(),
+      [
+        'Current Phase',
+        'Current Phase Name',
+        'Current Plan',
+        'Last Activity',
+        'Last Activity Description',
+        'Status',
+        'Total Plans in Phase',
+      ],
+      `all seven fields are absent from this file (got: ${result.output})`,
+    );
+
+    const state = fs.readFileSync(statePath, 'utf-8');
+    const metricsAt = state.indexOf('## Performance Metrics');
+    for (const field of added) {
+      const at = state.indexOf(`**${field}:**`);
+      assert.ok(at !== -1, `${field} must be written (got: ${state})`);
+      assert.ok(
+        at < metricsAt,
+        `${field} must land in Current Position, not Performance Metrics (got: ${state})`,
+      );
+    }
+    assert.match(
+      state,
+      /\n\*\*Velocity:\*\*\n- Total plans completed: 0\n$/,
+      `Performance Metrics must be left alone (got: ${state})`,
+    );
+  });
+});

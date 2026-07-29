@@ -26,7 +26,7 @@ const {
 } = require('./core.cjs');
 const { DEFAULTS } = require('./defaults.cjs');
 const { validatePhaseNumber } = require('./security.cjs');
-const { adjustQuickTable } = require('./state.cjs');
+const { adjustQuickTable, stateExtractField } = require('./state.cjs');
 const { resolveGitContext } = require('./workspace.cjs');
 const { resolveTypeAlias, readTypeAliases } = require('./type-alias.cjs');
 
@@ -1155,8 +1155,7 @@ function cmdInitProgress(cwd) {
   let pausedAt = null;
   try {
     const state = fs.readFileSync(planningPaths(cwd).state, 'utf-8');
-    const pauseMatch = state.match(/\*\*Paused At:\*\*\s*(.+)/);
-    if (pauseMatch) pausedAt = pauseMatch[1].trim();
+    pausedAt = stateExtractField(state, 'Paused At');
   } catch {}
 
   const result = {

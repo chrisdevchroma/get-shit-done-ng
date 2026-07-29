@@ -1,11 +1,13 @@
 name: Security Scan
 
 on:
-  # Must stay unfiltered: `security-gate` is a required status check, and a
-  # required context on a path-filtered workflow deadlocks — a pull request
-  # outside the filter never starts the workflow, so the status it waits on is
-  # never posted. Scope is applied to changed files by SCAN_PATHS in
-  # scripts/ci-security-scan.cjs instead.
+  # `pull_request_target` resolves this file from the repository's default
+  # branch, not from the pull request's base — edits here are inert until the
+  # default branch carries them.
+  #
+  # Keep the trigger unfiltered. A path filter skips the workflow outright
+  # rather than scanning nothing, so no status is posted at all; scope belongs
+  # in SCAN_PATHS in scripts/ci-security-scan.cjs, which sees the diff.
   pull_request_target:
 
 permissions:

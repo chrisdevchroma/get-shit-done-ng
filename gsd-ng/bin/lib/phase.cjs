@@ -9,6 +9,8 @@ const {
   normalizePhaseName,
   boldLabel,
   phaseFieldPattern,
+  phaseNumPattern,
+  phaseCheckboxPattern,
   comparePhaseNum,
   findPhaseInternal,
   getArchivedPhaseDirs,
@@ -16,15 +18,24 @@ const {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  hasPhaseTableRow,
+  hasPhasePlansLine,
+  isPhaseCheckboxSatisfied,
   readVerificationStatus,
   getPhaseCompletionStatus,
   toPosixPath,
   output,
   error,
   planningPaths,
+  writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
-const { writeStateMd } = require('./state.cjs');
+const {
+  writeStateMd,
+  stateExtractField,
+  stateReplaceField,
+  stateReplaceFields,
+} = require('./state.cjs');
 
 // VERIFICATION.md statuses that mean the verifier judged the phase goal NOT met.
 // Requirement closure is withheld for these so the traceability table keeps
@@ -244,7 +255,7 @@ function collectPhaseRequirementIds(cwd, phaseNum, phaseInfo, roadmapContent) {
     !withheldFromPlans &&
     getPhaseCompletionStatus(phaseDir).isComplete
   ) {
-    const phaseEsc = escapeRegex(phaseNum);
+    const phaseEsc = phaseNumPattern(phaseNum);
     const phaseSectionMatch = extractCurrentMilestone(roadmapContent).match(
       new RegExp(
         `(#{2,4}\\s*Phase\\s+${phaseEsc}[:\\s][\\s\\S]*?)(?=#{2,4}\\s*Phase\\s+|$)`,
@@ -516,7 +527,7 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
 
   if (reqContent === originalContent) return result;
 
-  fs.writeFileSync(reqPath, reqContent, 'utf-8');
+  writeFileAtomic(reqPath, reqContent);
   result.updated = true;
   return result;
 }
@@ -1055,7 +1066,7 @@ function cmdPhaseAdd(cwd, description) {
     null,
   );
 
-  fs.writeFileSync(roadmapPath, updatedContent, 'utf-8');
+  writeFileAtomic(roadmapPath, updatedContent);
 
   const result = {
     phase_number: newPhaseNum,
@@ -1155,7 +1166,7 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
     afterPhase,
   );
 
-  fs.writeFileSync(roadmapPath, updatedContent, 'utf-8');
+  writeFileAtomic(roadmapPath, updatedContent);
 
   const result = {
     phase_number: decimalPhase,
@@ -1348,7 +1359,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
   let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
 
   // Remove the target phase section
-  const targetEscaped = escapeRegex(targetPhase);
+  const targetEscaped = phaseNumPattern(targetPhase);
   const sectionPattern = new RegExp(
     `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
     'i',
@@ -1357,7 +1368,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
 
   // Remove from phase list (checkbox)
   const checkboxPattern = new RegExp(
-    `\\n?-\\s*\\[[ x]\\]\\s*.*Phase\\s+${targetEscaped}[:\\s][^\\n]*`,
+    String.raw`\n?` + phaseCheckboxPattern(targetPhase),
     'gi',
   );
   roadmapContent = roadmapContent.replace(checkboxPattern, '');
@@ -1414,18 +1425,25 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     }
   }
 
-  fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+  writeFileAtomic(roadmapPath, roadmapContent);
 
   // Update STATE.md phase count
   const statePath = planningPaths(cwd).state;
   if (fs.existsSync(statePath)) {
     let stateContent = fs.readFileSync(statePath, 'utf-8');
-    // Update "Total Phases" field
-    const totalPattern = /(\*\*Total Phases:\*\*\s*)(\d+)/;
-    const totalMatch = stateContent.match(totalPattern);
+    // Update "Total Phases" field. stateReplaceField rewrites the whole value,
+    // so anything trailing the count — "7 phases" — is carried over rather than
+    // dropped.
+    const totalRaw = stateExtractField(stateContent, 'Total Phases');
+    const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
     if (totalMatch) {
-      const oldTotal = parseInt(totalMatch[2], 10);
-      stateContent = stateContent.replace(totalPattern, `$1${oldTotal - 1}`);
+      const newTotal = parseInt(totalMatch[1], 10) - 1;
+      stateContent =
+        stateReplaceField(
+          stateContent,
+          'Total Phases',
+          `${newTotal}${totalMatch[2]}`,
+        ) || stateContent;
     }
     // Update "Phase: X of Y" pattern
     const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
@@ -1472,6 +1490,8 @@ function cmdPhaseComplete(cwd, phaseNum) {
   const summaryCount = phaseInfo.summaries.length;
   let requirementsUpdated = false;
   let roadmapContent = null;
+  const roadmapLanded = [];
+  const roadmapMissed = [];
 
   // Update ROADMAP.md: mark phase complete
   if (fs.existsSync(roadmapPath)) {
@@ -1479,22 +1499,26 @@ function cmdPhaseComplete(cwd, phaseNum) {
 
     // Checkbox: - [ ] Phase N: → - [x] Phase N: (...completed DATE)
     const checkboxPattern = new RegExp(
-      `(-\\s*\\[)[ ](\\]\\s*.*Phase\\s+${escapeRegex(phaseNum)}[:\\s][^\\n]*)`,
+      phaseCheckboxPattern(phaseNum, '[ ]'),
       'i',
     );
-    roadmapContent = replaceInCurrentMilestone(
+    const checkbox = replaceInCurrentMilestone(
       roadmapContent,
       checkboxPattern,
-      `$1x$2 (completed ${today})`,
+      `$1x$3 (completed ${today})`,
     );
+    roadmapContent = checkbox.content;
+    if (checkbox.changed) roadmapLanded.push('phase-checkbox');
+    else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
+      roadmapMissed.push('phase-checkbox');
 
     // Progress table: update Status to Complete, add date (handles 4 or 5 column tables)
-    const phaseEscaped = escapeRegex(phaseNum);
+    const phaseEscaped = phaseNumPattern(phaseNum);
     const tableRowPattern = new RegExp(
       `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
       'im',
     );
-    roadmapContent = replaceInCurrentMilestone(
+    const tableRow = replaceInCurrentMilestone(
       roadmapContent,
       tableRowPattern,
       (fullRow) => {
@@ -1511,19 +1535,29 @@ function cmdPhaseComplete(cwd, phaseNum) {
         return '|' + cells.join('|') + '|';
       },
     );
+    roadmapContent = tableRow.content;
+    if (tableRow.changed) roadmapLanded.push('progress-table');
+    else if (hasPhaseTableRow(roadmapContent, phaseNum))
+      roadmapMissed.push('progress-table');
 
     // Update plan count in phase section
     const planCountPattern = new RegExp(
       phaseFieldPattern(phaseEscaped, 'Plans'),
       'i',
     );
-    roadmapContent = replaceInCurrentMilestone(
+    const plansLine = replaceInCurrentMilestone(
       roadmapContent,
       planCountPattern,
       `$1${summaryCount}/${planCount} plans complete`,
     );
+    roadmapContent = plansLine.content;
+    if (plansLine.changed) roadmapLanded.push('plans-line');
+    else if (hasPhasePlansLine(roadmapContent, phaseNum))
+      roadmapMissed.push('plans-line');
 
-    fs.writeFileSync(roadmapPath, roadmapContent, 'utf-8');
+    if (roadmapLanded.length > 0) {
+      writeFileAtomic(roadmapPath, roadmapContent);
+    }
   }
 
   // ── Requirement closure ───────────────────────────────────────────────────
@@ -1686,48 +1720,27 @@ function cmdPhaseComplete(cwd, phaseNum) {
   }
 
   // Update STATE.md
+  let stateFieldsUpdated = [];
+  let stateFieldsMissing = [];
   if (fs.existsSync(statePath)) {
-    let stateContent = fs.readFileSync(statePath, 'utf-8');
-
-    // Update Current Phase
-    stateContent = stateContent.replace(
-      /(\*\*Current Phase:\*\*\s*).*/,
-      `$1${nextPhaseNum || phaseNum}`,
-    );
-
-    // Update Current Phase Name
-    if (nextPhaseName) {
-      stateContent = stateContent.replace(
-        /(\*\*Current Phase Name:\*\*\s*).*/,
-        `$1${nextPhaseName.replace(/-/g, ' ')}`,
-      );
-    }
-
-    // Update Status
-    stateContent = stateContent.replace(
-      /(\*\*Status:\*\*\s*).*/,
-      `$1${isLastPhase ? 'Milestone complete' : 'Ready to plan'}`,
-    );
-
-    // Update Current Plan
-    stateContent = stateContent.replace(
-      /(\*\*Current Plan:\*\*\s*).*/,
-      `$1Not started`,
-    );
-
-    // Update Last Activity
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity:\*\*\s*).*/,
-      `$1${today}`,
-    );
-
-    // Update Last Activity Description
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity Description:\*\*\s*).*/,
-      `$1Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
-    );
-
-    writeStateMd(statePath, stateContent, cwd);
+    const stateContent = fs.readFileSync(statePath, 'utf-8');
+    const applied = stateReplaceFields(stateContent, [
+      ['Current Phase', nextPhaseNum || phaseNum],
+      [
+        'Current Phase Name',
+        nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
+      ],
+      ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
+      ['Current Plan', 'Not started'],
+      ['Last Activity', today],
+      [
+        'Last Activity Description',
+        `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
+      ],
+    ]);
+    stateFieldsUpdated = applied.updated;
+    stateFieldsMissing = applied.missing;
+    writeStateMd(statePath, applied.content, cwd);
   }
 
   const result = {
@@ -1740,8 +1753,11 @@ function cmdPhaseComplete(cwd, phaseNum) {
     next_phase_name: nextPhaseName, // keep for backward compat with transition.md consumers
     is_last_phase: isLastPhase,
     date: today,
-    roadmap_updated: fs.existsSync(roadmapPath),
+    roadmap_updated: roadmapLanded.length > 0,
+    roadmap_missed_targets: roadmapMissed,
     state_updated: fs.existsSync(statePath),
+    state_fields_updated: stateFieldsUpdated,
+    state_fields_missing: stateFieldsMissing,
     requirements_updated: requirementsUpdated,
     requirements_closed: requirementIds,
     requirements_blocked_rows: requirementsBlockedRows,

@@ -2228,6 +2228,282 @@ describe('letter-suffix phase sorting', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// zero-padded phase arguments
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete zero-padded phase arguments', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function seedPhase5() {
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+  }
+
+  test('a padded argument rewrites the same targets as a bare one', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 5: Five** - the real one
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 5. Five | 0/1 | Planned |  |
+`,
+    );
+    seedPhase5();
+
+    const result = runGsdTools('phase complete 05 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.roadmap_updated, true, 'targets landed');
+    assert.deepStrictEqual(output.roadmap_missed_targets, []);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: 1\/1 plans complete$/m,
+      'the detail section must agree with the progress table',
+    );
+    assert.match(roadmap, /^- \[x\] \*\*Phase 5: Five\*\*/m);
+    assert.match(roadmap, /^\| 5\. Five \| 0\/1 \| Complete/m);
+  });
+
+  test('a padded argument still rejects a longer phase number', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 50: Fifty
+**Goal**: Fifty stuff
+**Plans**: TBD-FIFTY
+
+### Phase 5: Five
+**Goal**: Five stuff
+**Plans**: TBD-FIVE
+`,
+    );
+    seedPhase5();
+
+    const result = runGsdTools('phase complete 05', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.match(
+      roadmap,
+      /^\*\*Plans\*\*: TBD-FIFTY$/m,
+      "the longer phase's Plans line must be left alone",
+    );
+    assert.match(roadmap, /^\*\*Plans\*\*: 1\/1 plans complete$/m);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase checkbox anchoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase checkbox anchoring', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The cross-referencing entry comes first on purpose: it is the earlier
+  // match, which wins when the pattern is allowed to start mid-line.
+  const CROSS_REFERENCING_ROADMAP = `# Roadmap
+
+- [ ] **Phase 4: Alpha** - groundwork that blocks Phase 5
+- [ ] **Phase 5: Five** - the real one
+
+## Phase Details
+
+### Phase 4: Alpha
+**Goal**: Do four
+**Plans**: TBD
+
+### Phase 5: Five
+**Goal**: Do five
+**Plans**: TBD
+`;
+
+  function writeFixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      CROSS_REFERENCING_ROADMAP,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '04-alpha'), {
+      recursive: true,
+    });
+    const p5 = path.join(tmpDir, '.planning', 'phases', '05-five');
+    fs.mkdirSync(p5, { recursive: true });
+    fs.writeFileSync(path.join(p5, '05-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p5, '05-01-SUMMARY.md'), '# Summary');
+  }
+
+  function readRoadmap() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+  }
+
+  test('phase complete does not tick a phase that merely mentions it', () => {
+    writeFixture();
+
+    const result = runGsdTools('phase complete 5 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = readRoadmap();
+    assert.match(
+      roadmap,
+      /^- \[ \] \*\*Phase 4: Alpha\*\*/m,
+      "Phase 4's checkbox must stay unticked",
+    );
+    assert.match(
+      roadmap,
+      /^- \[x\] \*\*Phase 5: Five\*\*/m,
+      "Phase 5's checkbox is the one that should be ticked",
+    );
+  });
+
+  test('phase remove does not delete a phase that merely mentions it', () => {
+    writeFixture();
+
+    const result = runGsdTools('phase remove 5 --force --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = readRoadmap();
+    assert.match(
+      roadmap,
+      /^- \[ \] \*\*Phase 4: Alpha\*\*/m,
+      "Phase 4's checkbox line must survive removing phase 5",
+    );
+    assert.doesNotMatch(
+      roadmap,
+      /\*\*Phase 5: Five\*\*/,
+      "Phase 5's checkbox line should be gone",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase complete — rewrite landing verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase complete landing verification', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function completePhase1(roadmapContent) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      roadmapContent,
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('a conformant roadmap reports no missed targets', () => {
+    const output = completePhase1(`# Roadmap
+
+- [ ] **Phase 1: Foundation** - set up
+
+### Phase 1: Foundation
+**Goal**: Set up
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 1. Foundation | 0/1 | Planned |  |
+`);
+    assert.strictEqual(output.roadmap_updated, true, 'targets landed');
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'every target landed, so nothing should be reported',
+    );
+  });
+
+  test('names the Plans line when the label is not bold', () => {
+    const output = completePhase1(`# Roadmap
+
+- [ ] **Phase 1: Foundation** - set up
+
+### Phase 1: Foundation
+**Goal**: Set up
+Plans: TBD
+`);
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      ['plans-line'],
+      'a Plans line the rewrite cannot reach must be named',
+    );
+  });
+
+  test('does not claim the roadmap was updated when no target matched', () => {
+    const before = `# Roadmap
+
+### Phase 1: Foundation
+**Goal**: Set up
+Plans: TBD
+`;
+    const output = completePhase1(before);
+    assert.strictEqual(
+      output.roadmap_updated,
+      false,
+      'nothing was rewritten, so the command must not report an update',
+    );
+    assert.deepStrictEqual(output.roadmap_missed_targets, ['plans-line']);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a run that changed nothing must not rewrite the file',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // milestone-scoped next-phase in phase complete
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3429,6 +3705,248 @@ describe('cmdPhaseComplete edge cases', () => {
         roadmap,
       ),
       `4-column row should be marked Complete with today's date (got: ${roadmap})`,
+    );
+  });
+});
+
+describe('cmdPhaseComplete STATE.md field formats', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const ROADMAP = `# Roadmap
+
+### Phase 1: Test
+**Goal:** Test
+**Plans:** 1 plans
+
+### Phase 2: Next
+**Goal:** Next
+**Plans:** 1 plans
+`;
+
+  function scaffold(stateContent) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+  }
+
+  function readState() {
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  }
+
+  function assertAllFieldsMoved(state) {
+    const today = new Date().toISOString().split('T')[0];
+    assert.match(
+      state,
+      /^(\*\*)?Current Phase:(\*\*)?\s*0?2\s*$/m,
+      `Current Phase should advance to 2 (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Current Phase Name:(\*\*)?\s*next\s*$/im,
+      `Current Phase Name should advance (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Status:(\*\*)?\s*Ready to plan\s*$/m,
+      `Status should become "Ready to plan" (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Current Plan:(\*\*)?\s*Not started\s*$/m,
+      `Current Plan should reset (got: ${state})`,
+    );
+    assert.match(
+      state,
+      new RegExp(`^(\\*\\*)?Last Activity:(\\*\\*)?\\s*${today}\\s*$`, 'm'),
+      `Last Activity should be today (got: ${state})`,
+    );
+    assert.match(
+      state,
+      /^(\*\*)?Last Activity Description:(\*\*)?\s*Phase 1 complete, transitioned to Phase 2\s*$/m,
+      `Last Activity Description should be rewritten (got: ${state})`,
+    );
+  }
+
+  test('plain-format STATE.md: every field is updated', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Current Phase: 01',
+        'Current Phase Name: test',
+        'Current Plan: 01-01',
+        'Status: In progress',
+        'Last Activity: 2025-01-01',
+        'Last Activity Description: Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(
+      out.state_fields_missing,
+      [],
+      `no field should be reported missing (got: ${r.output})`,
+    );
+  });
+
+  test('bold-format STATE.md: every field is updated', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** test',
+        '**Current Plan:** 01-01',
+        '**Status:** In progress',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+  });
+
+  test('mixed-format STATE.md: plain Status moves with the bold fields', () => {
+    scaffold(
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** test',
+        '**Current Plan:** 01-01',
+        'Status: In progress',
+        '**Last Activity:** 2025-01-01',
+        'Last Activity Description: Working',
+      ].join('\n') + '\n',
+    );
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assertAllFieldsMoved(readState());
+  });
+
+  test('reports fields it could not find instead of silent success', () => {
+    scaffold('# Project State\n\n## Current Position\n\nStatus: In progress\n');
+
+    const r = runGsdTools(['phase', 'complete', '1', '--json'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(out.state_fields_updated, ['Status']);
+    assert.ok(
+      out.state_fields_missing.includes('Current Phase'),
+      `absent fields should be reported (got: ${r.output})`,
+    );
+  });
+});
+
+describe('cmdPhaseRemove Total Phases field formats', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('decrements a plain-format Total Phases field', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nTotal Phases: 2\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^Total Phases: 1$/m,
+      `plain Total Phases should be decremented (got: ${state})`,
+    );
+  });
+
+  test('keeps text trailing the count', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Total Phases:** 7 phases\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^\*\*Total Phases:\*\* 6 phases$/m,
+      `the suffix must survive the decrement (got: ${state})`,
+    );
+  });
+
+  test('leaves a non-numeric placeholder alone', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** a\n\n### Phase 2: B\n**Goal:** b\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Total Phases:** [Y]\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), {
+      recursive: true,
+    });
+
+    const r = runGsdTools(['phase', 'remove', '2'], tmpDir);
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    const state = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.match(
+      state,
+      /^\*\*Total Phases:\*\* \[Y\]$/m,
+      `an unfilled placeholder must not be rewritten (got: ${state})`,
     );
   });
 });

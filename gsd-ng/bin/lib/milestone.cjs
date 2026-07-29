@@ -11,9 +11,11 @@ const {
   output,
   error,
   planningPaths,
+  writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
-const { writeStateMd } = require('./state.cjs');
+const { formatMilestoneHeading } = require('./milestone-format.cjs');
+const { writeStateMd, stateReplaceFields } = require('./state.cjs');
 
 function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
   if (!reqIdsRaw || reqIdsRaw.length === 0) {
@@ -100,7 +102,7 @@ function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
   }
 
   if (updated.length > 0) {
-    fs.writeFileSync(reqPath, reqContent, 'utf-8');
+    writeFileAtomic(reqPath, reqContent);
   }
 
   output(
@@ -227,57 +229,45 @@ function cmdMilestoneComplete(cwd, version, options) {
 
   // Create/append MILESTONES.md entry
   const accomplishmentsList = accomplishments.map((a) => `- ${a}`).join('\n');
-  const milestoneEntry = `## ${version} ${milestoneName} (Shipped: ${today})\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
+  const milestoneEntry = `${formatMilestoneHeading(version, milestoneName, today)}\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
 
   if (fs.existsSync(milestonesPath)) {
     const existing = fs.readFileSync(milestonesPath, 'utf-8');
     if (!existing.trim()) {
       // Empty file — treat like new
-      fs.writeFileSync(
-        milestonesPath,
-        `# Milestones\n\n${milestoneEntry}`,
-        'utf-8',
-      );
+      writeFileAtomic(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
     } else {
       // Insert after the header line(s) for reverse chronological order (newest first)
       const headerMatch = existing.match(/^(#{1,3}\s+[^\n]*\n\n?)/);
       if (headerMatch) {
         const header = headerMatch[1];
         const rest = existing.slice(header.length);
-        fs.writeFileSync(
-          milestonesPath,
-          header + milestoneEntry + rest,
-          'utf-8',
-        );
+        writeFileAtomic(milestonesPath, header + milestoneEntry + rest);
       } else {
         // No recognizable header — prepend the entry
-        fs.writeFileSync(milestonesPath, milestoneEntry + existing, 'utf-8');
+        writeFileAtomic(milestonesPath, milestoneEntry + existing);
       }
     }
   } else {
-    fs.writeFileSync(
-      milestonesPath,
-      `# Milestones\n\n${milestoneEntry}`,
-      'utf-8',
-    );
+    writeFileAtomic(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
 
   // Update STATE.md
+  let stateFieldsUpdated = [];
+  let stateFieldsMissing = [];
   if (fs.existsSync(statePath)) {
-    let stateContent = fs.readFileSync(statePath, 'utf-8');
-    stateContent = stateContent.replace(
-      /(\*\*Status:\*\*\s*).*/,
-      `$1${version} milestone complete`,
-    );
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity:\*\*\s*).*/,
-      `$1${today}`,
-    );
-    stateContent = stateContent.replace(
-      /(\*\*Last Activity Description:\*\*\s*).*/,
-      `$1${version} milestone completed and archived`,
-    );
-    writeStateMd(statePath, stateContent, cwd);
+    const stateContent = fs.readFileSync(statePath, 'utf-8');
+    const applied = stateReplaceFields(stateContent, [
+      ['Status', `${version} milestone complete`],
+      ['Last Activity', today],
+      [
+        'Last Activity Description',
+        `${version} milestone completed and archived`,
+      ],
+    ]);
+    stateFieldsUpdated = applied.updated;
+    stateFieldsMissing = applied.missing;
+    writeStateMd(statePath, applied.content, cwd);
   }
 
   // Archive phase directories if requested
@@ -324,6 +314,8 @@ function cmdMilestoneComplete(cwd, version, options) {
     },
     milestones_updated: true,
     state_updated: fs.existsSync(statePath),
+    state_fields_updated: stateFieldsUpdated,
+    state_fields_missing: stateFieldsMissing,
   };
 
   output(result);
