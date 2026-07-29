@@ -2897,3 +2897,149 @@ describe('validate health --repair — additional branch coverage', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — phase checkboxes in either supported form
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The roadmap phase list is written bare (`- [ ] Phase N: Alpha`) or bold
+// (`- [ ] **Phase N: Alpha**`). W017 and W018 read that list to decide which
+// phases exist and which are complete, and a reader that takes only the bold
+// form sees a bare roadmap as having no phases at all: W018 goes quiet on a
+// completed phase that still owns pending todos, and W017 goes quiet on a todo
+// pointing at a phase that was never in the roadmap.
+
+describe('validate health — phase checkbox forms (W017/W018)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalStateMd(tmpDir, '# Session State\n\nPhase 1 in progress.\n');
+    writeValidConfigJson(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, 'CLAUDE.md'),
+      '# Project\n\nInstructions.\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FORMS = {
+    bare: (p) => `- [${p.complete ? 'x' : ' '}] Phase ${p.number}: ${p.name}`,
+    bold: (p) => `- [${p.complete ? 'x' : ' '}] **Phase ${p.number}: ${p.name}**`,
+  };
+
+  function writeRoadmap(form, phases) {
+    const lines = phases.map(FORMS[form]).join('\n');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n## Phases\n\n${lines}\n`,
+    );
+  }
+
+  function writePendingTodo(filename, frontmatter) {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const fmLines = Object.entries(frontmatter)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+    fs.writeFileSync(
+      path.join(pendingDir, filename),
+      `---\n${fmLines}\n---\n\nTodo content.\n`,
+    );
+  }
+
+  function warnings() {
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output).warnings;
+  }
+
+  for (const form of ['bare', 'bold']) {
+    test(`W018 fires for a completed phase in ${form} form`, () => {
+      writeRoadmap(form, [
+        { number: 5, complete: true, name: 'Done Phase' },
+      ]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '05-done'), {
+        recursive: true,
+      });
+      writePendingTodo('stale-todo.md', { phase: 5 });
+
+      const found = warnings();
+      const w018 = found.find((w) => w.code === 'W018');
+      assert.ok(w018, `Expected W018 for ${form} form: ${JSON.stringify(found)}`);
+      assert.ok(
+        w018.message.includes('stale-todo.md'),
+        `W018 should name the todo: ${w018.message}`,
+      );
+    });
+
+    test(`W017 fires for an unknown phase against a ${form} form roadmap`, () => {
+      writeRoadmap(form, [{ number: 1, complete: false, name: 'Alpha' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+      writePendingTodo('orphan-todo.md', { phase: 99 });
+
+      const found = warnings();
+      const w017 = found.find((w) => w.code === 'W017');
+      assert.ok(w017, `Expected W017 for ${form} form: ${JSON.stringify(found)}`);
+      assert.ok(
+        w017.message.includes('99'),
+        `W017 should name phase 99: ${w017.message}`,
+      );
+    });
+
+    test(`W017 stays quiet for a known phase in ${form} form`, () => {
+      writeRoadmap(form, [{ number: 1, complete: false, name: 'Alpha' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+      writePendingTodo('valid-todo.md', { phase: 1 });
+
+      const found = warnings();
+      assert.ok(
+        !found.some((w) => w.code === 'W017'),
+        `Should not have W017 for ${form} form: ${JSON.stringify(found)}`,
+      );
+    });
+
+    test(`W018 stays quiet for an unfinished phase in ${form} form`, () => {
+      writeRoadmap(form, [{ number: 2, complete: false, name: 'Beta' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-beta'), {
+        recursive: true,
+      });
+      writePendingTodo('live-todo.md', { phase: 2 });
+
+      const found = warnings();
+      assert.ok(
+        !found.some((w) => w.code === 'W018'),
+        `Should not have W018 for ${form} form: ${JSON.stringify(found)}`,
+      );
+    });
+  }
+
+  test('a lettered phase in bare form is a known phase', () => {
+    writeRoadmap('bare', [{ number: '3A', complete: false, name: 'Split' }]);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03A-split'), {
+      recursive: true,
+    });
+    writePendingTodo('lettered-todo.md', { phase: '3A' });
+    writePendingTodo('orphan-todo.md', { phase: 99 });
+
+    const found = warnings();
+    const w017 = found.filter((w) => w.code === 'W017');
+    assert.strictEqual(
+      w017.length,
+      1,
+      `Only the phase 99 todo is an orphan: ${JSON.stringify(found)}`,
+    );
+    assert.ok(
+      w017[0].message.includes('orphan-todo.md'),
+      `W017 should name the orphan, not the 3A todo: ${w017[0].message}`,
+    );
+  });
+});

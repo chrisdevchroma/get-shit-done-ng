@@ -16,6 +16,7 @@ const {
   extractCurrentMilestone,
   output,
   error,
+  parsePhaseCheckboxes,
   planningPaths,
 } = require('./core.cjs');
 const { DEFAULTS, WORKFLOW_DEFAULTS } = require('./defaults.cjs');
@@ -1342,15 +1343,14 @@ function cmdValidateHealth(cwd, options) {
 
   // ─── Check 17: Phase-linked todos without matching phase (pure filesystem) ─
   // ─── Check 18: Completed phases with unclosed phase-linked todos ──────────
-  // Parse ROADMAP.md for phase numbers and completion status
+  // The phase list is read through the shared checkbox parser, which takes the
+  // bare and the bold form. Read only the bold one, these two checks see a bare
+  // roadmap as having no phases: W017 is suppressed by its own empty-set guard
+  // and W018 never finds a completed phase to report against.
   const roadmapContentForPhaseCheck = safeReadFile(roadmapPath) || '';
-  const phaseEntriesForCheck = [];
-  const phaseCheckRegex =
-    /^[-*]\s*\[([ x])\]\s*\*\*Phase\s+(\d+(?:\.\d+)*)[^*]*\*\*/gm;
-  let pcm;
-  while ((pcm = phaseCheckRegex.exec(roadmapContentForPhaseCheck)) !== null) {
-    phaseEntriesForCheck.push({ number: pcm[2], complete: pcm[1] === 'x' });
-  }
+  const phaseEntriesForCheck = parsePhaseCheckboxes(
+    roadmapContentForPhaseCheck,
+  ).map((entry) => ({ number: entry.num, complete: entry.checked }));
   const phaseNumbersInRoadmap = new Set(
     phaseEntriesForCheck.map((p) => p.number),
   );
