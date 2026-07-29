@@ -4124,6 +4124,137 @@ describe('cleanup command', () => {
       'nothing_to_do should be false',
     );
   });
+
+  // Test 7: heading format — the shape `milestone complete` and templates/milestone.md use
+  test('heading format milestone is detected', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'MILESTONES.md'),
+      '# Milestones\n\n## v1.0 Foundation (Shipped: 2026-07-24)\n\n**Phases completed:** 1 phases, 1 plans, 3 tasks\n\n---\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md'),
+      '# Roadmap v1.0\n\n## Phase 1: Foundation\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), {
+      recursive: true,
+    });
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, 'cleanup should succeed: ' + result.error);
+
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(
+      parsed.nothing_to_do,
+      false,
+      'heading-format milestone should be found',
+    );
+    assert.strictEqual(parsed.milestones.length, 1, 'should have 1 milestone');
+    assert.strictEqual(parsed.milestones[0].version, 'v1.0');
+    assert.strictEqual(
+      parsed.milestones[0].name,
+      'Foundation',
+      'name should come from the heading',
+    );
+    assert.deepStrictEqual(parsed.milestones[0].phases_to_archive, [
+      '01-foundation',
+    ]);
+  });
+
+  // Test 8: all three formats in one document, each version reported once
+  test('heading, list and table formats coexist and dedupe', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'MILESTONES.md'),
+      [
+        '# Milestones',
+        '',
+        '## v1.0 Foundation (Shipped: 2026-07-24)',
+        '',
+        '- [x] **v1.0 — Foundation** — same milestone in the legacy list form',
+        '- [x] **v1.1 — Auth**',
+        '- [ ] **v2.0 — Expansion**',
+        '',
+        '| Version | Name | Status |',
+        '| ------- | ---- | ------ |',
+        '| v1.2 | Polish | Complete |',
+        '| v1.3 | Later | Planned |',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, 'cleanup should succeed: ' + result.error);
+
+    const versions = JSON.parse(result.output).milestones.map((m) => m.version);
+    assert.deepStrictEqual(
+      versions,
+      ['v1.0', 'v1.1', 'v1.2'],
+      'each completed version once, in document order, incomplete ones excluded',
+    );
+  });
+
+  // Test 9: a heading without a shipped/complete marker is not a completed milestone
+  test('unshipped heading is not treated as complete', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'MILESTONES.md'),
+      '# Milestones\n\n## v2.0 Expansion (In progress)\n\n**Phases completed:** 0 phases\n',
+    );
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, 'cleanup should succeed: ' + result.error);
+
+    const parsed = JSON.parse(result.output);
+    assert.deepStrictEqual(parsed.milestones, [], 'milestones should be empty');
+    assert.strictEqual(parsed.nothing_to_do, true);
+  });
+
+  // Test 10: genuinely empty MILESTONES.md still reports nothing_to_do
+  test('empty MILESTONES.md still reports nothing_to_do', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'MILESTONES.md'),
+      '# Milestones\n\n[Entries in reverse chronological order - newest first]\n',
+    );
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, 'cleanup should succeed: ' + result.error);
+
+    const parsed = JSON.parse(result.output);
+    assert.deepStrictEqual(parsed.milestones, [], 'milestones should be empty');
+    assert.strictEqual(parsed.nothing_to_do, true);
+  });
+
+  // Test 11: the documented format in templates/milestone.md is readable too
+  test('example from templates/milestone.md is detected', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'templates', 'milestone.md'),
+      'utf-8',
+    );
+    const example = template.slice(
+      template.indexOf('<example>'),
+      template.indexOf('</example>'),
+    );
+    const milestones = example
+      .split('\n')
+      .filter((line) => !line.startsWith('```') && !line.startsWith('<'))
+      .join('\n');
+    assert.ok(
+      milestones.includes('## v1.0 MVP (Shipped:'),
+      'template example should contain milestone entries',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'MILESTONES.md'),
+      milestones,
+    );
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, 'cleanup should succeed: ' + result.error);
+
+    const versions = JSON.parse(result.output).milestones.map((m) => m.version);
+    assert.deepStrictEqual(
+      versions,
+      ['v1.1', 'v1.0'],
+      'both documented entries should be detected',
+    );
+  });
 });
 
 describe('update command', () => {

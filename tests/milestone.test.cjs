@@ -1136,3 +1136,97 @@ describe('milestone.cjs residuals (60-11)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // validate consistency command
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MILESTONES.md round trip: what `milestone complete` writes, `cleanup` reads
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('milestone complete → cleanup round trip', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function seedProject() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap v1.0\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n### Phase 2: Auth\n**Goal:** Login\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Status:** In progress\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n',
+    );
+    for (const dir of ['01-foundation', '02-auth']) {
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(phaseDir, `${dir.slice(0, 2)}-01-SUMMARY.md`),
+        '---\none-liner: Did the thing\n---\n# Summary\n',
+      );
+    }
+  }
+
+  test('cleanup finds the milestone that milestone complete just wrote', () => {
+    seedProject();
+
+    const completed = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Foundation', '--json'],
+      tmpDir,
+    );
+    assert.ok(completed.success, `milestone complete failed: ${completed.error}`);
+
+    const result = runGsdTools(['cleanup', '--dry-run', '--json'], tmpDir);
+    assert.ok(result.success, `cleanup failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(
+      parsed.nothing_to_do,
+      false,
+      'cleanup must not report nothing_to_do for a milestone it just wrote',
+    );
+    const entry = (parsed.milestones || []).find((m) => m.version === 'v1.0');
+    assert.ok(entry, 'cleanup should detect v1.0');
+    assert.deepStrictEqual(
+      entry.phases_to_archive.sort(),
+      ['01-foundation', '02-auth'],
+      'both phase directories should be queued for archiving',
+    );
+    assert.strictEqual(entry.name, 'Foundation', 'milestone name should survive the round trip');
+  });
+
+  test('cleanup archives the phases of a milestone completed without --archive-phases', () => {
+    seedProject();
+
+    const completed = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Foundation', '--json'],
+      tmpDir,
+    );
+    assert.ok(completed.success, `milestone complete failed: ${completed.error}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-foundation')),
+      'phases stay in place without --archive-phases',
+    );
+
+    const result = runGsdTools(['cleanup', '--json'], tmpDir);
+    assert.ok(result.success, `cleanup failed: ${result.error}`);
+
+    const archived = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases');
+    assert.ok(
+      fs.existsSync(path.join(archived, '01-foundation')),
+      '01-foundation should be archived',
+    );
+    assert.ok(
+      fs.existsSync(path.join(archived, '02-auth')),
+      '02-auth should be archived',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-foundation')),
+      '01-foundation should be gone from phases/',
+    );
+  });
+});
