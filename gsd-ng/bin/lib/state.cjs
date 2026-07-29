@@ -27,6 +27,59 @@ const {
   securityWarningFor,
 } = require('./security.cjs');
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Match one markdown section: group 1 is the heading line, group 2 the body.
+ *
+ * The header group ends at the heading's own newline. A trailing \s* there eats
+ * the blank line after it, and an empty section body then cannot see the \n##
+ * that terminates it — the lazy body runs on into the next section, which a
+ * reader reports as its own and a writer replaces. Every section matcher in this
+ * file is built here so that shape cannot come back at one site.
+ *
+ * namePattern is a regex fragment, not a literal — callers pass alternations.
+ * The terminator stops at any heading of level 2 or deeper.
+ */
+function sectionPattern(namePattern, level = '##') {
+  return new RegExp(
+    `(${level}[ \\t]*${namePattern}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
+    'i',
+  );
+}
+
+/**
+ * Match a section whose body is the rows of a markdown table: group 1 runs to the
+ * end of the separator row, group 2 holds the rows. The run between heading and
+ * table cannot cross a heading, so an empty section never adopts a later table.
+ */
+function tableSectionPattern(namePattern) {
+  return new RegExp(
+    `(##[ \\t]*${namePattern}[ \\t]*\\r?\\n(?:(?!\\r?\\n#{2})[\\s\\S])*?\\|[^\\n]+\\r?\\n\\|[-|: \\t]+\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
+    'i',
+  );
+}
+
+const BLOCKER_HEADINGS = '(?:Blockers|Blockers/Concerns|Concerns)';
+
+const QUICK_TASKS_HEADING = /###[ \t]*Quick Tasks Completed[ \t]*\r?\n/i;
+
+/**
+ * Index of the table header row within the lines following a heading, or -1 when
+ * the section holds no table. Stops at the next heading: an unbounded scan reads
+ * and migrates a table that belongs to a later section.
+ */
+function findTableHeaderIndex(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimStart();
+    if (line.startsWith('#')) return -1;
+    if (line.startsWith('|')) return i;
+  }
+  return -1;
+}
+
 function cmdStateLoad(cwd) {
   const config = loadConfig(cwd);
   const {
@@ -119,7 +172,7 @@ function cmdStateGet(cwd, section) {
 
   try {
     const content = fs.readFileSync(statePath, 'utf-8');
-    const fieldEscaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const fieldEscaped = escapeRegex(section);
 
     // Check for **field:** value (bold format)
     const boldPattern = new RegExp(`\\*\\*${fieldEscaped}:\\*\\*\\s*(.*)`, 'i');
@@ -140,13 +193,9 @@ function cmdStateGet(cwd, section) {
     }
 
     // Check for ## Section -- parse into structured data
-    const sectionPattern = new RegExp(
-      `##\\s*${fieldEscaped}\\s*\n([\\s\\S]*?)(?=\\n##|$)`,
-      'i',
-    );
-    const sectionMatch = content.match(sectionPattern);
+    const sectionMatch = content.match(sectionPattern(fieldEscaped));
     if (sectionMatch) {
-      const sectionContent = sectionMatch[1].trim();
+      const sectionContent = sectionMatch[2].trim();
       // Parse the untrusted body before attaching the banner: parseSectionContent
       // reads the banner's own "key: value" shape as a field and swallows the
       // `[SECURITY WARNING:` marker callers match on.
@@ -327,21 +376,14 @@ function stateAppendFieldToSection(content, sectionName, fieldName, value) {
   const body = frontmatterMatch
     ? content.slice(frontmatterMatch[0].length)
     : content;
-  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // The header group ends at the heading's own newline. A trailing \s* there
-  // eats the blank line after it, and an empty section body then cannot see the
-  // \n## that terminates it — the lazy body runs on into the next section.
-  const sectionPattern = new RegExp(
-    `(##[ \\t]*${escaped}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{2}|$)`,
-    'i',
-  );
-  if (!sectionPattern.test(body)) {
+  const pattern = sectionPattern(escapeRegex(sectionName));
+  if (!pattern.test(body)) {
     return stateReplaceFieldWithFallback(content, fieldName, value);
   }
   const line = `**${fieldName}:** ${value}`;
   return (
     frontmatter +
-    body.replace(sectionPattern, (_match, header, sectionBody) => {
+    body.replace(pattern, (_match, header, sectionBody) => {
       const eol = header.endsWith('\r\n') ? '\r\n' : '\n';
       return `${header}${sectionBody.replace(/\s*$/, '')}${eol}${line}${eol}`;
     })
@@ -516,8 +558,7 @@ function cmdStateRecordMetric(cwd, options) {
   }
 
   // Find Performance Metrics section and its table
-  const metricsPattern =
-    /(##\s*Performance Metrics[\s\S]*?\n\|[^\n]+\n\|[-|\s]+\n)([\s\S]*?)(?=\n##|\n$|$)/i;
+  const metricsPattern = tableSectionPattern('Performance Metrics');
   const metricsMatch = content.match(metricsPattern);
 
   if (metricsMatch) {
@@ -638,9 +679,11 @@ function cmdStateAddDecision(cwd, options) {
   const entry = `- [Phase ${phase || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
 
   // Find Decisions section (various heading patterns)
-  const sectionPattern =
-    /(###?\s*(?:Decisions|Decisions Made|Accumulated.*Decisions)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(
+    '(?:Decisions|Decisions Made|Accumulated.*Decisions)',
+    '###?',
+  );
+  const match = content.match(pattern);
 
   if (match) {
     let sectionBody = match[2];
@@ -650,7 +693,7 @@ function cmdStateAddDecision(cwd, options) {
       .replace(/No decisions yet\.?\s*\n?/gi, '');
     sectionBody = sectionBody.trimEnd() + '\n' + entry + '\n';
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${sectionBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -693,9 +736,8 @@ function cmdStateAddBlocker(cwd, text) {
   let content = fs.readFileSync(statePath, 'utf-8');
   const entry = `- ${blockerText}`;
 
-  const sectionPattern =
-    /(###?\s*(?:Blockers|Blockers\/Concerns|Concerns)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(BLOCKER_HEADINGS, '###?');
+  const match = content.match(pattern);
 
   if (match) {
     let sectionBody = match[2];
@@ -704,7 +746,7 @@ function cmdStateAddBlocker(cwd, text) {
       .replace(/None yet\.?\s*\n?/gi, '');
     sectionBody = sectionBody.trimEnd() + '\n' + entry + '\n';
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${sectionBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -730,9 +772,8 @@ function cmdStateResolveBlocker(cwd, text) {
 
   let content = fs.readFileSync(statePath, 'utf-8');
 
-  const sectionPattern =
-    /(###?\s*(?:Blockers|Blockers\/Concerns|Concerns)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i;
-  const match = content.match(sectionPattern);
+  const pattern = sectionPattern(BLOCKER_HEADINGS, '###?');
+  const match = content.match(pattern);
 
   if (match) {
     const sectionBody = match[2];
@@ -749,7 +790,7 @@ function cmdStateResolveBlocker(cwd, text) {
     }
 
     content = content.replace(
-      sectionPattern,
+      pattern,
       (_match, header) => `${header}${newBody}`,
     );
     writeStateMd(statePath, content, cwd);
@@ -831,11 +872,9 @@ function cmdStateSnapshot(cwd, phaseFilter) {
 
   // Extract decisions table
   const decisions = [];
-  const decisionsMatch = content.match(
-    /##\s*Decisions Made[\s\S]*?\n\|[^\n]+\n\|[-|\s]+\n([\s\S]*?)(?=\n##|\n$|$)/i,
-  );
+  const decisionsMatch = content.match(tableSectionPattern('Decisions Made'));
   if (decisionsMatch) {
-    const tableBody = decisionsMatch[1];
+    const tableBody = decisionsMatch[2];
     const rows = tableBody
       .trim()
       .split('\n')
@@ -857,11 +896,9 @@ function cmdStateSnapshot(cwd, phaseFilter) {
 
   // Extract blockers list
   const blockers = [];
-  const blockersMatch = content.match(
-    /##\s*Blockers\s*\n([\s\S]*?)(?=\n##|$)/i,
-  );
+  const blockersMatch = content.match(sectionPattern('Blockers'));
   if (blockersMatch) {
-    const blockersSection = blockersMatch[1];
+    const blockersSection = blockersMatch[2];
     const items = blockersSection.match(/^-\s+(.+)$/gm) || [];
     for (const item of items) {
       blockers.push(item.replace(/^-\s+/, '').trim());
@@ -876,10 +913,10 @@ function cmdStateSnapshot(cwd, phaseFilter) {
   };
 
   const sessionMatch = content.match(
-    /##\s*Session(?:\s+Continuity)?\s*\n([\s\S]*?)(?=\n##|$)/i,
+    sectionPattern('Session(?:[ \\t]+Continuity)?'),
   );
   if (sessionMatch) {
-    const sessionSection = sessionMatch[1];
+    const sessionSection = sessionMatch[2];
     session.last_date =
       stateExtractField(sessionSection, 'Last Date') ||
       stateExtractField(sessionSection, 'Last session');
@@ -1133,8 +1170,9 @@ function cmdStateJson(cwd) {
  * Update STATE.md to reflect the start of a new phase.
  *
  * Sets: Status, Last Activity, Last Activity Description, Current Phase,
- * Current Phase Name, Current Plan, Total Plans in Phase, and the Current focus
- * body. Fields the file does not already carry are added to Current Position.
+ * Current Phase Name, Current Plan, Total Plans in Phase and Current focus.
+ * Fields the file does not already carry are added to the section that owns
+ * them; no section body is replaced.
  */
 function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   const { state: statePath } = planningPaths(cwd);
@@ -1182,14 +1220,28 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
   );
   content = applied.content;
 
-  // Update ## Current focus section body
-  const focusSectionPattern = /(##\s*Current focus\s*\n)([\s\S]*?)(?=\n##|$)/i;
-  const focusBody = `\n${phaseName} — ${planCount} plan${planCount !== 1 ? 's' : ''} to execute\n`;
-  if (focusSectionPattern.test(content)) {
-    content = content.replace(
-      focusSectionPattern,
-      (_match, header) => `${header}${focusBody}`,
+  // Current focus is a field too — the canonical file carries it under
+  // ## Project Reference. Replacing the body of a ## Current focus section
+  // instead discarded whatever else lived there, and left nothing a later
+  // writer could update by label. A file carrying neither the field nor the
+  // section is left alone rather than given a field of unknown provenance.
+  const plural = Number(planCount) === 1 ? '' : 's';
+  const focusValue = `${phaseName} — ${planCount} plan${plural} to execute`;
+  let focus = 'absent';
+  const focusApplied = stateReplaceFields(content, [
+    ['Current focus', focusValue],
+  ]);
+  if (focusApplied.updated.length > 0) {
+    content = focusApplied.content;
+    focus = 'updated';
+  } else if (sectionPattern('Current focus').test(content)) {
+    content = stateAppendFieldToSection(
+      content,
+      'Current focus',
+      'Current focus',
+      focusValue,
     );
+    focus = 'added';
   }
 
   writeStateMd(statePath, content, cwd);
@@ -1201,6 +1253,7 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount) {
       plans: planCount,
       fields_updated: applied.updated,
       fields_added: applied.added,
+      focus,
     },
     'true',
   );
@@ -1232,7 +1285,7 @@ function adjustQuickTable(cwd) {
   }
 
   // Find the ### Quick Tasks Completed section
-  const sectionMatch = content.match(/###\s*Quick Tasks Completed\s*\n/i);
+  const sectionMatch = content.match(QUICK_TASKS_HEADING);
   if (!sectionMatch) {
     return {
       adjusted: false,
@@ -1247,8 +1300,8 @@ function adjustQuickTable(cwd) {
   );
   const lines = afterSection.split('\n');
 
-  // Find the header line (first line starting with |)
-  const headerIdx = lines.findIndex((l) => l.trimStart().startsWith('|'));
+  // Find the header line (first line starting with |, within this section)
+  const headerIdx = findTableHeaderIndex(lines);
   if (headerIdx === -1) {
     // Section exists but has no table
     return {
@@ -1337,6 +1390,10 @@ function cmdStateAdjustQuickTable(cwd) {
 }
 
 module.exports = {
+  QUICK_TASKS_HEADING,
+  findTableHeaderIndex,
+  sectionPattern,
+  tableSectionPattern,
   stateExtractField,
   stateReplaceField,
   stateReplaceFields,

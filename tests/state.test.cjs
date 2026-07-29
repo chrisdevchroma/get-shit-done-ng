@@ -5059,3 +5059,629 @@ describe('state begin-phase writes into an empty Current Position', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section boundaries on the read paths
+//
+// An empty section must read as empty. The header groups ended in \s*, which ate
+// the blank line after the heading, so the lazy body could not see the \n## that
+// terminates it and every read reported the *next* section's content instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state get section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function write(content) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+  }
+
+  function get(section) {
+    const result = runGsdTools(['state', 'get', section, '--json'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('an empty section does not read as the section after it', () => {
+    write(
+      '# State\n\n## Current focus\n\n## Decisions\n\n- [Phase 1]: keep me\n',
+    );
+
+    assert.deepStrictEqual(
+      get('Current focus'),
+      { 'Current focus': '' },
+      'an empty section reads as empty',
+    );
+    assert.deepStrictEqual(get('Decisions'), {
+      Decisions: ['[Phase 1]: keep me'],
+    });
+  });
+
+  test('a populated section reads its own body only', () => {
+    write('# State\n\n## Blockers\n\n- one\n- two\n\n## Notes\n\n- three\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: ['one', 'two'] });
+  });
+
+  test('a section that ends the file reads its body', () => {
+    write('# State\n\n## Notes\n\n- three\n\n## Blockers\n\n- one\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: ['one'] });
+  });
+
+  test('an empty section followed by a deeper heading reads as empty', () => {
+    write('# State\n\n## Blockers\n\n### Detail\n\n- nested\n');
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: '' });
+  });
+
+  test('a section below frontmatter reads its own body only', () => {
+    write(
+      '---\nphase: 2\n---\n\n# State\n\n## Blockers\n\n## Notes\n\n- three\n',
+    );
+
+    assert.deepStrictEqual(get('Blockers'), { Blockers: '' });
+  });
+});
+
+describe('state-snapshot section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function snapshot(content) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+    const result = runGsdTools(['state-snapshot', '--json'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('an empty Blockers section reports no blockers', () => {
+    const out = snapshot(
+      '# State\n\n## Blockers\n\n## Pending Todos\n\n- not a blocker\n',
+    );
+
+    assert.deepStrictEqual(out.blockers, []);
+  });
+
+  test('a populated Blockers section reports its own items', () => {
+    const out = snapshot(
+      '# State\n\n## Blockers\n\n- real one\n\n## Pending Todos\n\n- not a blocker\n',
+    );
+
+    assert.deepStrictEqual(out.blockers, ['real one']);
+  });
+
+  test('an empty Session section reports no session fields', () => {
+    const out = snapshot(
+      '# State\n\n## Session Continuity\n\n## Notes\n\n**Stopped At:** wrong section\n',
+    );
+
+    assert.strictEqual(out.session.stopped_at, null);
+    assert.strictEqual(out.session.last_date, null);
+  });
+
+  test('a populated Session section reports its own fields', () => {
+    const out = snapshot(
+      '# State\n\n## Session Continuity\n\n**Stopped At:** right here\n\n## Notes\n\n- x\n',
+    );
+
+    assert.strictEqual(out.session.stopped_at, 'right here');
+  });
+
+  test('an empty Decisions Made table reports no decisions', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, []);
+  });
+
+  test('a populated Decisions Made table reports its own rows', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '| 01 | picked jose | smaller |',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, [
+      { phase: '01', summary: 'picked jose', rationale: 'smaller' },
+    ]);
+  });
+
+  test('a Decisions Made section without a table reports no decisions', () => {
+    const out = snapshot(
+      [
+        '# State',
+        '',
+        '## Decisions Made',
+        '',
+        'None yet.',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| 01 P1 | 5 min | 3 tasks | 4 files |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.deepStrictEqual(out.decisions, []);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section boundaries on the write paths
+//
+// Same header-group bug as the read paths, with worse consequences: the writer
+// replaces the swallowed body, so an empty section could delete the section that
+// followed it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state write paths keep to their own section', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function run(args, content) {
+    fs.writeFileSync(statePath, content);
+    const result = runGsdTools(args, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return {
+      output: JSON.parse(result.output),
+      state: fs.readFileSync(statePath, 'utf-8'),
+    };
+  }
+
+  const TAIL = '## Accumulated Context\n\n### Pending Todos\n\nNone yet.\n';
+
+  test('record-metric writes into an empty table, not past it', () => {
+    const { output, state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '1',
+        '--plan',
+        '1',
+        '--duration',
+        '5 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '',
+        TAIL,
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.recorded, true);
+    assert.ok(
+      state.includes(TAIL),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('| Phase 1 P1 |') < state.indexOf('## Accumulated Context'),
+      `the row must land in the metrics table (got: ${state})`,
+    );
+  });
+
+  test('record-metric appends after existing rows', () => {
+    const { state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '2',
+        '--plan',
+        '3',
+        '--duration',
+        '9 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        '| Phase | Duration | Tasks | Files |',
+        '|-------|----------|-------|-------|',
+        '| Phase 1 P1 | 5 min | - tasks | - files |',
+        '',
+        TAIL,
+      ].join('\n'),
+    );
+
+    assert.ok(
+      state.indexOf('| Phase 1 P1 |') < state.indexOf('| Phase 2 P3 |'),
+      `the new row must follow the old one (got: ${state})`,
+    );
+    assert.ok(state.includes(TAIL), `tail must survive (got: ${state})`);
+  });
+
+  test('record-metric reports no section when the table is elsewhere', () => {
+    const { output, state } = run(
+      [
+        'state',
+        'record-metric',
+        '--phase',
+        '1',
+        '--plan',
+        '1',
+        '--duration',
+        '5 min',
+        '--json',
+      ],
+      [
+        '# State',
+        '',
+        '## Performance Metrics',
+        '',
+        'None yet.',
+        '',
+        '## Decisions Made',
+        '',
+        '| Phase | Decision | Rationale |',
+        '|-------|----------|-----------|',
+        '| 01 | keep me | intact |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.recorded, false);
+    assert.ok(
+      state.includes('| 01 | keep me | intact |'),
+      `another section's table must not be touched (got: ${state})`,
+    );
+  });
+
+  test('add-decision writes into an empty Decisions section', () => {
+    const { state } = run(
+      [
+        'state',
+        'add-decision',
+        '--phase',
+        '2',
+        '--summary',
+        'picked jose',
+        '--json',
+      ],
+      '# State\n\n### Decisions\n\n### Pending Todos\n\nNone yet.\n',
+    );
+
+    assert.ok(
+      state.indexOf('- [Phase 2]: picked jose') <
+        state.indexOf('### Pending Todos'),
+      `the decision must land under its own heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('### Pending Todos\n\nNone yet.\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('add-blocker writes into an empty Blockers section', () => {
+    const { state } = run(
+      ['state', 'add-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      state.indexOf('- db is down') < state.indexOf('## Session Continuity'),
+      `the blocker must land under its own heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('resolve-blocker leaves the section after an empty Blockers alone', () => {
+    const { state } = run(
+      ['state', 'resolve-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('None') < state.indexOf('## Session Continuity'),
+      `the placeholder must land under Blockers (got: ${state})`,
+    );
+  });
+
+  test('resolve-blocker removes only the named blocker', () => {
+    const { state } = run(
+      ['state', 'resolve-blocker', '--text', 'db is down', '--json'],
+      '# State\n\n## Blockers\n\n- db is down\n- api is slow\n\n## Session Continuity\n\n**Stopped At:** none\n',
+    );
+
+    assert.ok(
+      !state.includes('db is down'),
+      `resolved blocker must go (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('- api is slow'),
+      `other blocker must stay (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('## Session Continuity\n\n**Stopped At:** none\n'),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('adjust-quick-table ignores a table in a later section', () => {
+    const { output, state } = run(
+      ['state', 'adjust-quick-table', '--json'],
+      [
+        '# State',
+        '',
+        '### Quick Tasks Completed',
+        '',
+        '### Other Table',
+        '',
+        '| # | Description | Directory |',
+        '|---|-------------|-----------|',
+        '| 1 | keep me | ./x/ |',
+        '',
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.adjusted, false);
+    assert.strictEqual(output.reason, 'section_not_found');
+    assert.ok(
+      state.includes('| # | Description | Directory |'),
+      `another section's table must not be migrated (got: ${state})`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// begin-phase and ## Current focus
+//
+// The body of the section was replaced wholesale, and its header group ate the
+// blank line after the heading, so a begin-phase against an empty Current focus
+// deleted the section that followed it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('state begin-phase writes Current focus as a field', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function beginPhase(content, name = 'API Layer', plans = '4') {
+    fs.writeFileSync(statePath, content);
+    const result = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '3',
+        '--name',
+        name,
+        '--plans',
+        plans,
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return {
+      output: JSON.parse(result.output),
+      state: fs.readFileSync(statePath, 'utf-8'),
+    };
+  }
+
+  const DECISIONS = '## Decisions\n\n- [Phase 1]: keep me\n';
+
+  test('an empty Current focus section keeps the section after it', () => {
+    const { state } = beginPhase(`# State\n\n## Current focus\n\n${DECISIONS}`);
+
+    assert.ok(
+      state.includes(DECISIONS),
+      `the following section must survive byte-intact (got: ${state})`,
+    );
+  });
+
+  test('an empty Current focus section gains the field', () => {
+    const { output, state } = beginPhase(
+      `# State\n\n## Current focus\n\n${DECISIONS}`,
+    );
+
+    assert.strictEqual(output.focus, 'added');
+    assert.ok(
+      state.includes('**Current focus:** API Layer — 4 plans to execute'),
+      `the field must be written (got: ${state})`,
+    );
+    assert.ok(
+      state.indexOf('**Current focus:**') < state.indexOf('## Decisions'),
+      `the field must land under its own heading (got: ${state})`,
+    );
+  });
+
+  test('prose already in the section survives', () => {
+    const { state } = beginPhase(
+      `# State\n\n## Current focus\n\nFoundation work in progress.\n\n${DECISIONS}`,
+    );
+
+    assert.ok(
+      state.includes('Foundation work in progress.'),
+      `the existing body must survive (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('the canonical field is replaced where it already lives', () => {
+    const { output, state } = beginPhase(
+      [
+        '# State',
+        '',
+        '## Project Reference',
+        '',
+        '**Core value:** ship it',
+        '**Current focus:** Foundation',
+        '',
+        DECISIONS,
+      ].join('\n'),
+    );
+
+    assert.strictEqual(output.focus, 'updated');
+    assert.ok(
+      state.includes('**Current focus:** API Layer — 4 plans to execute'),
+      `the field must be rewritten in place (got: ${state})`,
+    );
+    assert.ok(!state.includes('**Current focus:** Foundation'), state);
+    assert.ok(
+      state.includes('**Core value:** ship it'),
+      `neighbouring fields must survive (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('a second run replaces the field rather than adding another', () => {
+    beginPhase(`# State\n\n## Current focus\n\n${DECISIONS}`);
+    fs.copyFileSync(statePath, path.join(tmpDir, 'first.md'));
+    const first = fs.readFileSync(statePath, 'utf-8');
+
+    const result = runGsdTools(
+      [
+        'state',
+        'begin-phase',
+        '--phase',
+        '4',
+        '--name',
+        'Deploy',
+        '--plans',
+        '1',
+        '--json',
+      ],
+      tmpDir,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const state = fs.readFileSync(statePath, 'utf-8');
+
+    assert.strictEqual(JSON.parse(result.output).focus, 'updated');
+    assert.strictEqual(
+      (state.match(/\*\*Current focus:\*\*/g) || []).length,
+      1,
+      `exactly one Current focus field (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Current focus:** Deploy — 1 plan to execute'),
+      `singular plan wording (got: ${state}; first run: ${first})`,
+    );
+  });
+
+  test('a file with neither the field nor the section is left alone', () => {
+    const { output, state } = beginPhase(
+      `# State\n\n## Current Position\n\n**Current Phase:** 01\n\n${DECISIONS}`,
+    );
+
+    assert.strictEqual(output.focus, 'absent');
+    assert.ok(
+      !state.includes('**Current focus:**'),
+      `no field may be invented (got: ${state})`,
+    );
+    assert.ok(
+      state.includes(DECISIONS),
+      `Decisions must survive (got: ${state})`,
+    );
+  });
+
+  test('a Current focus section that ends the file gains the field', () => {
+    const { state } = beginPhase(
+      `# State\n\n## Current Position\n\n**Current Phase:** 01\n\n${DECISIONS}\n## Current focus\n\nold prose\n`,
+    );
+
+    assert.match(
+      state,
+      /## Current focus\n\nold prose\n\*\*Current focus:\*\* API Layer — 4 plans to execute\n$/,
+      `field appended at the end of the last section (got: ${state})`,
+    );
+  });
+
+  test('an empty Current focus section followed by a deeper heading', () => {
+    const { state } = beginPhase(
+      '# State\n\n## Current focus\n\n### Detail\n\nnotes\n',
+    );
+
+    assert.ok(
+      state.indexOf('**Current focus:**') < state.indexOf('### Detail'),
+      `the field must precede the deeper heading (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('### Detail\n\nnotes\n'),
+      `the nested section must survive (got: ${state})`,
+    );
+  });
+});

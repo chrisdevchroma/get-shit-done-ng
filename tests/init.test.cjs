@@ -2012,6 +2012,27 @@ describe('init.cjs residuals (60-11)', () => {
     assert.strictEqual(parsed.table_has_status, false);
   });
 
+  test('init quick: read-only detection ignores a table in a later section', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# State',
+        '',
+        '### Quick Tasks Completed',
+        '',
+        '### Other Table',
+        '',
+        '| ID | Description | Status |',
+        '|----|-------------|--------|',
+        '| q1 | something | done |',
+      ].join('\n'),
+    );
+    const r = runGsdTools(['init', 'quick', '--json'], tmpDir);
+    assert.ok(r.success, r.error);
+    const parsed = JSON.parse(r.output);
+    assert.strictEqual(parsed.table_has_status, false);
+  });
+
   test('init quick: STATE.md missing → table_has_status false', () => {
     const r = runGsdTools(['init', 'quick', '--json'], tmpDir);
     assert.ok(r.success, r.error);
