@@ -567,11 +567,61 @@ function withFileLock(filePath, fn, opts = {}) {
  * The section must span the read, so callers wrap their whole body rather than
  * the write; planningPaths is called inside to keep the one lock path per project.
  *
- * Ordering: this is the outer lock. A command that mutates ROADMAP.md and
- * STATE.md takes this one first and withStateLock inside it, never the reverse.
+ * Ordering: this is the outermost of the three locks, which are taken
+ * ROADMAP.md, then REQUIREMENTS.md, then STATE.md, and never the other way.
  */
 function withRoadmapLock(cwd, fn) {
   return withFileLock(planningPaths(cwd).roadmap, fn);
+}
+
+/**
+ * Run a REQUIREMENTS.md read-modify-write as one indivisible step.
+ *
+ * Two commands rewrite the file from a read of it: `requirements mark-complete`
+ * and the requirement closure inside `phase complete`. Marking two IDs at once
+ * from separate processes loses one of them, with both reporting the ID they
+ * marked — and the closure path is only serialised today by happening to sit
+ * inside the roadmap lock, which the CLI entry point does not take.
+ *
+ * Locking one writer and not the other would be worth nothing: an unlocked
+ * whole-file write lands on top of whatever the lock holder wrote.
+ *
+ * Ordering: between the roadmap lock and the state lock. `milestone complete`
+ * holds all three, outermost first.
+ */
+function withRequirementsLock(cwd, fn) {
+  return withFileLock(planningPaths(cwd).requirements, fn);
+}
+
+/**
+ * The canonical path of the guarded planning document `filePath` names, or null.
+ *
+ * For the generic commands that rewrite an arbitrary file — the frontmatter
+ * writers — pointed at a planning document. Their write is a whole-file rewrite
+ * built from a read, so outside the lock it discards whatever a locked writer
+ * appended in between and voids the lock for everyone who took it. Pointed at
+ * anything else, a todo in every workflow that calls them today, they get no lock:
+ * a lock nobody contends for is a lock file to leave behind and a deadlock surface
+ * for nothing.
+ *
+ * Returning the canonical path rather than a boolean is what keeps one lock per
+ * document: an absolute argument, a relative one and a symlinked tree must all
+ * resolve to the lock path the guarded commands use.
+ */
+function lockedPlanningDoc(cwd, filePath) {
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const target = real(filePath);
+  const paths = planningPaths(cwd);
+  for (const guarded of [paths.state, paths.roadmap, paths.requirements]) {
+    if (real(guarded) === target) return guarded;
+  }
+  return null;
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -1684,6 +1734,8 @@ module.exports = {
   releaseFileLock,
   withFileLock,
   withRoadmapLock,
+  withRequirementsLock,
+  lockedPlanningDoc,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,

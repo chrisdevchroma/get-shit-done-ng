@@ -4,8 +4,29 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeReadFile, output, error, writeFileAtomic } = require('./core.cjs');
+const {
+  safeReadFile,
+  output,
+  error,
+  writeFileAtomic,
+  withFileLock,
+  lockedPlanningDoc,
+} = require('./core.cjs');
 const { validateFieldName, validatePath } = require('./security.cjs');
+
+/**
+ * Run a whole-file rewrite of `fullPath` inside the lock that guards it.
+ *
+ * These commands take the path from their caller, so the caller decides whether
+ * the write lands on a todo — where there is no lock and no contention — or on
+ * STATE.md, where an unlocked rewrite drops a concurrent locked writer's append
+ * and reports success. One lock at most: no frontmatter write touches two
+ * documents, so nothing here can nest and no ordering question arises.
+ */
+function withDocumentLock(cwd, fullPath, fn) {
+  const guarded = lockedPlanningDoc(cwd, fullPath);
+  return guarded ? withFileLock(guarded, fn) : fn();
+}
 
 // ─── Parsing engine ───────────────────────────────────────────────────────────
 
@@ -337,18 +358,20 @@ function cmdFrontmatterSet(cwd, filePath, field, value) {
     output({ error: 'File not found', path: filePath });
     return;
   }
-  const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content);
-  let parsedValue;
-  try {
-    parsedValue = JSON.parse(value);
-  } catch {
-    parsedValue = value;
-  }
-  fm[field] = parsedValue;
-  const newContent = spliceFrontmatter(content, fm);
-  writeFileAtomic(fullPath, newContent);
-  output({ updated: true, field, value: parsedValue }, 'true');
+  withDocumentLock(cwd, fullPath, () => {
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    const fm = extractFrontmatter(content);
+    let parsedValue;
+    try {
+      parsedValue = JSON.parse(value);
+    } catch {
+      parsedValue = value;
+    }
+    fm[field] = parsedValue;
+    const newContent = spliceFrontmatter(content, fm);
+    writeFileAtomic(fullPath, newContent);
+    output({ updated: true, field, value: parsedValue }, 'true');
+  });
 }
 
 function cmdFrontmatterMerge(cwd, filePath, data) {
@@ -368,8 +391,6 @@ function cmdFrontmatterMerge(cwd, filePath, data) {
     output({ error: 'File not found', path: filePath });
     return;
   }
-  const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content);
   let mergeData;
   try {
     mergeData = JSON.parse(data);
@@ -377,10 +398,14 @@ function cmdFrontmatterMerge(cwd, filePath, data) {
     error('Invalid JSON for --data');
     return;
   }
-  Object.assign(fm, mergeData);
-  const newContent = spliceFrontmatter(content, fm);
-  writeFileAtomic(fullPath, newContent);
-  output({ merged: true, fields: Object.keys(mergeData) }, 'true');
+  withDocumentLock(cwd, fullPath, () => {
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    const fm = extractFrontmatter(content);
+    Object.assign(fm, mergeData);
+    const newContent = spliceFrontmatter(content, fm);
+    writeFileAtomic(fullPath, newContent);
+    output({ merged: true, fields: Object.keys(mergeData) }, 'true');
+  });
 }
 
 /**
@@ -419,24 +444,26 @@ function cmdFrontmatterArrayAppend(cwd, filePath, field, value) {
     output({ error: 'File not found', path: filePath });
     return;
   }
-  const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content);
-  let arr;
-  if (fm[field] === undefined || fm[field] === null || fm[field] === '') {
-    arr = [];
-  } else if (Array.isArray(fm[field])) {
-    arr = fm[field].slice();
-  } else {
-    arr = [fm[field]];
-  }
-  const added = !arr.includes(value);
-  if (added) {
-    arr.push(value);
-  }
-  fm[field] = arr;
-  const newContent = spliceFrontmatter(content, fm);
-  writeFileAtomic(fullPath, newContent);
-  output({ appended: added, field, value, length: arr.length }, 'true');
+  withDocumentLock(cwd, fullPath, () => {
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    const fm = extractFrontmatter(content);
+    let arr;
+    if (fm[field] === undefined || fm[field] === null || fm[field] === '') {
+      arr = [];
+    } else if (Array.isArray(fm[field])) {
+      arr = fm[field].slice();
+    } else {
+      arr = [fm[field]];
+    }
+    const added = !arr.includes(value);
+    if (added) {
+      arr.push(value);
+    }
+    fm[field] = arr;
+    const newContent = spliceFrontmatter(content, fm);
+    writeFileAtomic(fullPath, newContent);
+    output({ appended: added, field, value, length: arr.length }, 'true');
+  });
 }
 
 function cmdFrontmatterValidate(cwd, filePath, schemaName) {
