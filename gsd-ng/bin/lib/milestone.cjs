@@ -15,7 +15,11 @@ const {
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { formatMilestoneHeading } = require('./milestone-format.cjs');
-const { writeStateMd, stateReplaceFields } = require('./state.cjs');
+const {
+  withStateLock,
+  writeStateMd,
+  stateReplaceFields,
+} = require('./state.cjs');
 
 function cmdRequirementsMarkComplete(cwd, reqIdsRaw) {
   if (!reqIdsRaw || reqIdsRaw.length === 0) {
@@ -252,22 +256,28 @@ function cmdMilestoneComplete(cwd, version, options) {
     writeFileAtomic(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
 
-  // Update STATE.md
+  // Update STATE.md. Locked across the read: the file written back is the file
+  // read here with three fields replaced, so anything a locked writer appended in
+  // that window is dropped. Nothing in this command establishes that no such
+  // writer exists — it archives against whatever version it is given, whenever it
+  // is called.
   let stateFieldsUpdated = [];
   let stateFieldsMissing = [];
   if (fs.existsSync(statePath)) {
-    const stateContent = fs.readFileSync(statePath, 'utf-8');
-    const applied = stateReplaceFields(stateContent, [
-      ['Status', `${version} milestone complete`],
-      ['Last Activity', today],
-      [
-        'Last Activity Description',
-        `${version} milestone completed and archived`,
-      ],
-    ]);
-    stateFieldsUpdated = applied.updated;
-    stateFieldsMissing = applied.missing;
-    writeStateMd(statePath, applied.content, cwd);
+    withStateLock(cwd, () => {
+      const stateContent = fs.readFileSync(statePath, 'utf-8');
+      const applied = stateReplaceFields(stateContent, [
+        ['Status', `${version} milestone complete`],
+        ['Last Activity', today],
+        [
+          'Last Activity Description',
+          `${version} milestone completed and archived`,
+        ],
+      ]);
+      stateFieldsUpdated = applied.updated;
+      stateFieldsMissing = applied.missing;
+      writeStateMd(statePath, applied.content, cwd);
+    });
   }
 
   // Archive phase directories if requested

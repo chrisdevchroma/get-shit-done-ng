@@ -6,6 +6,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const {
   runGsdTools,
   createTempProject,
@@ -2302,4 +2303,229 @@ describe('roadmap checkbox form parity', () => {
       );
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// roadmap update-plan-progress — concurrent callers
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every executor in a wave calls update-plan-progress, and each call reads the
+// whole ROADMAP.md and writes the whole file back. The values are derived from
+// disk, so racers converge on a valid number — but not necessarily a current
+// one: a caller that read before a sibling's summary landed writes its own count
+// over the higher one, and a caller updating a different phase discards the
+// sibling's row outright.
+//
+// Neither test waits for a race to land. The first holds the lock in the parent
+// so the child's block is guaranteed, and the second releases its children from
+// a flag-file barrier and asserts on the end state, which holds whether or not
+// the window is hit.
+
+describe('roadmap update-plan-progress under concurrency', () => {
+  const ROADMAP_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'roadmap.cjs',
+  );
+
+  const UPDATER_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, goFlag, phase] = process.argv.slice(1);
+    const roadmap = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    const spin = new Int32Array(new SharedArrayBuffer(4));
+    if (goFlag) { while (!fs.existsSync(goFlag)) { Atomics.wait(spin, 0, 0, 1); } }
+    roadmap.cmdRoadmapUpdatePlanProgress(cwd, phase);
+  `;
+
+  let tmpDir;
+  let roadmapPath;
+  let flagDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    flagDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-barrier-'));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(flagDir);
+  });
+
+  function writePhase(num, name, planCount, summaryCount) {
+    const dir = path.join(
+      tmpDir,
+      '.planning',
+      'phases',
+      `${String(num).padStart(2, '0')}-${name}`,
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= planCount; i++) {
+      const id = `${String(num).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
+      fs.writeFileSync(path.join(dir, `${id}-PLAN.md`), `# Plan ${id}`);
+      if (i <= summaryCount) {
+        fs.writeFileSync(path.join(dir, `${id}-SUMMARY.md`), `# Summary ${id}`);
+      }
+    }
+    return dir;
+  }
+
+  function addSummary(dir, num, planIndex) {
+    const id = `${String(num).padStart(2, '0')}-${String(planIndex).padStart(2, '0')}`;
+    fs.writeFileSync(path.join(dir, `${id}-SUMMARY.md`), `# Summary ${id}`);
+  }
+
+  function writeRoadmap(phases) {
+    const rows = phases
+      .map(
+        (p) => `| ${p.number}. ${p.name} | v1.0 | 0/${p.plans} | Planned | - |`,
+      )
+      .join('\n');
+    const sections = phases
+      .map(
+        (p) =>
+          `### Phase ${p.number}: ${p.name}\n**Goal:** Goal ${p.number}\n**Plans:** TBD\n`,
+      )
+      .join('\n');
+    fs.writeFileSync(
+      roadmapPath,
+      `# Roadmap\n\n${sections}\n## Progress\n\n| Phase | Milestone | Plans Complete | Status | Completed |\n|-------|-----------|----------------|--------|-----------|\n${rows}\n`,
+    );
+  }
+
+  function spawnUpdater(phase, readyFlag, goFlag) {
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        UPDATER_SRC,
+        '--',
+        ROADMAP_LIB,
+        tmpDir,
+        readyFlag,
+        goFlag || '',
+        String(phase),
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    child._stderr = '';
+    child.stderr.on('data', (d) => (child._stderr += d));
+    return child;
+  }
+
+  async function waitForFlag(flagPath) {
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(flagPath)) {
+      assert.ok(Date.now() < deadline, `child never reached ${flagPath}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+
+  test('a count computed before a competing writer is not written over the current one', async () => {
+    // The phase under test has three plans and one summary. A competing writer
+    // — the parent, holding the lock — lands the other two summaries while the
+    // child is inside the command, so the 1/3 the child would compute from its
+    // own read is stale by the time it could write it.
+    const phaseDir = writePhase(1, 'alpha', 3, 1);
+    writeRoadmap([{ number: 1, name: 'alpha', plans: 3 }]);
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+
+    const lockPath = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const readyFlag = path.join(flagDir, 'ready');
+    const child = spawnUpdater(1, readyFlag, null);
+    const exited = new Promise((r) => child.on('close', r));
+    await waitForFlag(readyFlag);
+
+    // The child is loaded and running the command. Give it a window far wider
+    // than the read-and-rewrite it performs; the lock, not the clock, is what
+    // keeps it out.
+    await new Promise((r) => setTimeout(r, 500));
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      before,
+      'ROADMAP.md was rewritten while another writer held the lock',
+    );
+
+    addSummary(phaseDir, 1, 2);
+    addSummary(phaseDir, 1, 3);
+    fs.unlinkSync(lockPath);
+
+    const code = await exited;
+    assert.strictEqual(
+      code,
+      0,
+      `updater should succeed (stderr: ${child._stderr.trim()})`,
+    );
+
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.ok(
+      after.includes('3/3'),
+      `ROADMAP.md should carry the current count: ${after}`,
+    );
+    assert.ok(
+      !after.includes('1/3'),
+      `ROADMAP.md should not carry the stale count: ${after}`,
+    );
+  });
+
+  test('concurrent updates to different phases all survive', async () => {
+    const phases = [
+      { number: 1, name: 'alpha', plans: 2 },
+      { number: 2, name: 'beta', plans: 2 },
+      { number: 3, name: 'gamma', plans: 2 },
+      { number: 4, name: 'delta', plans: 2 },
+      { number: 5, name: 'epsilon', plans: 2 },
+      { number: 6, name: 'zeta', plans: 2 },
+    ];
+    for (const p of phases) writePhase(p.number, p.name, p.plans, 1);
+    writeRoadmap(phases);
+
+    const goFlag = path.join(flagDir, 'go');
+    const children = phases.map((p, i) => {
+      const readyFlag = path.join(flagDir, `ready-${i}`);
+      const child = spawnUpdater(p.number, readyFlag, goFlag);
+      child._readyFlag = readyFlag;
+      return child;
+    });
+    const exits = children.map((c) => new Promise((r) => c.on('close', r)));
+
+    for (const c of children) await waitForFlag(c._readyFlag);
+    fs.writeFileSync(goFlag, '');
+
+    const codes = await Promise.all(exits);
+    assert.deepStrictEqual(
+      codes,
+      phases.map(() => 0),
+      `every updater should succeed (stderr: ${children
+        .map((c) => c._stderr.trim())
+        .filter(Boolean)
+        .join(' | ')})`,
+    );
+
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    const lost = phases.filter(
+      (p) =>
+        !new RegExp(`\\|\\s*${p.number}\\. ${p.name}\\s*\\|[^\\n]*1/2`).test(
+          after,
+        ),
+    );
+    assert.deepStrictEqual(
+      lost.map((p) => p.number),
+      [],
+      `rows reported as updated but discarded by a racing writer: ${after}`,
+    );
+  });
 });

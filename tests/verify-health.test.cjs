@@ -2897,3 +2897,418 @@ describe('validate health --repair — additional branch coverage', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — phase checkboxes in either supported form
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The roadmap phase list is written bare (`- [ ] Phase N: Alpha`) or bold
+// (`- [ ] **Phase N: Alpha**`). W017 and W018 read that list to decide which
+// phases exist and which are complete, and a reader that takes only the bold
+// form sees a bare roadmap as having no phases at all: W018 goes quiet on a
+// completed phase that still owns pending todos, and W017 goes quiet on a todo
+// pointing at a phase that was never in the roadmap.
+
+describe('validate health — phase checkbox forms (W017/W018)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalStateMd(tmpDir, '# Session State\n\nPhase 1 in progress.\n');
+    writeValidConfigJson(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, 'CLAUDE.md'),
+      '# Project\n\nInstructions.\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FORMS = {
+    bare: (p) => `- [${p.complete ? 'x' : ' '}] Phase ${p.number}: ${p.name}`,
+    bold: (p) => `- [${p.complete ? 'x' : ' '}] **Phase ${p.number}: ${p.name}**`,
+  };
+
+  function writeRoadmap(form, phases) {
+    const lines = phases.map(FORMS[form]).join('\n');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n## Phases\n\n${lines}\n`,
+    );
+  }
+
+  function writePendingTodo(filename, frontmatter) {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const fmLines = Object.entries(frontmatter)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+    fs.writeFileSync(
+      path.join(pendingDir, filename),
+      `---\n${fmLines}\n---\n\nTodo content.\n`,
+    );
+  }
+
+  function warnings() {
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output).warnings;
+  }
+
+  for (const form of ['bare', 'bold']) {
+    test(`W018 fires for a completed phase in ${form} form`, () => {
+      writeRoadmap(form, [
+        { number: 5, complete: true, name: 'Done Phase' },
+      ]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '05-done'), {
+        recursive: true,
+      });
+      writePendingTodo('stale-todo.md', { phase: 5 });
+
+      const found = warnings();
+      const w018 = found.find((w) => w.code === 'W018');
+      assert.ok(w018, `Expected W018 for ${form} form: ${JSON.stringify(found)}`);
+      assert.ok(
+        w018.message.includes('stale-todo.md'),
+        `W018 should name the todo: ${w018.message}`,
+      );
+    });
+
+    test(`W017 fires for an unknown phase against a ${form} form roadmap`, () => {
+      writeRoadmap(form, [{ number: 1, complete: false, name: 'Alpha' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+      writePendingTodo('orphan-todo.md', { phase: 99 });
+
+      const found = warnings();
+      const w017 = found.find((w) => w.code === 'W017');
+      assert.ok(w017, `Expected W017 for ${form} form: ${JSON.stringify(found)}`);
+      assert.ok(
+        w017.message.includes('99'),
+        `W017 should name phase 99: ${w017.message}`,
+      );
+    });
+
+    test(`W017 stays quiet for a known phase in ${form} form`, () => {
+      writeRoadmap(form, [{ number: 1, complete: false, name: 'Alpha' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+      writePendingTodo('valid-todo.md', { phase: 1 });
+
+      const found = warnings();
+      assert.ok(
+        !found.some((w) => w.code === 'W017'),
+        `Should not have W017 for ${form} form: ${JSON.stringify(found)}`,
+      );
+    });
+
+    test(`W018 stays quiet for an unfinished phase in ${form} form`, () => {
+      writeRoadmap(form, [{ number: 2, complete: false, name: 'Beta' }]);
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-beta'), {
+        recursive: true,
+      });
+      writePendingTodo('live-todo.md', { phase: 2 });
+
+      const found = warnings();
+      assert.ok(
+        !found.some((w) => w.code === 'W018'),
+        `Should not have W018 for ${form} form: ${JSON.stringify(found)}`,
+      );
+    });
+  }
+
+  test('a lettered phase in bare form is a known phase', () => {
+    writeRoadmap('bare', [{ number: '3A', complete: false, name: 'Split' }]);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03A-split'), {
+      recursive: true,
+    });
+    writePendingTodo('lettered-todo.md', { phase: '3A' });
+    writePendingTodo('orphan-todo.md', { phase: 99 });
+
+    const found = warnings();
+    const w017 = found.filter((w) => w.code === 'W017');
+    assert.strictEqual(
+      w017.length,
+      1,
+      `Only the phase 99 todo is an orphan: ${JSON.stringify(found)}`,
+    );
+    assert.ok(
+      w017[0].message.includes('orphan-todo.md'),
+      `W017 should name the orphan, not the 3A todo: ${w017[0].message}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — the Memories section repair stays inside its own section
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// syncCLAUDEmdMemories replaces the `## Memories` section of the project rules
+// file. It located that section by substring: `## Memories` matched inside a
+// `### Memories ...` heading, and the terminator `\n## ` skipped past every
+// deeper heading, so the replacement either spliced into the middle of a
+// heading or swallowed the sections below it. It is matched by a section
+// pattern now, of the shape STATE.md's readers and writers use.
+
+describe('validate health — Memories section boundaries', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phases\n\n- [ ] Phase 1: Alpha\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'PROJECT.md'),
+      '# Project\n\n## What This Is\n\nX.\n\n## Core Value\n\nY.\n\n## Requirements\n\nZ.\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Session State\n\nPhase 1 in progress.\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ model_profile: 'balanced', commit_docs: true }, null, 2),
+    );
+    const memDir = path.join(tmpDir, '.claude', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(memDir, 'feedback_new.md'),
+      '---\nname: New\ndescription: A newly added memory\ntype: feedback\n---\n\nBody.\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The unreferenced memory file above raises W011, whose repair is the section
+  // rewrite under test.
+  function repairAndRead(rulesContent) {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), rulesContent);
+    const result = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    const action = (parsed.repairs_performed || []).find(
+      (r) => r.action === 'syncCLAUDEmdMemories',
+    );
+    assert.ok(
+      action && action.success,
+      `Expected a successful syncCLAUDEmdMemories: ${JSON.stringify(parsed)}`,
+    );
+    return fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  test('an empty Memories section does not consume the section below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n## Conventions\n\nTwo spaces.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+  });
+
+  test('a populated Memories section does not consume the section below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n\n## Conventions\n\nTwo spaces.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      !after.includes('gone.md'),
+      `Stale entry should be replaced: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+  });
+
+  test('a Memories section last in the file is replaced whole', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Conventions\n\nTwo spaces.\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      !after.includes('gone.md'),
+      `Stale entry should be replaced: ${after}`,
+    );
+    assert.ok(
+      after.includes('## Conventions') && after.includes('Two spaces.'),
+      `Conventions section should survive: ${after}`,
+    );
+    assert.strictEqual(
+      after.match(/^## Memories$/gm).length,
+      1,
+      `Exactly one Memories heading: ${after}`,
+    );
+  });
+
+  test('a Memories section terminates at a level-3 heading below it', () => {
+    const after = repairAndRead(
+      '# Project\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n\n### Appendix\n\nKeep me.\n',
+    );
+
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.ok(
+      after.includes('### Appendix') && after.includes('Keep me.'),
+      `Level-3 section below Memories should survive: ${after}`,
+    );
+  });
+
+  test('a level-3 heading that starts with Memories is not the section', () => {
+    const after = repairAndRead(
+      '# Project\n\n### Memories Overview\n\nContext.\n\n## Memories\n\n- [.claude/memory/gone.md](.claude/memory/gone.md) — Stale\n',
+    );
+
+    assert.ok(
+      after.includes('### Memories Overview') && after.includes('Context.'),
+      `The level-3 heading should be untouched: ${after}`,
+    );
+    assert.ok(
+      after.includes('feedback_new.md'),
+      `Repair should list the memory file: ${after}`,
+    );
+    assert.strictEqual(
+      after.match(/^## Memories$/gm).length,
+      1,
+      `Exactly one Memories heading: ${after}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// regenerateState waits for the STATE.md lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The repair builds its replacement from the phase directories rather than from
+// STATE.md, so it is not a read-modify-write — but it still has to be inside the
+// section. A locked writer that read STATE.md before the repair, and writes back
+// after it, restores the file the repair replaced while the repair reports
+// success and leaves a backup of content that is no longer anywhere. Ordering the
+// repair against the whole of that read-and-write is what makes the outcome one
+// of the two coherent ones: the repair wins, or the writer appends to the
+// repaired file.
+//
+// Of the commands that write STATE.md this one is the least serial: it is run by
+// hand, and typically run because something already looks wrong.
+
+describe('validate health --repair waits for the STATE.md lock', () => {
+  const { spawn } = require('child_process');
+  const VERIFY_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'verify.cjs',
+  );
+
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag] = process.argv.slice(1);
+    const verify = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    verify.cmdValidateHealth(cwd, { repair: true });
+  `;
+
+  let tmpDir;
+  let statePath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    lockPath = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalRoadmap(tmpDir, ['1']);
+    writeValidConfigJson(tmpDir);
+    // A STATE.md naming a phase that does not exist is what triggers the repair.
+    fs.writeFileSync(statePath, '# Session State\n\nPhase 99 is current.\n');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), {
+      recursive: true,
+    });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('does not overwrite STATE.md while another writer holds it', async () => {
+    const before = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['-e', CHILD_SRC, '--', VERIFY_LIB, tmpDir, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const exited = new Promise((r) => child.on('close', r));
+
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(readyFlag)) {
+      assert.ok(Date.now() < deadline, 'the child never started');
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // A window far wider than the scan and rewrite the repair performs; the
+    // lock, not the clock, is what keeps the child out.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf-8'),
+      before,
+      'STATE.md was overwritten while another writer held the lock',
+    );
+
+    fs.unlinkSync(lockPath);
+    const code = await exited;
+    assert.strictEqual(code, 0, `the repair should succeed: ${stderr.trim()}`);
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.notStrictEqual(
+      after,
+      before,
+      'STATE.md should have been regenerated once the lock was free',
+    );
+    assert.ok(
+      after.includes('STATE.md regenerated'),
+      `the regenerated file should say so: ${after}`,
+    );
+  });
+});

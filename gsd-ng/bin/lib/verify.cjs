@@ -16,6 +16,7 @@ const {
   extractCurrentMilestone,
   output,
   error,
+  parsePhaseCheckboxes,
   planningPaths,
 } = require('./core.cjs');
 const { DEFAULTS, WORKFLOW_DEFAULTS } = require('./defaults.cjs');
@@ -25,12 +26,37 @@ const {
   spliceFrontmatter,
   parseMustHavesBlock,
 } = require('./frontmatter.cjs');
-const { writeStateMd, stateApplyFieldsToSection } = require('./state.cjs');
+const {
+  withStateLock,
+  writeStateMd,
+  stateApplyFieldsToSection,
+} = require('./state.cjs');
 const {
   detectWorkspaceType,
   generateMemoriesSection,
   generateMemoryMd,
 } = require('./workspace.cjs');
+
+// The generated Memories section of the project rules file: group 1 is the
+// heading line, group 2 the body.
+//
+// Same shape as STATE.md's section matcher — the heading group ends at its own
+// newline so an empty body can still see the terminator that ends it, and the
+// terminator is any heading of level 2 or deeper. Built here rather than by that
+// builder because this one needs the heading anchored to the start of a line:
+// unanchored, `##` matches the last two hashes of `### Memories Overview` and
+// the rewrite splices into the middle of that heading. The lookbehind is the
+// anchor because the `m` flag that would give `^` the same meaning would also
+// turn the `$` in the terminator into any line end.
+//
+// The heading is matched with its remainder, so a hand-annotated
+// `## Memories (curated)` is this section rather than a second one to append
+// below it. Regenerating it as the canonical heading is a visible edit; a
+// duplicate section would be a silent one.
+const MEMORIES_SECTION = new RegExp(
+  String.raw`((?<![^\n])##[ \t]*Memories[^\n]*\r?\n)([\s\S]*?)(?=\r?\n#{2}|$)`,
+  'i',
+);
 
 function cmdVerifySummary(cwd, summaryPath, checkFileCount) {
   if (!summaryPath) {
@@ -1342,15 +1368,14 @@ function cmdValidateHealth(cwd, options) {
 
   // ─── Check 17: Phase-linked todos without matching phase (pure filesystem) ─
   // ─── Check 18: Completed phases with unclosed phase-linked todos ──────────
-  // Parse ROADMAP.md for phase numbers and completion status
+  // The phase list is read through the shared checkbox parser, which takes the
+  // bare and the bold form. Read only the bold one, these two checks see a bare
+  // roadmap as having no phases: W017 is suppressed by its own empty-set guard
+  // and W018 never finds a completed phase to report against.
   const roadmapContentForPhaseCheck = safeReadFile(roadmapPath) || '';
-  const phaseEntriesForCheck = [];
-  const phaseCheckRegex =
-    /^[-*]\s*\[([ x])\]\s*\*\*Phase\s+(\d+(?:\.\d+)*)[^*]*\*\*/gm;
-  let pcm;
-  while ((pcm = phaseCheckRegex.exec(roadmapContentForPhaseCheck)) !== null) {
-    phaseEntriesForCheck.push({ number: pcm[2], complete: pcm[1] === 'x' });
-  }
+  const phaseEntriesForCheck = parsePhaseCheckboxes(
+    roadmapContentForPhaseCheck,
+  ).map((entry) => ({ number: entry.num, complete: entry.checked }));
   const phaseNumbersInRoadmap = new Set(
     phaseEntriesForCheck.map((p) => p.number),
   );
@@ -1571,21 +1596,31 @@ function cmdValidateHealth(cwd, options) {
             break;
           }
           case 'regenerateState': {
-            // Create timestamped backup before overwriting
-            if (fs.existsSync(statePath)) {
-              const timestamp = new Date()
-                .toISOString()
-                .replace(/[:.]/g, '-')
-                .slice(0, 19);
-              const backupPath = `${statePath}.bak-${timestamp}`;
-              fs.copyFileSync(statePath, backupPath);
-              repairActions.push({
-                action: 'backupState',
-                success: true,
-                path: backupPath,
-              });
-            }
-            writeStateMd(statePath, buildRepairedState(cwd), cwd);
+            // Locked, though the replacement is built from the phase directories
+            // rather than from STATE.md and so is not a read-modify-write. An
+            // unserialised overwrite can still land inside another writer's read
+            // and write, which restores the file this replaced while this reports
+            // success and leaves a backup of content that is nowhere else. Inside
+            // the section the outcome is one of the two coherent ones: the repair
+            // wins, or the writer appends to the repaired file. The backup is
+            // taken in the same section so it is exactly what was replaced.
+            withStateLock(cwd, () => {
+              // Create timestamped backup before overwriting
+              if (fs.existsSync(statePath)) {
+                const timestamp = new Date()
+                  .toISOString()
+                  .replace(/[:.]/g, '-')
+                  .slice(0, 19);
+                const backupPath = `${statePath}.bak-${timestamp}`;
+                fs.copyFileSync(statePath, backupPath);
+                repairActions.push({
+                  action: 'backupState',
+                  success: true,
+                  path: backupPath,
+                });
+              }
+              writeStateMd(statePath, buildRepairedState(cwd), cwd);
+            });
             repairActions.push({
               action: repair,
               success: true,
@@ -1631,7 +1666,7 @@ function cmdValidateHealth(cwd, options) {
             if (fs.existsSync(repairRulesPath)) {
               // Append Memories section if not already present
               let content = fs.readFileSync(repairRulesPath, 'utf-8');
-              if (!content.includes('## Memories')) {
+              if (!MEMORIES_SECTION.test(content)) {
                 content += '\n\n' + memoriesSection;
                 fs.writeFileSync(repairRulesPath, content, 'utf-8');
               }
@@ -1657,17 +1692,12 @@ function cmdValidateHealth(cwd, options) {
             if (fs.existsSync(syncRulesPath)) {
               let content = fs.readFileSync(syncRulesPath, 'utf-8');
               const newSection = generateMemoriesSection(cwd);
-              // Replace existing Memories section or append
-              const sectionStart = content.indexOf('## Memories');
-              if (sectionStart !== -1) {
-                // Find end of section (next ## heading or EOF)
-                const afterStart = content.indexOf('\n## ', sectionStart + 1);
-                const sectionEnd =
-                  afterStart !== -1 ? afterStart : content.length;
+              const section = content.match(MEMORIES_SECTION);
+              if (section) {
                 content =
-                  content.slice(0, sectionStart) +
+                  content.slice(0, section.index) +
                   newSection +
-                  content.slice(sectionEnd);
+                  content.slice(section.index + section[0].length);
               } else {
                 content += '\n\n' + newSection;
               }
