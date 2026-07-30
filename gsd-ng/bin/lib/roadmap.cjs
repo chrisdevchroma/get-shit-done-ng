@@ -10,6 +10,9 @@ const {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
   normalizePhaseName,
   output,
   error,
@@ -21,6 +24,7 @@ const {
   isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,
   planningPaths,
+  withRoadmapLock,
   writeFileAtomic,
 } = require('./core.cjs');
 
@@ -66,8 +70,8 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
     if (!headerMatch) {
       // Fallback: check if phase exists in summary list but missing detail section
       const checklistPattern = new RegExp(
-        `-\\s*\\[[ x]\\]\\s*\\*\\*Phase\\s+${escapedPhase}:\\s*([^*]+)\\*\\*`,
-        'i',
+        phaseCheckboxLinePattern(phaseNum),
+        'im',
       );
       const checklistMatch = content.match(checklistPattern);
 
@@ -81,7 +85,7 @@ function cmdRoadmapGetPhase(cwd, phaseNum, defaultValue) {
           {
             found: false,
             phase_number: phaseNum,
-            phase_name: checklistMatch[1].trim(),
+            phase_name: phaseCheckboxName(checklistMatch[3]),
             error: 'malformed_roadmap',
             message: `Phase ${phaseNum} exists in summary list but missing "### Phase ${phaseNum}:" detail section. ROADMAP.md needs both formats.`,
           },
@@ -304,12 +308,9 @@ function cmdRoadmapAnalyze(cwd, phaseFilter) {
   ).length;
 
   // Detect phases in summary list without detail sections (malformed ROADMAP)
-  const checklistPattern = /-\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*)/gi;
-  const checklistPhases = new Set();
-  let checklistMatch;
-  while ((checklistMatch = checklistPattern.exec(content)) !== null) {
-    checklistPhases.add(checklistMatch[1]);
-  }
+  const checklistPhases = new Set(
+    parsePhaseCheckboxes(content).map((entry) => entry.num),
+  );
   const detailPhases = new Set(phases.map((p) => p.number));
   const missingDetails = [...checklistPhases].filter(
     (p) => !detailPhases.has(p),
@@ -345,171 +346,176 @@ function cmdRoadmapAnalyze(cwd, phaseFilter) {
   output(result);
 }
 
+// Locked whole: the counts come from the phase directory, so the lock has to be
+// held over the summary count as well as over the rewrite. Wave executors all
+// call this against the one roadmap.
 function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
   if (!phaseNum) {
     error('phase number required for roadmap update-plan-progress');
   }
 
-  const { roadmap: roadmapPath } = planningPaths(cwd);
+  return withRoadmapLock(cwd, () => {
+    const { roadmap: roadmapPath } = planningPaths(cwd);
 
-  const phaseInfo = findPhaseInternal(cwd, phaseNum);
-  if (!phaseInfo) {
-    error(`Phase ${phaseNum} not found`);
-  }
+    const phaseInfo = findPhaseInternal(cwd, phaseNum);
+    if (!phaseInfo) {
+      error(`Phase ${phaseNum} not found`);
+    }
 
-  const planCount = phaseInfo.plans.length;
-  const summaryCount = phaseInfo.summaries.length;
+    const planCount = phaseInfo.plans.length;
+    const summaryCount = phaseInfo.summaries.length;
 
-  if (planCount === 0) {
-    output(
-      {
-        updated: false,
-        reason: 'No plans found',
-        plan_count: 0,
-        summary_count: 0,
-      },
-      'no plans',
+    if (planCount === 0) {
+      output(
+        {
+          updated: false,
+          reason: 'No plans found',
+          plan_count: 0,
+          summary_count: 0,
+        },
+        'no plans',
+      );
+      return;
+    }
+
+    const phaseAbsDir = path.join(cwd, phaseInfo.directory);
+    const { isComplete, status: completionStatus } =
+      getPhaseCompletionStatus(phaseAbsDir);
+    const status = isComplete
+      ? completionStatus === 'complete (verified)'
+        ? 'Complete (verified)'
+        : 'Complete'
+      : summaryCount > 0
+        ? 'In Progress'
+        : 'Planned';
+    const today = new Date().toISOString().split('T')[0];
+
+    if (!fs.existsSync(roadmapPath)) {
+      output(
+        {
+          updated: false,
+          reason: 'ROADMAP.md not found',
+          plan_count: planCount,
+          summary_count: summaryCount,
+        },
+        'no roadmap',
+      );
+      return;
+    }
+
+    let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+    const phaseEscaped = phaseNumPattern(phaseNum);
+    const landed = [];
+    const missed = [];
+
+    // Progress table row: update Plans/Status/Date columns (handles 4 or 5 column tables)
+    const tableRowPattern = new RegExp(
+      `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
+      'im',
     );
-    return;
-  }
+    const dateField = isComplete ? ` ${today} ` : '  ';
+    const tableRow = replaceInCurrentMilestone(
+      roadmapContent,
+      tableRowPattern,
+      (fullRow) => {
+        const cells = fullRow.split('|').slice(1, -1); // drop leading/trailing empty from split
+        if (cells.length === 5) {
+          // 5-col: Phase | Milestone | Plans | Status | Completed
+          cells[2] = ` ${summaryCount}/${planCount} `;
+          cells[3] = ` ${status.padEnd(11)}`;
+          cells[4] = dateField;
+        } else if (cells.length === 4) {
+          // 4-col: Phase | Plans | Status | Completed
+          cells[1] = ` ${summaryCount}/${planCount} `;
+          cells[2] = ` ${status.padEnd(11)}`;
+          cells[3] = dateField;
+        }
+        return '|' + cells.join('|') + '|';
+      },
+    );
+    roadmapContent = tableRow.content;
+    if (tableRow.changed) landed.push('progress-table');
+    else if (hasPhaseTableRow(roadmapContent, phaseNum))
+      missed.push('progress-table');
 
-  const phaseAbsDir = path.join(cwd, phaseInfo.directory);
-  const { isComplete, status: completionStatus } =
-    getPhaseCompletionStatus(phaseAbsDir);
-  const status = isComplete
-    ? completionStatus === 'complete (verified)'
-      ? 'Complete (verified)'
-      : 'Complete'
-    : summaryCount > 0
-      ? 'In Progress'
-      : 'Planned';
-  const today = new Date().toISOString().split('T')[0];
+    // Update plan count in phase detail section
+    const planCountPattern = new RegExp(
+      phaseFieldPattern(phaseEscaped, 'Plans'),
+      'i',
+    );
+    const planCountText = isComplete
+      ? `${summaryCount}/${planCount} plans complete`
+      : `${summaryCount}/${planCount} plans executed`;
+    const plansLine = replaceInCurrentMilestone(
+      roadmapContent,
+      planCountPattern,
+      `$1${planCountText}`,
+    );
+    roadmapContent = plansLine.content;
+    if (plansLine.changed) landed.push('plans-line');
+    else if (hasPhasePlansLine(roadmapContent, phaseNum))
+      missed.push('plans-line');
 
-  if (!fs.existsSync(roadmapPath)) {
+    // If complete: check phase-level checkbox
+    if (isComplete) {
+      const checkboxPattern = new RegExp(
+        phaseCheckboxPattern(phaseNum, '[ ]'),
+        'i',
+      );
+      const checkbox = replaceInCurrentMilestone(
+        roadmapContent,
+        checkboxPattern,
+        `$1x$3 (completed ${today})`,
+      );
+      roadmapContent = checkbox.content;
+      if (checkbox.changed) landed.push('phase-checkbox');
+      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
+        missed.push('phase-checkbox');
+    }
+
+    // Mark completed plan checkboxes (e.g. "- [ ] 50-01-PLAN.md" or "- [ ] 50-01:")
+    for (const summaryFile of phaseInfo.summaries) {
+      const planId = summaryFile
+        .replace('-SUMMARY.md', '')
+        .replace('SUMMARY.md', '');
+      if (!planId) continue;
+      const planEscaped = escapeRegex(planId);
+      const planCheckboxPattern = new RegExp(
+        `(-\\s*\\[) (\\]\\s*${planEscaped})`,
+        'i',
+      );
+      const planCheckbox = replaceInCurrentMilestone(
+        roadmapContent,
+        planCheckboxPattern,
+        '$1x$2',
+      );
+      roadmapContent = planCheckbox.content;
+      if (planCheckbox.changed && !landed.includes('plan-checkboxes'))
+        landed.push('plan-checkboxes');
+    }
+
+    if (landed.length > 0) {
+      writeFileAtomic(roadmapPath, roadmapContent);
+    }
+
     output(
       {
-        updated: false,
-        reason: 'ROADMAP.md not found',
+        updated: landed.length > 0,
+        ...(landed.length === 0
+          ? { reason: 'no rewrite target matched in ROADMAP.md' }
+          : {}),
+        phase: phaseNum,
         plan_count: planCount,
         summary_count: summaryCount,
+        status,
+        complete: isComplete,
+        missed_targets: missed,
       },
-      'no roadmap',
+      missed.length > 0
+        ? `${summaryCount}/${planCount} ${status} (missed: ${missed.join(', ')})`
+        : `${summaryCount}/${planCount} ${status}`,
     );
-    return;
-  }
-
-  let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-  const phaseEscaped = phaseNumPattern(phaseNum);
-  const landed = [];
-  const missed = [];
-
-  // Progress table row: update Plans/Status/Date columns (handles 4 or 5 column tables)
-  const tableRowPattern = new RegExp(
-    `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
-    'im',
-  );
-  const dateField = isComplete ? ` ${today} ` : '  ';
-  const tableRow = replaceInCurrentMilestone(
-    roadmapContent,
-    tableRowPattern,
-    (fullRow) => {
-      const cells = fullRow.split('|').slice(1, -1); // drop leading/trailing empty from split
-      if (cells.length === 5) {
-        // 5-col: Phase | Milestone | Plans | Status | Completed
-        cells[2] = ` ${summaryCount}/${planCount} `;
-        cells[3] = ` ${status.padEnd(11)}`;
-        cells[4] = dateField;
-      } else if (cells.length === 4) {
-        // 4-col: Phase | Plans | Status | Completed
-        cells[1] = ` ${summaryCount}/${planCount} `;
-        cells[2] = ` ${status.padEnd(11)}`;
-        cells[3] = dateField;
-      }
-      return '|' + cells.join('|') + '|';
-    },
-  );
-  roadmapContent = tableRow.content;
-  if (tableRow.changed) landed.push('progress-table');
-  else if (hasPhaseTableRow(roadmapContent, phaseNum))
-    missed.push('progress-table');
-
-  // Update plan count in phase detail section
-  const planCountPattern = new RegExp(
-    phaseFieldPattern(phaseEscaped, 'Plans'),
-    'i',
-  );
-  const planCountText = isComplete
-    ? `${summaryCount}/${planCount} plans complete`
-    : `${summaryCount}/${planCount} plans executed`;
-  const plansLine = replaceInCurrentMilestone(
-    roadmapContent,
-    planCountPattern,
-    `$1${planCountText}`,
-  );
-  roadmapContent = plansLine.content;
-  if (plansLine.changed) landed.push('plans-line');
-  else if (hasPhasePlansLine(roadmapContent, phaseNum))
-    missed.push('plans-line');
-
-  // If complete: check phase-level checkbox
-  if (isComplete) {
-    const checkboxPattern = new RegExp(
-      phaseCheckboxPattern(phaseNum, '[ ]'),
-      'i',
-    );
-    const checkbox = replaceInCurrentMilestone(
-      roadmapContent,
-      checkboxPattern,
-      `$1x$3 (completed ${today})`,
-    );
-    roadmapContent = checkbox.content;
-    if (checkbox.changed) landed.push('phase-checkbox');
-    else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
-      missed.push('phase-checkbox');
-  }
-
-  // Mark completed plan checkboxes (e.g. "- [ ] 50-01-PLAN.md" or "- [ ] 50-01:")
-  for (const summaryFile of phaseInfo.summaries) {
-    const planId = summaryFile
-      .replace('-SUMMARY.md', '')
-      .replace('SUMMARY.md', '');
-    if (!planId) continue;
-    const planEscaped = escapeRegex(planId);
-    const planCheckboxPattern = new RegExp(
-      `(-\\s*\\[) (\\]\\s*${planEscaped})`,
-      'i',
-    );
-    const planCheckbox = replaceInCurrentMilestone(
-      roadmapContent,
-      planCheckboxPattern,
-      '$1x$2',
-    );
-    roadmapContent = planCheckbox.content;
-    if (planCheckbox.changed && !landed.includes('plan-checkboxes'))
-      landed.push('plan-checkboxes');
-  }
-
-  if (landed.length > 0) {
-    writeFileAtomic(roadmapPath, roadmapContent);
-  }
-
-  output(
-    {
-      updated: landed.length > 0,
-      ...(landed.length === 0
-        ? { reason: 'no rewrite target matched in ROADMAP.md' }
-        : {}),
-      phase: phaseNum,
-      plan_count: planCount,
-      summary_count: summaryCount,
-      status,
-      complete: isComplete,
-      missed_targets: missed,
-    },
-    missed.length > 0
-      ? `${summaryCount}/${planCount} ${status} (missed: ${missed.join(', ')})`
-      : `${summaryCount}/${planCount} ${status}`,
-  );
+  });
 }
 
 module.exports = {

@@ -4,7 +4,7 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -12,7 +12,7 @@ const {
   createTempProject,
   cleanup,
   cleanupSubdir,
-  TOOLS_PATH,
+  waitForReadyFlag,
 } = require('./helpers.cjs');
 
 // Direct-invocation helper for branches unreachable through validateArgs.
@@ -5645,6 +5645,894 @@ describe('executor docs record delivery, not declaration', () => {
         instruction,
         /deliver/i,
         `${rel} must frame requirements-completed as a delivery record`,
+      );
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bare and bold are both supported roadmap checkbox forms. Every reader must
+// agree on that: a bold-only reader reported a milestone finished with a phase
+// still outstanding.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('checkbox form parity: bare and bold', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FORMS = [
+    { label: 'bare', line: (n, name) => `- [ ] Phase ${n}: ${name}` },
+    { label: 'bold', line: (n, name) => `- [ ] **Phase ${n}: ${name}**` },
+  ];
+
+  for (const form of FORMS) {
+    test(`phase complete finds the next unscaffolded phase (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          form.line(2, 'Beta'),
+          '',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        '# State\n\n**Current Phase:** 1\n**Status:** Ready to plan\n',
+      );
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-alpha'), {
+        recursive: true,
+      });
+
+      const result = runGsdTools('phase complete 1 --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      assert.deepStrictEqual(
+        output.next_phase,
+        { number: '2', name: 'beta' },
+        `${form.label} form: Phase 2 is in the roadmap and must be the next phase`,
+      );
+      assert.strictEqual(
+        output.is_last_phase,
+        false,
+        `${form.label} form: a phase is outstanding, so this is not the last one`,
+      );
+
+      const state = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        'utf-8',
+      );
+      assert.match(
+        state,
+        /\*\*Status:\*\* Ready to plan/,
+        `${form.label} form: Status must not go to "Milestone complete"`,
+      );
+    });
+
+    test(`phase add appends after the last checkbox (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          '',
+          '### Phase 1: Alpha',
+          '**Goal:** a',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const roadmap = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        'utf-8',
+      );
+      assert.match(
+        roadmap,
+        /- \[ \] \*\*Phase 2: Gamma work\*\*/,
+        `${form.label} form: the new phase needs its checkbox line`,
+      );
+      const lines = roadmap.split('\n');
+      const alphaIdx = lines.findIndex((l) => /\[ \] .*Phase 1:/.test(l));
+      const gammaIdx = lines.findIndex((l) => /Phase 2: Gamma work/.test(l));
+      assert.ok(
+        alphaIdx >= 0 && gammaIdx === alphaIdx + 1,
+        `${form.label} form: the new checkbox belongs right after the last one ` +
+          `(alpha at ${alphaIdx}, gamma at ${gammaIdx})`,
+      );
+    });
+
+    test(`phase insert lands after the parent checkbox (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '## Roadmap v0.1: Current',
+          '',
+          form.line(1, 'Alpha'),
+          form.line(2, 'Beta'),
+          '',
+          '### Phase 1: Alpha',
+          '**Goal:** a',
+          '',
+          '### Phase 2: Beta',
+          '**Goal:** b',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const roadmap = fs.readFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        'utf-8',
+      );
+      const lines = roadmap.split('\n');
+      const parentIdx = lines.findIndex((l) => /\[ \] .*Phase 1:/.test(l));
+      const insertedIdx = lines.findIndex((l) =>
+        /\[ \] .*Phase 0?1\.1: Hotfix/.test(l),
+      );
+      assert.ok(
+        parentIdx >= 0 && insertedIdx === parentIdx + 1,
+        `${form.label} form: 1.1's checkbox belongs directly after 1's ` +
+          `(parent at ${parentIdx}, inserted at ${insertedIdx})`,
+      );
+    });
+
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase remove rewrites the current milestone only, and reports what its
+// rewrites actually did. Removing a phase used to delete a same-numbered
+// phase's checkbox and table row out of an archived milestone section, mangle
+// the dates in that section's table, and report roadmap_updated regardless.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove milestone scoping', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const ARCHIVED = [
+    '<details>',
+    '<summary>v0.1 — Legacy (Shipped)</summary>',
+    '',
+    '## Roadmap v0.1: Legacy',
+    '',
+    '- [x] **Phase 1: Ancient**',
+    '- [x] **Phase 2: Older**',
+    '- [x] Phase 3: Oldest',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+    '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+    '| 3. Oldest | 2/2 | Complete | 2020-03-01 |',
+    '',
+    '### Phase 2: Older',
+    '**Goal:** old',
+    '',
+    '### Phase 3: Oldest',
+    '**Goal:** older',
+    '',
+    '</details>',
+    '',
+  ];
+
+  const CURRENT = [
+    '## Roadmap v0.2: Current',
+    '',
+    '- [ ] **Phase 1: Alpha**',
+    '- [ ] **Phase 2: Beta**',
+    '- [ ] **Phase 3: Gamma**',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 1. Alpha | 1/1 | Complete | 2026-05-05 |',
+    '| 2. Beta | 0/0 | Pending | - |',
+    '| 3. Gamma | 0/0 | Pending | - |',
+    '',
+    '### Phase 1: Alpha',
+    '**Goal:** a',
+    '',
+    '### Phase 2: Beta',
+    '**Goal:** b',
+    '',
+    '### Phase 3: Gamma',
+    '**Goal:** c',
+    '',
+  ];
+
+  function writeMilestoneRoadmap() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', ''].concat(ARCHIVED, CURRENT).join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  }
+
+  test('leaves the archived milestone section untouched', () => {
+    writeMilestoneRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    const archived = roadmap.slice(0, roadmap.indexOf('</details>'));
+
+    assert.deepStrictEqual(
+      archived.split('\n').filter((l) => /^- \[/.test(l)),
+      [
+        '- [x] **Phase 1: Ancient**',
+        '- [x] **Phase 2: Older**',
+        '- [x] Phase 3: Oldest',
+      ],
+      'no archived checkbox may be removed or renumbered',
+    );
+    assert.deepStrictEqual(
+      archived.split('\n').filter((l) => /^\| \d\./.test(l)),
+      [
+        '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+        '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+        '| 3. Oldest | 2/2 | Complete | 2020-03-01 |',
+      ],
+      'no archived table row may be removed, renumbered or re-dated',
+    );
+    assert.match(
+      archived,
+      /### Phase 2: Older/,
+      'the archived phase section stays',
+    );
+    assert.match(
+      archived,
+      /### Phase 3: Oldest/,
+      'the archived sections keep their numbers',
+    );
+  });
+
+  test('rewrites the current milestone and reports every landing', () => {
+    writeMilestoneRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.roadmap_updated, true);
+    assert.deepStrictEqual(output.roadmap_missed_targets, []);
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+      'renumber',
+    ]);
+
+    const roadmap = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    const current = roadmap.slice(
+      roadmap.lastIndexOf('</details>') + '</details>'.length,
+    );
+
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^- \[/.test(l)),
+      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 2: Gamma**'],
+      'Beta goes, Gamma becomes 2',
+    );
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^\| \d\./.test(l)),
+      [
+        '| 1. Alpha | 1/1 | Complete | 2026-05-05 |',
+        '| 2. Gamma | 0/0 | Pending | - |',
+      ],
+      'the surviving rows keep their dates',
+    );
+    assert.ok(
+      !/### Phase \d: Beta/.test(current),
+      'the removed section is gone',
+    );
+  });
+
+  test('reports missed targets instead of success when nothing matches', () => {
+    // Every target names phase 2 in a shape the rewrites cannot reach: the
+    // header has no colon, the checkbox does not start with the phase, and the
+    // table row has no space after the number.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Milestone work: Phase 2: Beta',
+        '',
+        '| Phase | Plans |',
+        '|-------|-------|',
+        '| 2|Beta |',
+        '',
+        '### Phase 2 — Beta',
+        '**Goal:** b',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-beta'), {
+      recursive: true,
+    });
+    const before = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(
+      output.roadmap_updated,
+      false,
+      'nothing was rewritten, so nothing may be claimed',
+    );
+    assert.deepStrictEqual(output.roadmap_landed, []);
+    assert.deepStrictEqual(output.roadmap_missed_targets, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+    ]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a roadmap nothing matched in is left alone',
+    );
+  });
+
+  test('reports a renumbering that could not reach a zero-padded phase', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 03: Gamma',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.ok(
+      output.roadmap_landed.includes('phase-checkbox'),
+      'phase 2 checkbox removal lands',
+    );
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      ['renumber'],
+      'the padded Phase 03 is a renumbering target the rewrite cannot reach, ' +
+        'and saying so is the point of the check',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The phase list a new checkbox joins is the current milestone's. Scanning the
+// whole document put new phases inside a shipped <details> section whenever it
+// held the last checkbox in the file — which happens when the milestone in
+// progress has no list of its own, when the parent phase is listed only as
+// shipped, and when the collapsed section sits below the current list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add and insert milestone scoping', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const SHIPPED = [
+    '<details>',
+    '<summary>v0.1 — Legacy (Shipped)</summary>',
+    '',
+    '## Roadmap v0.1: Legacy',
+    '',
+    '- [x] **Phase 1: Ancient**',
+    '- [x] Phase 2: Older',
+    '',
+    '</details>',
+  ];
+
+  function writeRoadmap(currentLines) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '']
+        .concat(SHIPPED)
+        .concat(['', '## Roadmap v0.2: Current', ''])
+        .concat(currentLines)
+        .join('\n'),
+    );
+  }
+
+  // The collapsed section moved down out of the way, below the list of the
+  // milestone in progress. The shipped checkboxes are then the last ones in the
+  // file, so a scan that runs to the end of the document lands in them.
+  function writeRoadmapShippedBelow(listLines, detailLines) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Roadmap v0.2: Current', '']
+        .concat(listLines)
+        .concat([''])
+        .concat(SHIPPED)
+        .concat([''])
+        .concat(detailLines)
+        .join('\n'),
+    );
+  }
+
+  function split(roadmap) {
+    const close = roadmap.lastIndexOf('</details>') + '</details>'.length;
+    return { archived: roadmap.slice(0, close), current: roadmap.slice(close) };
+  }
+
+  function shippedSection(roadmap) {
+    return roadmap.slice(
+      roadmap.indexOf('<details>'),
+      roadmap.lastIndexOf('</details>') + '</details>'.length,
+    );
+  }
+
+  function phaseCheckboxes(text) {
+    return text
+      .split('\n')
+      .filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l));
+  }
+
+  test('phase add lists the new phase in the current milestone', () => {
+    writeRoadmap(['### Phase 1: Alpha', '**Goal:** a', '']);
+
+    const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.ok(
+      !/Gamma work/.test(archived),
+      'a shipped milestone section is not where a new phase goes',
+    );
+    assert.match(
+      current,
+      /- \[ \] \*\*Phase 2: Gamma work\*\*/,
+      'the current milestone gets the checkbox even with no list to append to',
+    );
+  });
+
+  test('phase add ignores a shipped list holding the last checkbox in the file', () => {
+    writeRoadmapShippedBelow(
+      ['- [ ] **Phase 3: Alpha**'],
+      ['### Phase 3: Alpha', '**Goal:** a', ''],
+    );
+    const before = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+
+    const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const after = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.strictEqual(
+      shippedSection(after),
+      shippedSection(before),
+      'the collapsed section is not where a new phase goes',
+    );
+    assert.deepStrictEqual(
+      phaseCheckboxes(split(after).current),
+      ['- [ ] **Phase 4: Gamma work**'],
+      'the new checkbox is listed past the collapsed section',
+    );
+  });
+
+  test('phase insert ignores a parent checkbox in a shipped section', () => {
+    // The parent is listed in the shipped section and carries only a header
+    // here, so the parent lookup used to find the archived line and splice the
+    // new decimal in beneath it, inside <details>.
+    writeRoadmap(['### Phase 1: Alpha', '**Goal:** a', '']);
+
+    const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.ok(
+      !/Hotfix/.test(archived),
+      'the shipped section must not gain a phase',
+    );
+    assert.match(
+      current,
+      /- \[ \] \*\*Phase 01\.1: Hotfix \(INSERTED\)\*\*/,
+      'the decimal is listed in the current milestone',
+    );
+  });
+
+  test('phase insert joins the current list, not the shipped parent', () => {
+    // The parent phase is listed only in the shipped section; the milestone in
+    // progress has a list of its own, and that list is the one to join.
+    writeRoadmap([
+      '- [ ] **Phase 3: Beta**',
+      '',
+      '### Phase 1: Alpha',
+      '**Goal:** a',
+      '',
+      '### Phase 3: Beta',
+      '**Goal:** b',
+      '',
+    ]);
+
+    const result = runGsdTools('phase insert 1 "Hotfix" --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const { archived, current } = split(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    );
+    assert.deepStrictEqual(
+      phaseCheckboxes(archived),
+      ['- [x] **Phase 1: Ancient**', '- [x] Phase 2: Older'],
+      'the shipped list is left as it was',
+    );
+    assert.deepStrictEqual(
+      phaseCheckboxes(current),
+      ['- [ ] **Phase 3: Beta**', '- [ ] **Phase 01.1: Hotfix (INSERTED)**'],
+      'the decimal is listed in the current milestone',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROADMAP.md mutations wait for the lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every one of these reads ROADMAP.md, computes from it and from the phase
+// directories, and writes the whole file back. Unserialised, two of them
+// overlapping means the loser's whole contribution is discarded — for phase add
+// and phase insert that is a section and a checkbox nothing recomputes, and for
+// phase complete a tick and a completion date read before a straggler's plan
+// count landed.
+//
+// The lock is held by the test process, so the child's wait is guaranteed rather
+// than raced for: it cannot write until the holder lets go, whatever the timing.
+// The child announces itself through a flag file so the window is measured from a
+// process that is loaded and running, and each case also asserts the write lands
+// once the lock is free, so a child that did nothing at all fails too.
+
+describe('ROADMAP.md mutations wait for the lock', () => {
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, command, ...rest] = process.argv.slice(1);
+    const phase = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    if (command === 'add') phase.cmdPhaseAdd(cwd, rest[0]);
+    else if (command === 'insert') phase.cmdPhaseInsert(cwd, rest[0], rest[1]);
+    else if (command === 'remove') phase.cmdPhaseRemove(cwd, rest[0], { force: true });
+    else phase.cmdPhaseComplete(cwd, rest[0]);
+  `;
+
+  let tmpDir;
+  let roadmapPath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    lockPath = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** Goal one',
+        '**Plans:** TBD',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** Goal two',
+        '**Plans:** TBD',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 01\n**Current Phase Name:** Alpha\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2026-01-01\n**Last Activity Description:** Working\n**Total Phases:** 2 phases\n',
+    );
+    for (const [num, name] of [
+      ['01', 'alpha'],
+      ['02', 'beta'],
+    ]) {
+      const dir = path.join(tmpDir, '.planning', 'phases', `${num}-${name}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-01-PLAN.md`), '# Plan');
+      fs.writeFileSync(path.join(dir, `${num}-01-SUMMARY.md`), '# Summary');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const CASES = [
+    {
+      label: 'phase add',
+      args: ['add', 'Gamma'],
+      landed: (text) => text.includes('### Phase 3: Gamma'),
+    },
+    {
+      label: 'phase insert',
+      args: ['insert', '1', 'Urgent'],
+      landed: (text) => text.includes('### Phase 01.1: Urgent (INSERTED)'),
+    },
+    {
+      label: 'phase remove',
+      args: ['remove', '2'],
+      landed: (text) => !text.includes('Phase 2: Beta'),
+    },
+    {
+      label: 'phase complete',
+      args: ['complete', '1'],
+      landed: (text) => /- \[x\] Phase 1: Alpha/.test(text),
+    },
+  ];
+
+  for (const c of CASES) {
+    test(`${c.label} does not rewrite ROADMAP.md while another writer holds it`, async () => {
+      const before = fs.readFileSync(roadmapPath, 'utf-8');
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          host: require('os').hostname(),
+          at: new Date().toISOString(),
+        }),
+      );
+
+      const child = spawn(
+        process.execPath,
+        ['-e', CHILD_SRC, '--', PHASE_LIB, tmpDir, readyFlag, ...c.args],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      let stderr = '';
+      child.stderr.on('data', (d) => (stderr += d));
+      const exited = new Promise((r) => child.on('close', r));
+
+      await waitForReadyFlag(readyFlag, `${c.label} child`);
+
+      // A window far wider than the read-and-rewrite the command performs; the
+      // lock, not the clock, is what keeps the child out.
+      await new Promise((r) => setTimeout(r, 600));
+      assert.strictEqual(
+        fs.readFileSync(roadmapPath, 'utf-8'),
+        before,
+        `${c.label} rewrote ROADMAP.md while another writer held the lock`,
+      );
+
+      fs.unlinkSync(lockPath);
+      const code = await exited;
+      assert.strictEqual(code, 0, `${c.label} should succeed: ${stderr.trim()}`);
+
+      const after = fs.readFileSync(roadmapPath, 'utf-8');
+      assert.notStrictEqual(
+        after,
+        before,
+        `${c.label} should have rewritten ROADMAP.md once the lock was free`,
+      );
+      assert.ok(
+        c.landed(after),
+        `${c.label} should have written its update: ${after}`,
+      );
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE.md mutations wait for the lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both of these read STATE.md, derive their new field values from what they read
+// and write the whole file back, so an unserialised one discards anything a
+// locked writer appended between its own read and its write. `phase remove` is
+// the sharper case: its new phase count is the count it read minus one, so a
+// lost read is a wrong number rather than a lost entry.
+//
+// Both hold the ROADMAP.md lock across the STATE.md section. That nesting is one
+// way only — see the lock-ordering guard in tests/core.test.cjs.
+//
+// The lock is held by the test process, so the child's wait is guaranteed rather
+// than raced for, and the child announces itself through a flag file so the
+// window is measured from a process that is loaded and running. Each case also
+// asserts the write lands once the lock is free, so a child that did nothing at
+// all fails too.
+
+describe('STATE.md mutations wait for the lock', () => {
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, command, arg] = process.argv.slice(1);
+    const phase = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    if (command === 'remove') phase.cmdPhaseRemove(cwd, arg, { force: true });
+    else phase.cmdPhaseComplete(cwd, arg);
+  `;
+
+  let tmpDir;
+  let statePath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    lockPath = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** Goal one',
+        '**Plans:** TBD',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** Goal two',
+        '**Plans:** TBD',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** Alpha',
+        '**Total Phases:** 2 phases',
+        '**Status:** Executing',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2026-01-01',
+        '**Last Activity Description:** Working',
+        '',
+      ].join('\n'),
+    );
+    for (const [num, name] of [
+      ['01', 'alpha'],
+      ['02', 'beta'],
+    ]) {
+      const dir = path.join(tmpDir, '.planning', 'phases', `${num}-${name}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-01-PLAN.md`), '# Plan');
+      fs.writeFileSync(path.join(dir, `${num}-01-SUMMARY.md`), '# Summary');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const CASES = [
+    {
+      label: 'phase remove',
+      command: 'remove',
+      arg: '2',
+      landed: '**Total Phases:** 1 phases',
+    },
+    {
+      label: 'phase complete',
+      command: 'complete',
+      arg: '1',
+      landed: '**Current Phase:** 02',
+    },
+  ];
+
+  for (const c of CASES) {
+    test(`${c.label} does not rewrite STATE.md while another writer holds it`, async () => {
+      const before = fs.readFileSync(statePath, 'utf-8');
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          host: require('os').hostname(),
+          at: new Date().toISOString(),
+        }),
+      );
+
+      const child = spawn(
+        process.execPath,
+        ['-e', CHILD_SRC, '--', PHASE_LIB, tmpDir, readyFlag, c.command, c.arg],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      let stderr = '';
+      child.stderr.on('data', (d) => (stderr += d));
+      const exited = new Promise((r) => child.on('close', r));
+
+      await waitForReadyFlag(readyFlag, `${c.label} child`);
+
+      // A window far wider than the read-and-rewrite the command performs; the
+      // lock, not the clock, is what keeps the child out.
+      await new Promise((r) => setTimeout(r, 600));
+      assert.strictEqual(
+        fs.readFileSync(statePath, 'utf-8'),
+        before,
+        `${c.label} rewrote STATE.md while another writer held the lock`,
+      );
+
+      fs.unlinkSync(lockPath);
+      const code = await exited;
+      assert.strictEqual(code, 0, `${c.label} should succeed: ${stderr.trim()}`);
+
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.notStrictEqual(
+        after,
+        before,
+        `${c.label} should have rewritten STATE.md once the lock was free`,
+      );
+      assert.ok(
+        after.includes(c.landed),
+        `${c.label} should have written its update: ${after}`,
       );
     });
   }

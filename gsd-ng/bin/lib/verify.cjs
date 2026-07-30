@@ -8,12 +8,15 @@ const os = require('os');
 const {
   safeReadFile,
   normalizePhaseName,
+  comparePhaseNum,
   execGit,
   findPhaseInternal,
   getMilestoneInfo,
+  getMilestonePhaseFilter,
   extractCurrentMilestone,
   output,
   error,
+  parsePhaseCheckboxes,
   planningPaths,
 } = require('./core.cjs');
 const { DEFAULTS, WORKFLOW_DEFAULTS } = require('./defaults.cjs');
@@ -23,12 +26,37 @@ const {
   spliceFrontmatter,
   parseMustHavesBlock,
 } = require('./frontmatter.cjs');
-const { writeStateMd } = require('./state.cjs');
+const {
+  withStateLock,
+  writeStateMd,
+  stateApplyFieldsToSection,
+} = require('./state.cjs');
 const {
   detectWorkspaceType,
   generateMemoriesSection,
   generateMemoryMd,
 } = require('./workspace.cjs');
+
+// The generated Memories section of the project rules file: group 1 is the
+// heading line, group 2 the body.
+//
+// Same shape as STATE.md's section matcher — the heading group ends at its own
+// newline so an empty body can still see the terminator that ends it, and the
+// terminator is any heading of level 2 or deeper. Built here rather than by that
+// builder because this one needs the heading anchored to the start of a line:
+// unanchored, `##` matches the last two hashes of `### Memories Overview` and
+// the rewrite splices into the middle of that heading. The lookbehind is the
+// anchor because the `m` flag that would give `^` the same meaning would also
+// turn the `$` in the terminator into any line end.
+//
+// The heading is matched with its remainder, so a hand-annotated
+// `## Memories (curated)` is this section rather than a second one to append
+// below it. Regenerating it as the canonical heading is a visible edit; a
+// duplicate section would be a silent one.
+const MEMORIES_SECTION = new RegExp(
+  String.raw`((?<![^\n])##[ \t]*Memories[^\n]*\r?\n)([\s\S]*?)(?=\r?\n#{2}|$)`,
+  'i',
+);
 
 function cmdVerifySummary(cwd, summaryPath, checkFileCount) {
   if (!summaryPath) {
@@ -736,6 +764,127 @@ function checkVerifyIssueTrackerLinks(
   void addIssue;
 }
 
+/**
+ * Read the phase layout of the current milestone off disk.
+ *
+ * Returns the milestone's phase directories in phase order with their PLAN and
+ * SUMMARY counts, plus the milestone-wide totals, so a caller can place the
+ * project without consulting STATE.md — which is the point when STATE.md is the
+ * file being rebuilt.
+ */
+function readPhaseLayout(cwd) {
+  const { phases: phasesDir } = planningPaths(cwd);
+  const isDirInMilestone = getMilestonePhaseFilter(cwd);
+  let dirs = [];
+  try {
+    dirs = fs
+      .readdirSync(phasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter(isDirInMilestone)
+      .sort(comparePhaseNum);
+  } catch {}
+
+  let totalPlans = 0;
+  let totalSummaries = 0;
+  const phases = dirs.map((dir) => {
+    let files = [];
+    try {
+      files = fs.readdirSync(path.join(phasesDir, dir));
+    } catch {}
+    const plans = files.filter((f) => /-PLAN\.md$/i.test(f)).length;
+    const summaries = files.filter((f) => /-SUMMARY\.md$/i.test(f)).length;
+    totalPlans += plans;
+    totalSummaries += summaries;
+    return {
+      number: normalizePhaseName(dir),
+      name: dir.replace(/^\d+[A-Za-z]?(?:\.\d+)*-/, '').replace(/-/g, ' '),
+      plans,
+      summaries,
+    };
+  });
+
+  const totalPhases =
+    isDirInMilestone.phaseCount > 0
+      ? Math.max(phases.length, isDirInMilestone.phaseCount)
+      : phases.length;
+
+  return { phases, totalPhases, totalPlans, totalSummaries };
+}
+
+/** Render the STATE.md progress bar for a completed/total plan ratio. */
+function renderProgressField(completed, total) {
+  const percent =
+    total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  const width = 10;
+  const filled = Math.round((percent / 100) * width);
+  return `[${'█'.repeat(filled)}${'░'.repeat(width - filled)}] ${percent}%`;
+}
+
+/**
+ * Build a STATE.md the field writers can rewrite.
+ *
+ * The repair used to emit a three-line skeleton carrying
+ * `**Current phase:** (determining...)` and no Total Phases, Current Plan or
+ * Progress at all, so the command whose job is to hand back a healthy file
+ * handed back one the progression engine could not advance. Every field the
+ * writers look for is emitted, and the block is assembled by the same helper
+ * the writers use rather than concatenated by hand, so the shape cannot drift
+ * from what they match.
+ *
+ * Position comes from disk: the current phase is the first one with plans left
+ * to execute — the last one when every plan has a summary — and the current
+ * plan the first one without a summary. A project with no phase directories
+ * still gets every field, on placeholder values: a placeholder is rewritable,
+ * a missing label is not.
+ */
+function buildRepairedState(cwd) {
+  const today = new Date().toISOString().split('T')[0];
+  const milestone = getMilestoneInfo(cwd);
+  const layout = readPhaseLayout(cwd);
+
+  const current = layout.phases.find((p) => p.summaries < p.plans) ||
+    layout.phases[layout.phases.length - 1] || {
+      number: '01',
+      name: 'unknown',
+      plans: 0,
+      summaries: 0,
+    };
+  const nextPlan = Math.min(current.summaries + 1, Math.max(current.plans, 1));
+
+  const fields = [
+    ['Milestone', `${milestone.version} ${milestone.name}`],
+    ['Current Phase', current.number],
+    ['Current Phase Name', current.name],
+    ['Total Phases', String(layout.totalPhases)],
+    [
+      'Current Plan',
+      current.plans > 0
+        ? `${current.number}-${String(nextPlan).padStart(2, '0')}`
+        : 'Not started',
+    ],
+    ['Total Plans in Phase', String(current.plans)],
+    ['Status', 'Resuming'],
+    ['Last Activity', today],
+    [
+      'Last Activity Description',
+      'STATE.md regenerated by /gsd:health --repair',
+    ],
+    ['Progress', renderProgressField(layout.totalSummaries, layout.totalPlans)],
+  ];
+
+  const skeleton =
+    '# Session State\n\n' +
+    '## Project Reference\n\n' +
+    'See: .planning/PROJECT.md\n\n' +
+    '## Current Position\n\n' +
+    '## Session Log\n\n' +
+    `- ${today}: STATE.md regenerated by /gsd:health --repair\n`;
+
+  return stateApplyFieldsToSection(skeleton, 'Current Position', fields)
+    .content;
+}
+
 function cmdValidateHealth(cwd, options) {
   // Guard: detect if CWD is the home directory (likely accidental)
   const resolved = path.resolve(cwd);
@@ -1219,15 +1368,14 @@ function cmdValidateHealth(cwd, options) {
 
   // ─── Check 17: Phase-linked todos without matching phase (pure filesystem) ─
   // ─── Check 18: Completed phases with unclosed phase-linked todos ──────────
-  // Parse ROADMAP.md for phase numbers and completion status
+  // The phase list is read through the shared checkbox parser, which takes the
+  // bare and the bold form. Read only the bold one, these two checks see a bare
+  // roadmap as having no phases: W017 is suppressed by its own empty-set guard
+  // and W018 never finds a completed phase to report against.
   const roadmapContentForPhaseCheck = safeReadFile(roadmapPath) || '';
-  const phaseEntriesForCheck = [];
-  const phaseCheckRegex =
-    /^[-*]\s*\[([ x])\]\s*\*\*Phase\s+(\d+(?:\.\d+)*)[^*]*\*\*/gm;
-  let pcm;
-  while ((pcm = phaseCheckRegex.exec(roadmapContentForPhaseCheck)) !== null) {
-    phaseEntriesForCheck.push({ number: pcm[2], complete: pcm[1] === 'x' });
-  }
+  const phaseEntriesForCheck = parsePhaseCheckboxes(
+    roadmapContentForPhaseCheck,
+  ).map((entry) => ({ number: entry.num, complete: entry.checked }));
   const phaseNumbersInRoadmap = new Set(
     phaseEntriesForCheck.map((p) => p.number),
   );
@@ -1448,32 +1596,31 @@ function cmdValidateHealth(cwd, options) {
             break;
           }
           case 'regenerateState': {
-            // Create timestamped backup before overwriting
-            if (fs.existsSync(statePath)) {
-              const timestamp = new Date()
-                .toISOString()
-                .replace(/[:.]/g, '-')
-                .slice(0, 19);
-              const backupPath = `${statePath}.bak-${timestamp}`;
-              fs.copyFileSync(statePath, backupPath);
-              repairActions.push({
-                action: 'backupState',
-                success: true,
-                path: backupPath,
-              });
-            }
-            // Generate minimal STATE.md from ROADMAP.md structure
-            const milestone = getMilestoneInfo(cwd);
-            let stateContent = `# Session State\n\n`;
-            stateContent += `## Project Reference\n\n`;
-            stateContent += `See: .planning/PROJECT.md\n\n`;
-            stateContent += `## Position\n\n`;
-            stateContent += `**Milestone:** ${milestone.version} ${milestone.name}\n`;
-            stateContent += `**Current phase:** (determining...)\n`;
-            stateContent += `**Status:** Resuming\n\n`;
-            stateContent += `## Session Log\n\n`;
-            stateContent += `- ${new Date().toISOString().split('T')[0]}: STATE.md regenerated by /gsd:health --repair\n`;
-            writeStateMd(statePath, stateContent, cwd);
+            // Locked, though the replacement is built from the phase directories
+            // rather than from STATE.md and so is not a read-modify-write. An
+            // unserialised overwrite can still land inside another writer's read
+            // and write, which restores the file this replaced while this reports
+            // success and leaves a backup of content that is nowhere else. Inside
+            // the section the outcome is one of the two coherent ones: the repair
+            // wins, or the writer appends to the repaired file. The backup is
+            // taken in the same section so it is exactly what was replaced.
+            withStateLock(cwd, () => {
+              // Create timestamped backup before overwriting
+              if (fs.existsSync(statePath)) {
+                const timestamp = new Date()
+                  .toISOString()
+                  .replace(/[:.]/g, '-')
+                  .slice(0, 19);
+                const backupPath = `${statePath}.bak-${timestamp}`;
+                fs.copyFileSync(statePath, backupPath);
+                repairActions.push({
+                  action: 'backupState',
+                  success: true,
+                  path: backupPath,
+                });
+              }
+              writeStateMd(statePath, buildRepairedState(cwd), cwd);
+            });
             repairActions.push({
               action: repair,
               success: true,
@@ -1519,7 +1666,7 @@ function cmdValidateHealth(cwd, options) {
             if (fs.existsSync(repairRulesPath)) {
               // Append Memories section if not already present
               let content = fs.readFileSync(repairRulesPath, 'utf-8');
-              if (!content.includes('## Memories')) {
+              if (!MEMORIES_SECTION.test(content)) {
                 content += '\n\n' + memoriesSection;
                 fs.writeFileSync(repairRulesPath, content, 'utf-8');
               }
@@ -1545,17 +1692,12 @@ function cmdValidateHealth(cwd, options) {
             if (fs.existsSync(syncRulesPath)) {
               let content = fs.readFileSync(syncRulesPath, 'utf-8');
               const newSection = generateMemoriesSection(cwd);
-              // Replace existing Memories section or append
-              const sectionStart = content.indexOf('## Memories');
-              if (sectionStart !== -1) {
-                // Find end of section (next ## heading or EOF)
-                const afterStart = content.indexOf('\n## ', sectionStart + 1);
-                const sectionEnd =
-                  afterStart !== -1 ? afterStart : content.length;
+              const section = content.match(MEMORIES_SECTION);
+              if (section) {
                 content =
-                  content.slice(0, sectionStart) +
+                  content.slice(0, section.index) +
                   newSection +
-                  content.slice(sectionEnd);
+                  content.slice(section.index + section[0].length);
               } else {
                 content += '\n\n' + newSection;
               }

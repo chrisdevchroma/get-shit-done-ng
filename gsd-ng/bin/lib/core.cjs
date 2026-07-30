@@ -45,6 +45,61 @@ function planningPaths(cwd) {
 
 let atomicWriteCounter = 0;
 
+// The `gsd-` segment namespaces the temp files so a sweep of a directory GSD
+// writes into cannot match anything it did not create itself.
+const ATOMIC_TEMP_PATTERN = /^\..+\.gsd-\d+\.\d+\.tmp$/;
+
+// An atomic write is writeFileSync followed immediately by renameSync — both
+// synchronous, both sub-second even for a large planning document. Nothing
+// matching the temp pattern that has sat untouched for an hour can be a write
+// in flight, and deleting one that was would turn litter into a lost file, so
+// the threshold is set orders of magnitude above the real window rather than
+// close to it.
+const ATOMIC_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+const sweptDirs = new Set();
+
+/**
+ * Delete atomic-write temp files left behind in `dir` by an interrupted write.
+ *
+ * A kill between the write and the rename leaves `.STATE.md.gsd-<pid>.<n>.tmp`
+ * next to the target. Those live in the user's `.planning/`, not in
+ * `os.tmpdir()`, so `reapStaleTempFiles` never saw them and they accumulated
+ * for the life of the project.
+ *
+ * @param {string} dir - directory to sweep
+ * @param {object} [opts]
+ * @param {number} [opts.maxAgeMs] - minimum age before a file is collected
+ * @returns {string[]} names of the files removed
+ */
+function reapStaleAtomicTempFiles(
+  dir,
+  { maxAgeMs = ATOMIC_TEMP_MAX_AGE_MS } = {},
+) {
+  const removed = [];
+  const now = Date.now();
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!ATOMIC_TEMP_PATTERN.test(entry)) continue;
+    const fullPath = path.join(dir, entry);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (!stat.isFile()) continue;
+      if (now - stat.mtimeMs < maxAgeMs) continue;
+      fs.unlinkSync(fullPath);
+      removed.push(entry);
+    } catch {
+      // skip entries we cannot stat or delete
+    }
+  }
+  return removed;
+}
+
 /**
  * Write a file so that no concurrent reader can observe it half-written.
  *
@@ -58,15 +113,30 @@ let atomicWriteCounter = 0;
  * The temp file must live in the same directory as the target — rename across
  * filesystems is not atomic, and on Linux fails outright.
  *
+ * Replacing by rename swaps the directory entry, so the target is a new inode
+ * afterwards. Two consequences, inherent to the technique rather than bugs, and
+ * both verified: a symlinked planning document is replaced by a regular file
+ * holding the new content while the link target keeps the old one, and a
+ * hardlinked copy stops tracking after the first write (link count drops to 1
+ * and the other name keeps the old content). Anyone sharing a planning document
+ * between projects by linking it needs to know that; see the user guide.
+ *
  * @param {string} filePath - target path
  * @param {string} content - full file contents
  * @param {string} [encoding] - defaults to utf-8
  */
 function writeFileAtomic(filePath, content, encoding = 'utf-8') {
   const dir = path.dirname(filePath);
+  // Opportunistic, once per directory per process: the sweep is a readdir of a
+  // small directory, and orphans only appear when a process dies, so there is
+  // nothing to gain from repeating it on every write.
+  if (!sweptDirs.has(dir)) {
+    sweptDirs.add(dir);
+    reapStaleAtomicTempFiles(dir);
+  }
   const tmpPath = path.join(
     dir,
-    `.${path.basename(filePath)}.${process.pid}.${atomicWriteCounter++}.tmp`,
+    `.${path.basename(filePath)}.gsd-${process.pid}.${atomicWriteCounter++}.tmp`,
   );
 
   let mode;
@@ -84,6 +154,424 @@ function writeFileAtomic(filePath, content, encoding = 'utf-8') {
     } catch {}
     throw err;
   }
+}
+
+// ─── File locks ──────────────────────────────────────────────────────────────
+
+// A dead holder is stolen from on sight, so this threshold only backstops the
+// cases where liveness cannot be established: a payload that never got written,
+// a lock from another host. Critical sections are a read, a regex pass and a
+// rename — about a millisecond — so 15s is four orders of magnitude of headroom
+// rather than a guess at how long the work takes.
+const LOCK_STALE_MS = 15 * 1000;
+
+// The same backstop for a holder that can be shown to be running here. Age is
+// not evidence against a process that answers signal 0: stealing on it puts two
+// processes inside the section, which is the lost update the lock exists to
+// stop. What is left for this threshold is a pid recycled onto an unrelated live
+// process after its holder was hard-killed, which would otherwise make the lock
+// immortal — so it is far above any real section, and finite.
+const LOCK_LIVE_HOLDER_STALE_MS = 5 * 60 * 1000;
+
+// Longer than LOCK_STALE_MS and shorter than LOCK_LIVE_HOLDER_STALE_MS, both on
+// purpose. Above the first, so a caller never gives up while waiting for a lock
+// it was seconds away from being entitled to steal — nothing can vouch for that
+// holder, and failing a write the next call would have made is worse than the
+// wait. Below the second, so a holder that is demonstrably still working
+// produces a loud timeout in the waiter rather than a silent steal.
+const LOCK_ACQUIRE_BUDGET_MS = 20 * 1000;
+
+const LOCK_POLL_MS = 20;
+
+// Per lock path: the reentrancy depth, and the identity of the file this process
+// created. Depth rather than a boolean because one process calling two locked
+// functions would otherwise wait out its whole budget against itself.
+const heldLocks = new Map();
+let lockExitHookInstalled = false;
+
+/** Path of the lock guarding `filePath`. */
+function lockPathFor(filePath) {
+  return path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.gsd-lock`,
+  );
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Drop every lock this process holds, whatever depth it is at: the process is
+// on its way out, so nothing is left to unwind to.
+function releaseAllHeldLocks() {
+  for (const [lockPath, held] of [...heldLocks.entries()]) {
+    held.depth = 1;
+    releaseFileLock(lockPath);
+  }
+}
+
+// Ctrl-C is the ordinary way a command ends early, and `exit` does not run for
+// signal termination — the lock outlived the process and the next command waited
+// out the staleness threshold behind a holder that was already gone.
+const LOCK_RELEASE_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+function installLockExitHook() {
+  if (lockExitHookInstalled) return;
+  lockExitHookInstalled = true;
+  process.on('exit', releaseAllHeldLocks);
+  for (const signal of LOCK_RELEASE_SIGNALS) {
+    const handler = () => {
+      releaseAllHeldLocks();
+      // Listening for a signal suppresses the default termination, so hand the
+      // signal back: with this listener gone the process dies by it and reports
+      // the status it would have without the lock. A host that installed its own
+      // listener keeps it, and decides for itself.
+      process.removeListener(signal, handler);
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(1);
+      }
+    };
+    process.on(signal, handler);
+  }
+}
+
+function readLockHolder(lockPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What can be established about the recorded holder: 'dead', 'live', 'unknown'.
+ *
+ * Signal 0 is an existence check on POSIX and on Windows. EPERM means the
+ * process is alive under another user, which is not dead. A pid from a different
+ * host, or a payload that was never written, says nothing either way and is
+ * 'unknown' — that is what the staleness threshold is for.
+ *
+ * @returns {'dead'|'live'|'unknown'}
+ */
+function lockHolderState(holder) {
+  if (!holder || typeof holder.pid !== 'number') return 'unknown';
+  if (holder.host && holder.host !== require('os').hostname()) return 'unknown';
+  if (holder.pid === process.pid) return 'live';
+  try {
+    process.kill(holder.pid, 0);
+    return 'live';
+  } catch (err) {
+    if (err.code === 'ESRCH') return 'dead';
+    return err.code === 'EPERM' ? 'live' : 'unknown';
+  }
+}
+
+function lockAgeMs(lockPath) {
+  try {
+    return Date.now() - fs.statSync(lockPath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+// mtimeMs carries sub-millisecond precision and Date.now() is truncated to whole
+// milliseconds, so a lock created moments ago almost always reads as a fraction
+// of a millisecond ahead of the clock. A second of slack keeps that, and any
+// small clock adjustment, from being read as a timestamp from the future.
+const LOCK_FUTURE_TOLERANCE_MS = 1000;
+
+/**
+ * True when `ageMs` puts the lock past the point of being worth waiting for.
+ *
+ * An age well below zero counts: the mtime is ahead of this host's clock, which
+ * no process on this host can have produced, and skew between hosts sharing a
+ * `.planning/` is exactly the case the host check hands to the age. Judged by
+ * `ageMs > staleMs` alone, such a lock is never stale and never stolen, so every
+ * write on the file burns the whole budget and fails for as long as it is there.
+ */
+function lockAgeIsStale(ageMs, staleMs) {
+  if (ageMs === null) return false;
+  return ageMs < -LOCK_FUTURE_TOLERANCE_MS || ageMs > staleMs;
+}
+
+/**
+ * Remove a lock judged stale. Returns false when it is still there afterwards.
+ *
+ * A directory at the lock path — junk, a botched cleanup — cannot be unlinked,
+ * and swallowing that failure wedges the file as thoroughly as an unreclaimable
+ * lock does. The name is GSD's own and holds a single JSON file at most, so
+ * clearing it recursively removes nothing anyone else put there.
+ */
+function removeStaleLock(lockPath) {
+  try {
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (err) {
+    if (err.code !== 'EISDIR' && err.code !== 'EPERM') return false;
+  }
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create the lock, or report why not.
+ *
+ * `wx` is O_CREAT|O_EXCL on POSIX and CREATE_NEW on Windows — atomic on both,
+ * with no lock-directory-versus-lock-file portability question and nowhere to
+ * put the holder metadata but the file itself. The descriptor is closed before
+ * returning so a later unlink cannot be refused on Windows.
+ *
+ * The identity comes from the open descriptor, so it is the file this call
+ * created and not whatever is at the path by the time anyone looks again. That
+ * is what lets release tell its own lock from a replacement.
+ *
+ * @returns {{outcome: 'acquired'|'taken'|'unavailable', identity: ?object}}
+ */
+function tryCreateLock(lockPath) {
+  let fd;
+  try {
+    fd = fs.openSync(lockPath, 'wx');
+  } catch (err) {
+    return {
+      outcome: err.code === 'EEXIST' ? 'taken' : 'unavailable',
+      identity: null,
+    };
+  }
+  let identity = null;
+  // Identity is carried in the payload as well as the inode: a lock file
+  // unlinked and recreated can land on the same inode, so dev+ino alone cannot
+  // tell our own lock from a replacement that reused it.
+  const token = require('crypto').randomBytes(12).toString('hex');
+  let tokenWritten = false;
+  try {
+    fs.writeSync(
+      fd,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+        token,
+      }),
+    );
+    tokenWritten = true;
+  } catch {
+    // A lock with no readable payload still excludes; it just cannot be
+    // liveness-checked, so it falls back to the staleness threshold.
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    identity = {
+      dev: st.dev,
+      ino: st.ino,
+      token: tokenWritten ? token : null,
+    };
+  } catch {
+    // Without an identity release falls back to unlinking whatever is there.
+  }
+  try {
+    fs.closeSync(fd);
+  } catch {}
+  return { outcome: 'acquired', identity };
+}
+
+function lockFileIdentity(lockPath) {
+  try {
+    const st = fs.statSync(lockPath);
+    const holder = readLockHolder(lockPath);
+    return { dev: st.dev, ino: st.ino, token: holder ? holder.token : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Take the lock at `lockPath`, waiting for a live holder to finish.
+ *
+ * Three outcomes, none of which can wedge a project:
+ * - `locked` / `reentrant` — held by this process, release it.
+ * - `unlocked` — the lock file could not be created at all (read-only tree,
+ *   missing directory, no permission). The caller runs unserialised, which is
+ *   what it did before locking existed, rather than refusing to write.
+ * - `timeout` — the holder held on for the whole budget without becoming
+ *   reclaimable. The caller fails loudly instead of clobbering it.
+ *
+ * A lock is reclaimed when its holder is a process that has gone, or when its
+ * age passes the threshold for what is known about that holder: `staleMs` when
+ * nothing can be established, `liveStaleMs` when signal 0 says it is running
+ * here. Age is not evidence against a running process, so a section that
+ * outlasts `staleMs` keeps its exclusivity.
+ *
+ * @param {string} lockPath
+ * @param {object} [opts]
+ * @param {number} [opts.staleMs]
+ * @param {number} [opts.liveStaleMs] - never below staleMs
+ * @param {number} [opts.budgetMs]
+ * @param {number} [opts.pollMs]
+ * @returns {{mode: string, holder?: object, ageMs?: number}}
+ */
+function acquireFileLock(lockPath, opts = {}) {
+  const {
+    staleMs = LOCK_STALE_MS,
+    budgetMs = LOCK_ACQUIRE_BUDGET_MS,
+    pollMs = LOCK_POLL_MS,
+  } = opts;
+  const liveStaleMs =
+    opts.liveStaleMs === undefined
+      ? Math.max(staleMs, LOCK_LIVE_HOLDER_STALE_MS)
+      : opts.liveStaleMs;
+
+  const held = heldLocks.get(lockPath);
+  if (held) {
+    held.depth += 1;
+    return { mode: 'reentrant' };
+  }
+
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const { outcome, identity } = tryCreateLock(lockPath);
+    if (outcome === 'acquired') {
+      installLockExitHook();
+      heldLocks.set(lockPath, { depth: 1, identity });
+      return { mode: 'locked' };
+    }
+    if (outcome === 'unavailable') return { mode: 'unlocked' };
+
+    const holder = readLockHolder(lockPath);
+    const ageMs = lockAgeMs(lockPath);
+    const state = lockHolderState(holder);
+    const limit = state === 'live' ? liveStaleMs : staleMs;
+    if (state === 'dead' || lockAgeIsStale(ageMs, limit)) {
+      removeStaleLock(lockPath);
+    }
+    if (Date.now() >= deadline) return { mode: 'timeout', holder, ageMs };
+    sleepSync(pollMs);
+  }
+}
+
+/**
+ * Drop one level of the lock. Returns true when the lock file was removed.
+ *
+ * The file is only removed when it is still the one this process created. A
+ * holder whose lock was reclaimed under it would otherwise delete the
+ * reclaimer's lock and leave the section open to a third process, so a
+ * replacement is left alone and reported: the write that just happened ran
+ * alongside someone else's, which the caller cannot see any other way.
+ */
+function releaseFileLock(lockPath) {
+  const held = heldLocks.get(lockPath);
+  if (!held) return false;
+  if (held.depth > 1) {
+    held.depth -= 1;
+    return false;
+  }
+  heldLocks.delete(lockPath);
+
+  const present = lockFileIdentity(lockPath);
+  if (held.identity && present && !sameLockFile(present, held.identity)) {
+    reportLockTakenOver(lockPath);
+    return false;
+  }
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {}
+  return true;
+}
+
+function sameLockFile(present, held) {
+  // When we recorded a token, it is the whole test: the file at the path is ours
+  // only if it still carries that token. A replacement need not carry one at
+  // all, and an inode freed by our unlink can be handed straight back to it, so
+  // dev+ino cannot tell the two apart. Fall back to the inode only when the
+  // payload write failed and we have no token to compare.
+  if (held.token) return present.token === held.token;
+  return present.dev === held.dev && present.ino === held.ino;
+}
+
+function reportLockTakenOver(lockPath) {
+  const holder = readLockHolder(lockPath);
+  const who = holder
+    ? `pid ${holder.pid} on ${holder.host || 'unknown host'}`
+    : 'an unidentified process';
+  const guarded = path.basename(lockPath).replace(/^\.|\.gsd-lock$/g, '');
+  process.stderr.write(
+    `Warning: the lock on ${guarded} was taken over by ${who} while this process ` +
+      `still held it, so the change just written may have raced with that process. ` +
+      `Check ${guarded} before relying on it.\n`,
+  );
+}
+
+/**
+ * Run `fn` with exclusive access to `filePath` across processes.
+ *
+ * writeFileAtomic makes a write indivisible, which stops a reader seeing half a
+ * file. It does nothing for a read-modify-write: parallel executors that each
+ * read STATE.md, append their own entry and write it back all succeed, and every
+ * entry but the last one's is discarded with nothing reported. Serialising the
+ * whole read-compute-write closes that, and because the loser re-reads after it
+ * wins the lock, its append composes with the winner's instead of replacing it.
+ *
+ * A lock rather than a compare-and-swap because half of these mutations are
+ * replacements — filtering a blocker out, setting Status from a value just read
+ * — and replaying one of those against content that changed underneath is a
+ * different operation, not a retry.
+ *
+ * @param {string} filePath - the file being mutated, not the lock path
+ * @param {Function} fn - the critical section; keep it to file I/O
+ * @param {object} [opts] - forwarded to acquireFileLock
+ */
+function withFileLock(filePath, fn, opts = {}) {
+  const lockPath = lockPathFor(filePath);
+  const acquired = acquireFileLock(lockPath, opts);
+  if (acquired.mode === 'timeout') {
+    const held = acquired.holder
+      ? `held by pid ${acquired.holder.pid} on ${acquired.holder.host || 'unknown host'} since ${acquired.holder.at || 'unknown time'}`
+      : 'held by an unidentified process';
+    const err = new Error(
+      `Timed out waiting for a lock on ${path.basename(filePath)} — ${held}. ` +
+        `Retry once that process has finished, or delete ${lockPath} if it is gone.`,
+    );
+    err.code = 'GSD_LOCK_TIMEOUT';
+    err.lockPath = lockPath;
+    err.holder = acquired.holder || null;
+    throw err;
+  }
+  try {
+    return fn();
+  } finally {
+    if (acquired.mode !== 'unlocked') releaseFileLock(lockPath);
+  }
+}
+
+/**
+ * Run a ROADMAP.md read-modify-write as one indivisible step.
+ *
+ * Every executor in a wave calls `roadmap update-plan-progress`, which reads the
+ * whole roadmap and writes the whole roadmap back. Its numbers come from disk
+ * rather than from the file it is rewriting, so racers converge on a valid count
+ * — but a caller that read before a sibling's summary landed writes its lower
+ * count over the higher one, and the next call is the only thing that repairs it.
+ * A caller updating a different phase is worse off than that: its row is not
+ * recomputed by anyone, so the sibling's whole-file write drops it.
+ *
+ * Held across the disk reads too, not only the file rewrite. The stale value is
+ * produced by counting summaries, so a lock taken after that count has already
+ * been taken serialises the write of an answer that is already out of date.
+ *
+ * The section must span the read, so callers wrap their whole body rather than
+ * the write; planningPaths is called inside to keep the one lock path per project.
+ *
+ * Ordering: this is the outer lock. A command that mutates ROADMAP.md and
+ * STATE.md takes this one first and withStateLock inside it, never the reverse.
+ */
+function withRoadmapLock(cwd, fn) {
+  return withFileLock(planningPaths(cwd).roadmap, fn);
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -473,6 +961,79 @@ function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
   return String.raw`(-\s*\[)(${boxState})(\]\s*(?:\*\*)?Phase\s+${phaseNumPattern(phaseNum)}[:\s][^\n]*)`;
 }
 
+// One whole checkbox line, for the readers rather than the rewriters: box state
+// in group 1, phase number in group 2, everything after the colon in group 3.
+// `phaseNum` narrows to that phase and its decimals; omitted, any phase matches.
+// The bare-or-bold prefix is phaseCheckboxPattern's — a reader that takes only
+// the bold form reports a bare-form roadmap as having no phases at all, which
+// is how `phase complete` came to call a milestone finished with a phase left.
+// Leading whitespace is allowed for the same reason: the rewriters' pattern is
+// not anchored, so they tick an entry nested under its milestone heading, and a
+// reader that cannot see one disagrees with them about which phases exist.
+function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
+  const num =
+    phaseNum == null
+      ? String.raw`\d+[A-Z]?(?:\.\d+)*`
+      : phaseNumPattern(phaseNum) +
+        String.raw`[A-Z]?` +
+        (opts.withDecimals ? String.raw`(?:\.\d+)*` : '');
+  return String.raw`^[ \t]*[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
+}
+
+// What the roadmap appends after the name and is not part of it: the plan count
+// the templates carry, and the completion or insertion marker. A parenthetical
+// that says none of those is part of the name — `Auth (JWT)`.
+const PHASE_CHECKBOX_META_SUFFIX =
+  /\s*\((?:(?:completed|inserted)\b[^)]*|[^)]*\bplans?\b[^)]*)\)\s*$/i;
+
+// A description follows the name after a spaced dash, as it does after the bold
+// markers in `**Phase N: Name** - description`.
+const PHASE_CHECKBOX_DESCRIPTION = /\s+(?:[—–]|-{1,2})\s+[^\n]*$/;
+
+// The name as written after the colon, minus the bold markers, any description
+// after it and the roadmap's own trailing metadata. Null when nothing is left: a
+// checkbox may carry only a number.
+function phaseCheckboxName(rest) {
+  // A bold entry closes its markers at the end of the name; anything after them
+  // is a trailing description, not part of it. The bare form has no closing
+  // delimiter, so it ends at the description separator instead — without one,
+  // `Phase N: Audit (1 plan) — completed DATE` named the phase after the whole
+  // line, and that name reaches slugified fields.
+  const raw = String(rest).replace(/^\s*\*\*\s*/, '');
+  const bolded = raw.match(/^([^*\n]*?)\s*\*\*/);
+  const body = bolded
+    ? bolded[1]
+    : raw
+        .replace(/^(?:[—–]|-{1,2})\s+/, '')
+        .replace(PHASE_CHECKBOX_DESCRIPTION, '');
+
+  let name = body.replace(/\*\*/g, '').trim();
+  // Repeated because both markers can be there at once: `phase complete`
+  // appends its own to a line the template already gave a plan count.
+  for (;;) {
+    const stripped = name.replace(PHASE_CHECKBOX_META_SUFFIX, '').trim();
+    if (stripped === name) break;
+    name = stripped;
+  }
+  return name || null;
+}
+
+// Every phase checkbox in `content`, in document order.
+function parsePhaseCheckboxes(content) {
+  const pattern = new RegExp(phaseCheckboxLinePattern(), 'gim');
+  const entries = [];
+  let m;
+  while ((m = pattern.exec(content)) !== null) {
+    entries.push({
+      index: m.index,
+      checked: m[1].toLowerCase() === 'x',
+      num: m[2],
+      name: phaseCheckboxName(m[3]),
+    });
+  }
+  return entries;
+}
+
 function normalizePhaseName(phase) {
   const match = String(phase).match(/^(\d+)([A-Z])?((?:\.\d+)*)/i);
   if (!match) return phase;
@@ -714,6 +1275,16 @@ function currentMilestoneSlice(content) {
 function hasPhaseTableRow(content, phaseNum) {
   return new RegExp(
     String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
+    'im',
+  ).test(currentMilestoneSlice(content));
+}
+
+// A header naming the phase, without requiring the colon the section rewrites
+// key on: a header that separates its name with a dash instead is a target they
+// cannot reach.
+function hasPhaseHeader(content, phaseNum) {
+  return new RegExp(
+    String.raw`^#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])`,
     'im',
   ).test(currentMilestoneSlice(content));
 }
@@ -964,15 +1535,12 @@ function getMilestonePhaseFilter(cwd) {
     while ((m = phasePattern.exec(roadmap)) !== null) {
       milestonePhaseNums.add(m[1]);
     }
-    // Also recognize bullet-only entries: `- [ ] **Phase N: Title**` (no Details header yet).
-    // These exist for phases that are declared in the roadmap but not yet planned
-    // via /gsd:plan-phase. The `getMilestonePhaseFilter` only needs the phase number,
-    // so a simple Set union with the header results is sufficient.
-    const bulletPattern =
-      /^[-*]\s*\[[ x]\]\s*\*\*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\b/gim;
-    let bm;
-    while ((bm = bulletPattern.exec(roadmap)) !== null) {
-      milestonePhaseNums.add(bm[1]);
+    // Also recognize bullet-only entries: `- [ ] Phase N: Title` (no Details
+    // header yet). These exist for phases that are declared in the roadmap but
+    // not yet planned via /gsd:plan-phase. The `getMilestonePhaseFilter` only
+    // needs the phase number, so a Set union with the header results suffices.
+    for (const entry of parsePhaseCheckboxes(roadmap)) {
+      milestonePhaseNums.add(entry.num);
     }
   } catch {}
 
@@ -1088,7 +1656,15 @@ module.exports = {
   setJsonMode,
   error,
   reapStaleTempFiles,
+  reapStaleAtomicTempFiles,
   writeFileAtomic,
+  lockPathFor,
+  acquireFileLock,
+  releaseFileLock,
+  withFileLock,
+  withRoadmapLock,
+  LOCK_STALE_MS,
+  LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,
   loadConfig,
   resolveTargetBranch,
@@ -1100,6 +1676,9 @@ module.exports = {
   phaseFieldPattern,
   phaseNumPattern,
   phaseCheckboxPattern,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
   normalizePhaseName,
   comparePhaseNum,
   searchPhaseInDir,
@@ -1115,7 +1694,9 @@ module.exports = {
   getMilestonePhaseFilter,
   extractCurrentMilestone,
   replaceInCurrentMilestone,
+  currentMilestoneOffset,
   hasPhaseTableRow,
+  hasPhaseHeader,
   hasPhasePlansLine,
   isPhaseCheckboxSatisfied,
   getPhaseCompletionStatus,

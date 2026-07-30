@@ -30,6 +30,14 @@ const {
   planningPaths,
   extractCurrentMilestone,
   writeFileAtomic,
+  reapStaleAtomicTempFiles,
+  lockPathFor,
+  acquireFileLock,
+  releaseFileLock,
+  withFileLock,
+  phaseCheckboxLinePattern,
+  phaseCheckboxName,
+  parsePhaseCheckboxes,
 } = require('../gsd-ng/bin/lib/core.cjs');
 
 // ─── loadConfig ────────────────────────────────────────────────────────────────
@@ -2128,6 +2136,69 @@ describe('writeFileAtomic', () => {
     assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
   });
 
+  // A kill between the write and the rename leaves the temp file behind. Those
+  // land next to the target — in the user's .planning/ — where the os.tmpdir()
+  // reaper never looked, so they accumulated forever, invisible until someone
+  // listed the directory.
+  test('reapStaleAtomicTempFiles collects an orphan from an interrupted write', () => {
+    const orphan = path.join(tmpDir, '.STATE.md.gsd-999999.0.tmp');
+    fs.writeFileSync(orphan, 'half-written\n');
+    const past = Date.now() / 1000 - 7200;
+    fs.utimesSync(orphan, past, past);
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, ['.STATE.md.gsd-999999.0.tmp']);
+    assert.strictEqual(fs.existsSync(orphan), false);
+  });
+
+  // Deleting a temp file a writer is still holding would turn litter into
+  // corruption, so the threshold has to be far longer than any real write.
+  test('reapStaleAtomicTempFiles leaves a fresh temp file alone', () => {
+    const inFlight = path.join(tmpDir, '.STATE.md.gsd-999999.1.tmp');
+    fs.writeFileSync(inFlight, 'being written\n');
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, []);
+    assert.strictEqual(fs.existsSync(inFlight), true);
+    assert.strictEqual(
+      fs.readFileSync(inFlight, 'utf-8'),
+      'being written\n',
+      'a live writer’s temp file must be untouched',
+    );
+  });
+
+  test('reapStaleAtomicTempFiles ignores files it did not write', () => {
+    const foreign = [
+      path.join(tmpDir, '.STATE.md.swp'),
+      path.join(tmpDir, 'notes.tmp'),
+      path.join(tmpDir, '.STATE.md.999999.0.tmp'),
+    ];
+    const past = Date.now() / 1000 - 7200;
+    for (const f of foreign) {
+      fs.writeFileSync(f, 'not ours\n');
+      fs.utimesSync(f, past, past);
+    }
+
+    const removed = reapStaleAtomicTempFiles(tmpDir);
+    assert.deepStrictEqual(removed, []);
+    for (const f of foreign) {
+      assert.strictEqual(fs.existsSync(f), true, `${f} must survive`);
+    }
+  });
+
+  test('an atomic write sweeps orphans in the directory it writes to', () => {
+    const orphan = path.join(tmpDir, '.STATE.md.gsd-999999.2.tmp');
+    fs.writeFileSync(orphan, 'half-written\n');
+    const past = Date.now() / 1000 - 7200;
+    fs.utimesSync(orphan, past, past);
+
+    const target = path.join(tmpDir, 'STATE.md');
+    writeFileAtomic(target, 'fresh\n');
+
+    assert.strictEqual(fs.existsSync(orphan), false);
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
+  });
+
   test('removes the temp file and rethrows when the rename target is a directory', () => {
     const target = path.join(tmpDir, 'STATE.md');
     fs.mkdirSync(target);
@@ -2205,5 +2276,1093 @@ describe('writeFileAtomic', () => {
       [],
       `reader observed partial content (byte lengths: ${result.bad.join(', ')})`,
     );
+  });
+});
+
+// ─── withFileLock ─────────────────────────────────────────────────────────────
+//
+// writeFileAtomic stops a reader seeing half a file. It does nothing for a
+// read-modify-write, where every concurrent writer succeeds and all but the last
+// one's change is discarded. These cover the mechanism; the lost-update
+// regression itself is in state.test.cjs.
+
+describe('withFileLock', () => {
+  const { spawn } = require('node:child_process');
+  const CORE_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'core.cjs',
+  );
+  let tmpDir;
+  let target;
+
+  const LOCKER_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag, markerFile] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    withFileLock(target, () => { fs.writeFileSync(markerFile, ''); }, { pollMs: 5 });
+  `;
+
+  const HOLDER_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag] = process.argv.slice(1);
+    const { acquireFileLock, lockPathFor } = require(lib);
+    const result = acquireFileLock(lockPathFor(target));
+    if (result.mode !== 'locked') { fs.writeSync(2, 'not locked: ' + result.mode); process.exit(9); }
+    fs.writeFileSync(readyFlag, '');
+    setInterval(() => {}, 1000);
+  `;
+
+  const EXITER_SRC = `
+    const [lib, target] = process.argv.slice(1);
+    const { acquireFileLock, lockPathFor } = require(lib);
+    acquireFileLock(lockPathFor(target));
+    process.exit(0);
+  `;
+
+  const RELEASER_SRC = `
+    const [lib, target] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    withFileLock(target, () => 'done');
+  `;
+
+  // Holds the lock inside its critical section until the go flag appears, so the
+  // window a second process is tested against is one this test opens and closes.
+  // The wait is bounded so a go flag that never arrives fails the parent's
+  // assertions rather than hanging the run.
+  const HOLD_UNTIL_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag, goFlag] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    withFileLock(target, () => {
+      fs.writeFileSync(readyFlag, String(process.pid));
+      const deadline = Date.now() + 20000;
+      while (!fs.existsSync(goFlag) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }, { pollMs: 5 });
+  `;
+
+  function waitForFlag(flagPath) {
+    const deadline = Date.now() + 10000;
+    return new Promise((resolve, reject) => {
+      const timer = setInterval(() => {
+        if (fs.existsSync(flagPath)) {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+        if (Date.now() >= deadline) {
+          clearInterval(timer);
+          reject(new Error('the child never started'));
+        }
+      }, 5);
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-lock-test-'));
+    target = path.join(tmpDir, 'STATE.md');
+    fs.writeFileSync(target, 'content\n');
+  });
+
+  afterEach(() => {
+    releaseFileLock(lockPathFor(target));
+    cleanup(tmpDir);
+  });
+
+  test('runs the body and leaves no lock file behind', () => {
+    const seen = withFileLock(target, () => fs.readFileSync(target, 'utf-8'));
+    assert.strictEqual(seen, 'content\n');
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), ['STATE.md']);
+  });
+
+  test('releases the lock when the body throws', () => {
+    assert.throws(() => {
+      withFileLock(target, () => {
+        throw new Error('boom');
+      });
+    }, /boom/);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a nested acquire does not deadlock against itself', () => {
+    // A locked command calling another locked command is one process waiting for
+    // a lock it already holds. Without a depth count that is its whole budget.
+    const order = [];
+    withFileLock(
+      target,
+      () => {
+        order.push('outer');
+        withFileLock(
+          target,
+          () => {
+            order.push('inner');
+            assert.strictEqual(
+              fs.existsSync(lockPathFor(target)),
+              true,
+              'inner body still holds the lock',
+            );
+          },
+          { budgetMs: 200, pollMs: 5 },
+        );
+        assert.strictEqual(
+          fs.existsSync(lockPathFor(target)),
+          true,
+          'the inner release must not drop the outer hold',
+        );
+        order.push('outer-after');
+      },
+      { budgetMs: 200, pollMs: 5 },
+    );
+    assert.deepStrictEqual(order, ['outer', 'inner', 'outer-after']);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a second process waits for the holder instead of proceeding', async () => {
+    // Deterministic by construction: this process holds the lock for a window it
+    // controls, and the child announces readiness before it tries to take it, so
+    // the absence of the marker is evidence of exclusion rather than of a child
+    // that had not started.
+    const readyFlag = path.join(tmpDir, 'ready');
+    const marker = path.join(tmpDir, 'marker');
+    const acquired = acquireFileLock(lockPathFor(target));
+    assert.strictEqual(acquired.mode, 'locked');
+
+    const child = spawn(
+      process.execPath,
+      ['-e', LOCKER_SRC, '--', CORE_LIB, target, readyFlag, marker],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+
+    await waitForFlag(readyFlag);
+    await new Promise((r) => setTimeout(r, 300));
+    const enteredWhileHeld = fs.existsSync(marker);
+
+    releaseFileLock(lockPathFor(target));
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.strictEqual(
+      enteredWhileHeld,
+      false,
+      'the child entered the critical section while the lock was held',
+    );
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(marker),
+      true,
+      'the child should proceed once the lock is released',
+    );
+  });
+
+  test('a live foreign holder times out loudly rather than being clobbered', () => {
+    // pid of this process, which is alive and is not registered as a holder in
+    // this module's depth map — the shape of a real second GSD process.
+    fs.writeFileSync(
+      lockPathFor(target),
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(caught.holder.pid, process.pid);
+    assert.match(caught.message, new RegExp(`pid ${process.pid}`));
+    assert.match(caught.message, /STATE\.md/);
+  });
+
+  test('a holder that no longer exists is stolen at once', async () => {
+    // A pid that has certainly exited: spawn a process and wait for its close.
+    const corpse = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    const deadPid = corpse.pid;
+    await new Promise((r) => corpse.on('close', r));
+
+    fs.writeFileSync(
+      lockPathFor(target),
+      JSON.stringify({
+        pid: deadPid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    // Budget far below the staleness threshold, so only the liveness check can
+    // explain success — a crashed holder must not cost a wait.
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 60 * 60 * 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a lock older than the staleness threshold is stolen', () => {
+    const lockPath = lockPathFor(target);
+    // Payload pid is alive, so staleness is the only thing that can release it —
+    // the live-holder threshold, lowered here to the same value as the other one.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+      liveStaleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('an unidentifiable holder is waited for, not stolen', () => {
+    // A process killed between creating the lock and writing its payload leaves
+    // a lock nothing can be liveness-checked against. Stealing on that basis
+    // would treat every fresh lock as abandoned, so the age is all that counts.
+    fs.writeFileSync(lockPathFor(target), '');
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(caught.holder, null);
+    assert.match(caught.message, /unidentified process/);
+  });
+
+  test('an unidentifiable holder is still stolen once it is stale', () => {
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(lockPath, 'not json');
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
+  test('a holder on another host is judged by age, not by pid', () => {
+    // A pid from another machine says nothing about a process on this one, and
+    // on a shared filesystem it could collide with a live local pid.
+    const lockPath = lockPathFor(target);
+    const payload = JSON.stringify({
+      pid: process.pid,
+      host: 'some-other-host',
+      at: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(lockPath, payload);
+    assert.throws(
+      () =>
+        withFileLock(target, () => 'never', {
+          budgetMs: 100,
+          pollMs: 10,
+          staleMs: 60000,
+        }),
+      /some-other-host/,
+      'a fresh foreign-host lock must be waited for',
+    );
+
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+  });
+
+  test('a live holder on this host is not stolen from by age', () => {
+    // The staleness threshold backstops the cases where liveness cannot be
+    // established. When the payload names a running process on this host it can,
+    // so age is not evidence of abandonment: stealing on it put two processes
+    // inside the section at once and left each one unlinking the other's lock.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const recently = new Date(Date.now() - 30 * 1000);
+    fs.utimesSync(lockPath, recently, recently);
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 200,
+        pollMs: 10,
+        staleMs: 1000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout rather than a steal');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(fs.existsSync(lockPath), true);
+  });
+
+  test('a live holder is reclaimed once its lock outlives any plausible section', () => {
+    // The pid in an abandoned lock can be recycled onto an unrelated live
+    // process, which would otherwise make the lock immortal. The live-holder
+    // backstop is far above any real section but still finite.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('a holder does not unlink a lock it no longer owns', () => {
+    // Release used to unlink whatever lock file was at the path, so a holder
+    // that had been stolen from deleted the thief's lock and left the section
+    // unguarded for a third process.
+    const lockPath = lockPathFor(target);
+    const acquired = acquireFileLock(lockPath);
+    assert.strictEqual(acquired.mode, 'locked');
+
+    fs.unlinkSync(lockPath);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999999, host: 'thief', at: 'later' }),
+    );
+    const thiefIno = fs.statSync(lockPath).ino;
+
+    const originalWrite = process.stderr.write;
+    const chunks = [];
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    let removed;
+    try {
+      removed = releaseFileLock(lockPath);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.strictEqual(removed, false);
+    assert.strictEqual(fs.existsSync(lockPath), true);
+    assert.strictEqual(fs.statSync(lockPath).ino, thiefIno);
+    assert.match(chunks.join(''), /lock on STATE\.md was taken over/);
+  });
+
+  test('a holder does not unlink a replacement that reused the inode', () => {
+    // CI caught this where a local run could not: the allocator handed the
+    // replacement the inode the original had just freed, so a dev+ino check
+    // read the thief's lock as our own and deleted it. Rewriting in place
+    // reproduces that on any filesystem.
+    const lockPath = lockPathFor(target);
+    const acquired = acquireFileLock(lockPath);
+    assert.strictEqual(acquired.mode, 'locked');
+    const ourIno = fs.statSync(lockPath).ino;
+
+    // No token in the replacement, which is the shape that defeated both the
+    // inode check and a token check that fell back to the inode when the file
+    // on disk carried none.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999999, host: 'thief', at: 'later' }),
+    );
+    assert.strictEqual(
+      fs.statSync(lockPath).ino,
+      ourIno,
+      'an in-place rewrite must keep the inode for this test to mean anything',
+    );
+
+    const originalWrite = process.stderr.write;
+    const chunks = [];
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    let removed;
+    try {
+      removed = releaseFileLock(lockPath);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.strictEqual(removed, false);
+    assert.strictEqual(fs.existsSync(lockPath), true);
+    assert.match(chunks.join(''), /lock on STATE\.md was taken over/);
+  });
+
+  test('a section outlasting the staleness threshold keeps a second process out', async () => {
+    // The window is opened and closed by this test: the child announces that it
+    // is inside its section, and only leaves it once the go flag is written,
+    // which happens after the second acquire has already returned.
+    const readyFlag = path.join(tmpDir, 'ready');
+    const goFlag = path.join(tmpDir, 'go');
+    const lockPath = lockPathFor(target);
+
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLD_UNTIL_SRC, '--', CORE_LIB, target, readyFlag, goFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+
+    await waitForFlag(readyFlag);
+    const heldIno = fs.statSync(lockPath).ino;
+
+    let caught;
+    try {
+      withFileLock(target, () => 'entered', {
+        budgetMs: 600,
+        pollMs: 10,
+        staleMs: 200,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const inoDuringHold = fs.existsSync(lockPath)
+      ? fs.statSync(lockPath).ino
+      : null;
+
+    fs.writeFileSync(goFlag, '');
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.ok(
+      caught,
+      'the second process entered a section the child was still inside',
+    );
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(
+      inoDuringHold,
+      heldIno,
+      "the holder's lock file was replaced while it was inside its section",
+    );
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      false,
+      'the holder should remove its own lock on the way out',
+    );
+  });
+
+  test('a foreign-host lock dated in the future is reclaimed at once', () => {
+    // Clock skew between hosts sharing a .planning/ is what the host check
+    // exists for, and it puts an mtime ahead of this host's clock. A negative
+    // age can never exceed the threshold, so judging that lock by age alone
+    // wedged every write on the file for as long as the file was there.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 999999,
+        host: 'some-other-host',
+        at: new Date().toISOString(),
+      }),
+    );
+    const ahead = new Date(Date.now() + 2 * 60 * 1000);
+    fs.utimesSync(lockPath, ahead, ahead);
+
+    const startedAt = Date.now();
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+    assert.ok(
+      elapsed < 1000,
+      `reclaiming a future-dated lock must not cost a wait (took ${elapsed}ms)`,
+    );
+  });
+
+  test('a lock a fraction ahead of the clock is still waited for', () => {
+    // mtimeMs is sub-millisecond and Date.now() is truncated to whole
+    // milliseconds, so a lock written this instant reads as a fraction of a
+    // millisecond ahead of the clock nearly every time. Without slack, treating
+    // an mtime in the future as stale makes every lock whose holder cannot be
+    // liveness-checked stealable the moment it appears. 200ms stands in for that
+    // fraction and for any small clock adjustment.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(lockPath, '');
+    const slightlyAhead = new Date(Date.now() + 200);
+    fs.utimesSync(lockPath, slightlyAhead, slightlyAhead);
+
+    let caught;
+    try {
+      withFileLock(target, () => 'entered', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'a lock barely ahead of the clock must not be stolen');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(fs.existsSync(lockPath), true);
+  });
+
+  test('a directory left at the lock path is cleared rather than waited out', () => {
+    // unlinkSync cannot remove a directory, and the steal swallows the failure,
+    // so junk at the lock path failed every write on the file indefinitely.
+    const lockPath = lockPathFor(target);
+    fs.mkdirSync(lockPath);
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('a lock that cannot be created runs the body unserialised', () => {
+    // Read-only tree, no permission, missing directory: refusing to write would
+    // be worse than the lost update the lock exists to prevent.
+    const unreachable = path.join(tmpDir, 'missing', 'STATE.md');
+    const ran = withFileLock(unreachable, () => 'ran', {
+      budgetMs: 100,
+      pollMs: 10,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, 'missing')), false);
+  });
+
+  test('a lock left by a hard-killed process needs no manual cleanup', async () => {
+    const readyFlag = path.join(tmpDir, 'ready');
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLDER_SRC, '--', CORE_LIB, target, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    await waitForFlag(readyFlag);
+
+    const lockPath = lockPathFor(target);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      `the child should hold the lock: ${stderr}`,
+    );
+
+    child.kill('SIGKILL');
+    await new Promise((r) => child.on('close', r));
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      'SIGKILL cannot run a release, so the lock file must still be there',
+    );
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 500,
+      pollMs: 10,
+      staleMs: 60 * 60 * 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  // Ctrl-C is the ordinary way a command ends early, and process.on('exit') does
+  // not run for signal termination: the lock outlived the process and the next
+  // command had to wait out the staleness threshold behind a holder that was
+  // already gone.
+  async function assertSignalReleasesLock(signal) {
+    const readyFlag = path.join(tmpDir, `ready-${signal}`);
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLDER_SRC, '--', CORE_LIB, target, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    await waitForFlag(readyFlag);
+
+    const lockPath = lockPathFor(target);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      `the child should hold the lock: ${stderr}`,
+    );
+
+    child.kill(signal);
+    const ended = await new Promise((r) =>
+      child.on('close', (code, sig) => r({ code, sig })),
+    );
+
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      false,
+      `${signal} left the lock behind`,
+    );
+    assert.strictEqual(
+      ended.sig,
+      signal,
+      `${signal} must still end the process by that signal, got code ${ended.code}`,
+    );
+  }
+
+  test('SIGINT releases the lock', async () => {
+    await assertSignalReleasesLock('SIGINT');
+  });
+
+  test('SIGTERM releases the lock', async () => {
+    await assertSignalReleasesLock('SIGTERM');
+  });
+
+  test('SIGHUP releases the lock', async () => {
+    await assertSignalReleasesLock('SIGHUP');
+  });
+
+  test('a command that has finished with the lock still exits on its own', async () => {
+    // The signal handlers are installed on first acquire. A handler that kept
+    // the event loop referenced would hang every command that takes a lock.
+    const child = spawn(
+      process.execPath,
+      ['-e', RELEASER_SRC, '--', CORE_LIB, target],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const killer = setTimeout(() => child.kill('SIGKILL'), 5000);
+    const ended = await new Promise((r) =>
+      child.on('close', (code, sig) => r({ code, sig })),
+    );
+    clearTimeout(killer);
+
+    assert.strictEqual(
+      ended.sig,
+      null,
+      'the child had to be killed: something is holding the event loop open',
+    );
+    assert.strictEqual(ended.code, 0, `child exited ${ended.code}: ${stderr}`);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
+  });
+
+  test('a lock held at process exit is released by the exit hook', async () => {
+    const child = spawn(
+      process.execPath,
+      ['-e', EXITER_SRC, '--', CORE_LIB, target],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(lockPathFor(target)),
+      false,
+      'process.exit inside a locked command must not leak the lock',
+    );
+  });
+});
+
+// ─── Phase checkbox readers ───────────────────────────────────────────────────
+//
+// Bare and bold are the two supported roadmap forms. Every reader shares one
+// pattern so a form cannot be supported by the rewriters and invisible to the
+// readers, which is how `phase complete` came to skip an outstanding phase.
+
+describe('parsePhaseCheckboxes', () => {
+  test('reads the bare form', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Phase 1: Alpha\n- [x] Phase 2: Beta\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('reads the bold form', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] **Phase 1: Alpha**\n- [x] **Phase 2: Beta**\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('reads zero-padded, lettered and decimal numbers', () => {
+    const entries = parsePhaseCheckboxes(
+      ['- [ ] Phase 06: Six', '- [ ] Phase 6.1: Six One', '- [ ] **Phase 12A: Twelve A**'].join(
+        '\n',
+      ),
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => e.num),
+      ['06', '6.1', '12A'],
+    );
+  });
+
+  test('drops the completed suffix from the name', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [x] Phase 3: Gamma (completed 2026-07-30)\n',
+    );
+    assert.deepStrictEqual(entries.map((e) => e.name), ['Gamma']);
+  });
+
+  test('ignores a mid-line phase mention', () => {
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Ship the thing that Phase 4: needed\n',
+    );
+    assert.deepStrictEqual(entries, []);
+  });
+
+  test('reports a numbered checkbox with no title as nameless', () => {
+    const entries = parsePhaseCheckboxes('- [ ] Phase 9\n');
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name })),
+      [{ num: '9', name: null }],
+    );
+  });
+
+  test('reads the milestone rollover shape without its trailing metadata', () => {
+    // What complete-milestone writes on every rollover. The bare form has no
+    // closing delimiter, so the name used to run to the end of the line and
+    // reached next_phase_name, which is slugified.
+    const entries = parsePhaseCheckboxes(
+      [
+        '- [x] Phase 5: Security Audit (1 plan) — completed 2026-02-01',
+        '- [x] Phase 6: Hardening (2/2 plans) — completed 2026-02-03',
+        '- [ ] Phase 7: Hardening (2 plans)',
+      ].join('\n'),
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => e.name),
+      ['Security Audit', 'Hardening', 'Hardening'],
+    );
+  });
+
+  test('reads an indented checkbox', () => {
+    // Nesting a phase list under its milestone is ordinary markdown, and the
+    // rewriters tick an indented entry, so a reader that skips one disagrees
+    // with the writer about which phases exist.
+    const entries = parsePhaseCheckboxes(
+      '  - [ ] Phase 1: Alpha\n\t- [x] **Phase 2: Beta**\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('takes a colonless entry as a phase, as the rewriters do', () => {
+    // Deliberate: the colon is optional here because it is optional in the
+    // pattern the four rewriters share, and a line they will tick has to be a
+    // line the readers can see. The cost is that a checklist item opening with a
+    // phase number reads as an entry for that phase.
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Phase 4 needs review\n- [x] Phase 5 - Polish\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name })),
+      [
+        { num: '4', name: 'needs review' },
+        { num: '5', name: 'Polish' },
+      ],
+    );
+  });
+});
+
+describe('phaseCheckboxLinePattern', () => {
+  test('narrowed to a phase, tolerates padding and rejects a longer number', () => {
+    const re = new RegExp(phaseCheckboxLinePattern(1), 'im');
+    assert.ok(re.test('- [ ] Phase 01: Alpha'), 'padded form must match');
+    assert.ok(re.test('- [ ] **Phase 1: Alpha**'), 'bold form must match');
+    assert.strictEqual(
+      re.test('- [ ] Phase 12: Twelve'),
+      false,
+      'phase 1 must not match phase 12',
+    );
+    assert.strictEqual(
+      re.test('- [ ] Phase 1.1: One One'),
+      false,
+      'phase 1 must not match its own decimal without withDecimals',
+    );
+  });
+
+  test('withDecimals also matches the phase decimals', () => {
+    const re = new RegExp(phaseCheckboxLinePattern(36, { withDecimals: true }), 'im');
+    assert.ok(re.test('- [ ] **Phase 36: Base**'), 'the parent must match');
+    assert.ok(re.test('- [ ] Phase 36.2: Second'), 'a decimal must match');
+    assert.strictEqual(
+      re.test('- [ ] Phase 360: Far'),
+      false,
+      'a longer number must not match',
+    );
+  });
+});
+
+describe('phaseCheckboxName', () => {
+  test('strips bold markers, suffixes and whitespace', () => {
+    assert.strictEqual(phaseCheckboxName('Alpha**'), 'Alpha');
+    assert.strictEqual(phaseCheckboxName('  Beta  '), 'Beta');
+    assert.strictEqual(
+      phaseCheckboxName('Gamma (completed 2026-07-30)'),
+      'Gamma',
+    );
+    assert.strictEqual(phaseCheckboxName('Delta (INSERTED)'), 'Delta');
+  });
+
+  test('stops at the closing bold markers', () => {
+    assert.strictEqual(
+      phaseCheckboxName('Foundation** - Set up project'),
+      'Foundation',
+    );
+    assert.strictEqual(phaseCheckboxName('** Alpha'), 'Alpha');
+  });
+
+  test('keeps a trailing parenthetical that is part of the name', () => {
+    assert.strictEqual(phaseCheckboxName('Auth (JWT)'), 'Auth (JWT)');
+    assert.strictEqual(
+      phaseCheckboxName('Security Audit (external review)'),
+      'Security Audit (external review)',
+    );
+  });
+
+  test('cuts the bare form at its separator and drops the roadmap metadata', () => {
+    assert.strictEqual(
+      phaseCheckboxName('Security Audit (1 plan) — completed 2026-02-01'),
+      'Security Audit',
+    );
+    assert.strictEqual(
+      phaseCheckboxName('Foundation (2/2 plans) - completed 2026-02-01'),
+      'Foundation',
+    );
+    assert.strictEqual(
+      phaseCheckboxName('Polish (1 plan) (completed 2026-02-01)'),
+      'Polish',
+    );
+    assert.strictEqual(phaseCheckboxName('Hardening ([N] plans)'), 'Hardening');
+    assert.strictEqual(phaseCheckboxName('Alpha – a description'), 'Alpha');
+    assert.strictEqual(phaseCheckboxName('- Polish'), 'Polish');
+  });
+
+  test('returns null for an empty name', () => {
+    assert.strictEqual(phaseCheckboxName('**'), null);
+  });
+});
+
+describe('getMilestonePhaseFilter checkbox forms', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-core-test-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  for (const form of [
+    { label: 'bare', line: '- [ ] Phase 7: Seven' },
+    { label: 'bold', line: '- [ ] **Phase 7: Seven**' },
+  ]) {
+    test(`accepts a checkbox-only phase directory (${form.label})`, () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '## Roadmap v0.1: Current', '', form.line, '', '### Phase 8: Eight', ''].join(
+          '\n',
+        ),
+      );
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(
+        filter('07-seven'),
+        true,
+        `${form.label} form: the checkbox declares phase 7 in this milestone`,
+      );
+      assert.strictEqual(filter('08-eight'), true, 'the header declares phase 8');
+      assert.strictEqual(filter('09-nine'), false, 'phase 9 is not declared');
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lock ordering
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two locks exist, on ROADMAP.md and on STATE.md, and two commands hold the
+// first across the second: phase remove and phase complete both mutate the
+// roadmap and then the state. That nesting is safe only while it is one way, so
+// the ordering is ROADMAP.md outer, STATE.md inner, everywhere.
+//
+// What keeps it that way is the require graph rather than discipline: state.cjs
+// is below phase.cjs and roadmap.cjs, so nothing inside the STATE.md section can
+// reach a roadmap-lock acquisition. These assertions are that direction, so a
+// change that adds the reverse edge fails here rather than deadlocking a user's
+// project.
+
+describe('lock ordering', () => {
+  const LIB_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib');
+  const read = (name) => fs.readFileSync(path.join(LIB_DIR, name), 'utf-8');
+
+  test('the STATE.md section cannot reach a ROADMAP.md acquisition', () => {
+    const source = read('state.cjs');
+    assert.ok(
+      !source.includes('withRoadmapLock'),
+      'state.cjs must not acquire the ROADMAP.md lock — the order is roadmap outer, state inner',
+    );
+    const requires = [...source.matchAll(/require\('([^']+)'\)/g)].map(
+      (m) => m[1],
+    );
+    assert.deepStrictEqual(
+      requires.filter((r) => r === './roadmap.cjs' || r === './phase.cjs'),
+      [],
+      'state.cjs must not depend on the modules that take the ROADMAP.md lock',
+    );
+  });
+
+  test('no helper in core.cjs takes the ROADMAP.md lock', () => {
+    // A roadmap acquisition inside a shared helper would be reachable from the
+    // STATE.md section without state.cjs naming the lock at all.
+    const offenders = read('core.cjs')
+      .split('\n')
+      .map((line, i) => ({ line, number: i + 1 }))
+      .filter(
+        ({ line }) =>
+          line.includes('withRoadmapLock(') &&
+          !line.includes('function withRoadmapLock('),
+      );
+    assert.deepStrictEqual(
+      offenders.map((o) => o.number),
+      [],
+      `core.cjs calls withRoadmapLock at line(s) ${offenders
+        .map((o) => o.number)
+        .join(', ')} — a shared helper that locks the roadmap can be reached from inside the STATE.md lock`,
+    );
+  });
+
+  /**
+   * Line numbers where a ROADMAP.md acquisition sits inside a STATE.md one.
+   *
+   * Indentation stands in for block nesting: a state acquisition opens a region
+   * that ends at the first later line indented no further than it.
+   */
+  function findReverseNesting(source) {
+    const lines = source.split('\n');
+    const found = [];
+    let stateIndent = null;
+    for (let i = 0; i < lines.length; i++) {
+      const indent = lines[i].search(/\S/);
+      if (indent === -1) continue;
+      if (stateIndent !== null && indent <= stateIndent) stateIndent = null;
+      if (lines[i].includes('withStateLock(')) {
+        stateIndent = indent;
+        continue;
+      }
+      if (stateIndent !== null && lines[i].includes('withRoadmapLock(')) {
+        found.push(i + 1);
+      }
+    }
+    return found;
+  }
+
+  test('findReverseNesting flags a roadmap acquisition inside a state one', () => {
+    const offending = [
+      'function bad(cwd) {',
+      '  return withStateLock(cwd, () => {',
+      '    withRoadmapLock(cwd, () => {});',
+      '  });',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(findReverseNesting(offending), [3]);
+  });
+
+  test('findReverseNesting accepts the supported order', () => {
+    const fine = [
+      'function good(cwd) {',
+      '  return withRoadmapLock(cwd, () => {',
+      '    withStateLock(cwd, () => {});',
+      '  });',
+      '}',
+      'function alsoGood(cwd) {',
+      '  withStateLock(cwd, () => {});',
+      '  withRoadmapLock(cwd, () => {});',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(findReverseNesting(fine), []);
+  });
+
+  test('the modules that take both locks take them in one order', () => {
+    for (const name of ['phase.cjs', 'roadmap.cjs', 'milestone.cjs']) {
+      assert.deepStrictEqual(
+        findReverseNesting(read(name)),
+        [],
+        `${name} takes the ROADMAP.md lock inside the STATE.md lock — the order is roadmap outer, state inner`,
+      );
+    }
   });
 });

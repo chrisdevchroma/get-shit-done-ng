@@ -4,9 +4,15 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const {
+  runGsdTools,
+  createTempProject,
+  cleanup,
+  waitForReadyFlag,
+} = require('./helpers.cjs');
 const {
   formatMilestoneHeading,
   parseCompletedMilestones,
@@ -1410,6 +1416,127 @@ describe('milestone complete → cleanup round trip', () => {
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-foundation')),
       '01-foundation should be gone from phases/',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE.md write waits for the lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// milestone complete reads STATE.md, replaces three fields in what it read and
+// writes the whole file back. Nothing in the command establishes that no other
+// writer is running — it takes a version and archives against it whenever it is
+// called — so an unserialised write here discards whatever a locked writer added
+// between the read and the write.
+//
+// The lock is held by the test process, so the child's wait does not depend on
+// timing, and the child announces itself through a flag file so the window is
+// measured from a loaded process. The second half asserts the write lands once
+// the lock is free, so a child that did nothing fails too.
+
+describe('milestone complete STATE.md write waits for the lock', () => {
+  const MILESTONE_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'milestone.cjs',
+  );
+
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag] = process.argv.slice(1);
+    const milestone = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    milestone.cmdMilestoneComplete(cwd, 'v1.0', { name: 'MVP' });
+  `;
+
+  let tmpDir;
+  let statePath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    lockPath = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n',
+    );
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        '**Status:** Executing',
+        '**Last Activity:** 2026-01-01',
+        '**Last Activity Description:** Working',
+        '',
+      ].join('\n'),
+    );
+    const dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(
+      path.join(dir, '01-01-SUMMARY.md'),
+      '---\none-liner: Set up project infrastructure\n---\n# Summary\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('does not rewrite STATE.md while another writer holds it', async () => {
+    const before = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['-e', CHILD_SRC, '--', MILESTONE_LIB, tmpDir, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const exited = new Promise((r) => child.on('close', r));
+
+    await waitForReadyFlag(readyFlag, 'the child');
+
+    // A window far wider than the read-and-rewrite the command performs; the
+    // lock, not the clock, is what keeps the child out.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf-8'),
+      before,
+      'STATE.md was rewritten while another writer held the lock',
+    );
+
+    fs.unlinkSync(lockPath);
+    const code = await exited;
+    assert.strictEqual(code, 0, `the command should succeed: ${stderr.trim()}`);
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.notStrictEqual(
+      after,
+      before,
+      'STATE.md should have been rewritten once the lock was free',
+    );
+    assert.ok(
+      after.includes('**Status:** v1.0 milestone complete'),
+      `the status update should have landed: ${after}`,
     );
   });
 });

@@ -99,10 +99,12 @@ The CLI handles:
 - Deleting the phase directory
 - Renumbering all subsequent directories (in reverse order to avoid conflicts)
 - Renaming all files inside renumbered directories (PLAN.md, SUMMARY.md, etc.)
-- Updating ROADMAP.md (removing section, renumbering all phase references, updating dependencies)
+- Updating ROADMAP.md's current milestone (removing section, renumbering phase references, updating dependencies) — archived milestone sections are never touched
 - Updating STATE.md (decrementing phase count)
 
-Extract from result: `removed`, `directory_deleted`, `renamed_directories`, `renamed_files`, `roadmap_updated`, `state_updated`.
+Extract from result: `removed`, `directory_deleted`, `renamed_directories`, `renamed_files`, `roadmap_updated`, `roadmap_landed`, `roadmap_missed_targets`, `state_updated`.
+
+`roadmap_updated` is false when no ROADMAP.md rewrite matched anything — the file was left as it was. `roadmap_landed` names the rewrites that did land (`phase-section`, `phase-checkbox`, `progress-table`, `renumber`) and `roadmap_missed_targets` names the ones that had a target and could not reach it, which means ROADMAP.md is written in a shape the rewrite does not recognise. Report those to the user; do not present the removal as clean when the list is non-empty.
 </step>
 
 <step name="commit">
@@ -124,7 +126,7 @@ Phase {target} ({original-name}) removed.
 Changes:
 - Deleted: .planning/phases/{target}-{slug}/
 - Renumbered: {N} directories and {M} files
-- Updated: ROADMAP.md, STATE.md
+- Updated: ROADMAP.md ({roadmap_landed}), STATE.md
 - Committed: chore: remove phase {target} ({original-name})
 
 ---
@@ -149,6 +151,7 @@ Would you like to:
 - Don't manually renumber — use `gsd-tools phase remove` which handles all renumbering
 - Don't add "removed phase" notes to STATE.md — git commit is the record
 - Don't modify completed phase directories
+- Don't report a clean removal when `roadmap_missed_targets` is non-empty — name the parts of ROADMAP.md that need a look
 </anti_patterns>
 
 <success_criteria>

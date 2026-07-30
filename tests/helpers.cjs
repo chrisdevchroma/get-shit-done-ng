@@ -2,6 +2,7 @@
  * GSD Tools Test Helpers
  */
 
+const assert = require('node:assert');
 const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -233,4 +234,25 @@ function touchSubmodule(workspaceDir, submodulePath) {
   );
 }
 
-module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule };
+/**
+ * Wait for a spawned child to create its readiness flag file.
+ *
+ * Lock-wait tests observe a window in which a child must not have written. The
+ * window has to start from a child that is loaded and running, or a slow start
+ * means nothing was observed and the test passes without having tested
+ * anything. Expiry asserts rather than hanging, so a child that died reports as
+ * a failure instead of a timeout.
+ *
+ * @param {string} flagPath - File the child creates once it is ready
+ * @param {string} label - How to name the child in the failure message
+ * @param {number} [timeoutMs=10000] - How long to wait before failing
+ */
+async function waitForReadyFlag(flagPath, label, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(flagPath)) {
+    assert.ok(Date.now() < deadline, `${label} never signalled readiness`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule, waitForReadyFlag };
