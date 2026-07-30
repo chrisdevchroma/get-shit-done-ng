@@ -7520,3 +7520,168 @@ describe('phase remove refuses a phase belonging to a shipped milestone', () => 
     assert.strictEqual(JSON.parse(result.output).found, false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A letter phase is a sidecar hung off an integer, not the integer itself.
+// Parsed with parseInt it read as the integer, and removing one ran the
+// integer renumbering: every phase above it moved down onto a number that was
+// never vacated, leaving two directories parsing as the same phase.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove on a letter phase', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 2: Two',
+        '- [ ] Phase 3: Three',
+        '- [ ] Phase 3A: Sidecar',
+        '- [ ] Phase 3B: Later',
+        '- [ ] Phase 4: Four',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 2. Two | 0/0 | Pending | - |',
+        '| 3. Three | 0/0 | Pending | - |',
+        '| 3A. Sidecar | 0/0 | Pending | - |',
+        '| 3B. Later | 0/0 | Pending | - |',
+        '| 4. Four | 0/0 | Pending | - |',
+        '',
+        '### Phase 3: Three',
+        '### Phase 3A: Sidecar',
+        '### Phase 3B: Later',
+        '### Phase 4: Four',
+        '',
+      ].join('\n'),
+    );
+    for (const [dir, files] of Object.entries({
+      '02-two': [],
+      '03-three': ['03-01-PLAN.md'],
+      '03A-sidecar': ['03A-01-PLAN.md'],
+      '03B-later': ['03B-01-PLAN.md'],
+      '04-four': ['04-01-PLAN.md'],
+    })) {
+      const full = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(full, { recursive: true });
+      for (const f of files) fs.writeFileSync(path.join(full, f), '# plan\n');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('removes the sidecar and leaves every other phase where it was', () => {
+    const result = runGsdTools('phase remove 3A --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort(),
+      ['02-two', '03-three', '03B-later', '04-four'],
+      'no phase above the sidecar moves onto a number nothing vacated',
+    );
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases', '04-four')),
+      ['04-01-PLAN.md'],
+      'and its plans keep their names',
+    );
+    assert.deepStrictEqual(roadmap.split('\n').filter((l) => /^- \[/.test(l)), [
+      '- [ ] Phase 2: Two',
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3B: Later',
+      '- [ ] Phase 4: Four',
+    ]);
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^\| \d/.test(l)),
+      [
+        '| 2. Two | 0/0 | Pending | - |',
+        '| 3. Three | 0/0 | Pending | - |',
+        '| 3B. Later | 0/0 | Pending | - |',
+        '| 4. Four | 0/0 | Pending | - |',
+      ],
+    );
+    assert.deepStrictEqual(roadmap.split('\n').filter((l) => /^#{2,4} Phase/.test(l)), [
+      '### Phase 3: Three',
+      '### Phase 3B: Later',
+      '### Phase 4: Four',
+    ]);
+    assert.deepStrictEqual(
+      output.renamed_directories,
+      [],
+      'a sidecar leaves a gap, and a gap is not a renumbering',
+    );
+    assert.deepStrictEqual(output.roadmap_withheld, []);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The hint that comes back with a withheld renumbering names the record the
+// operator has to reconcile. It claimed the phase directories had been
+// renumbered whether or not any had been, which sends the reader to look for
+// damage in the one record that is intact.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the withheld-renumbering hint names what actually moved', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('says nothing was renumbered when no directory needed renumbering', () => {
+    // The removed phase is the highest on disk, so nothing follows it there.
+    // ROADMAP.md names a phase above it whose section the removal cannot
+    // reach, which is what withholds the renumbering.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 3: Cee',
+        '- [ ] Phase 4: Dee',
+        '- [ ] Phase 5: Eee',
+        '',
+        '### Phase 3: Cee',
+        '',
+        '### Phase 4 - Dee',
+        '',
+        '### Phase 5: Eee',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['03-cee', '04-dee']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 4 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.deepStrictEqual(output.renamed_directories, []);
+    assert.deepStrictEqual(output.roadmap_withheld, ['renumber']);
+    assert.doesNotMatch(
+      output.roadmap_withheld_hint,
+      /directories have been renumbered/,
+      'no directory moved, so the hint must not send the reader looking for one',
+    );
+  });
+});

@@ -1390,6 +1390,15 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // Normalize the target
       const normalized = normalizePhaseName(targetPhase);
       const isDecimal = targetPhase.includes('.');
+      // A letter phase is a sidecar hung off an integer, not the integer. The
+      // integer renumbering reads its number with parseInt, which drops the
+      // letter, so removing one shifted every phase above the integer down onto
+      // a number that was never vacated — two directories parsing alike, and
+      // their plan files renamed to match. Nothing follows a sidecar's number
+      // the way the next decimal follows a decimal's, so removing one renumbers
+      // nothing: it leaves a gap, which is what a gap in a lettered sequence
+      // means.
+      const isLetter = !isDecimal && /[A-Za-z]/.test(normalized);
       // Read before anything is deleted, so the existence check below sees the
       // document as it stood.
       const roadmapBeforeAnything = fs.readFileSync(roadmapPath, 'utf-8');
@@ -1482,7 +1491,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const renamedDirs = [];
       const renamedFiles = [];
 
-      if (isDecimal) {
+      if (isLetter) {
+        // Nothing follows a sidecar's number, so nothing is renumbered.
+      } else if (isDecimal) {
         // Decimal removal: renumber sibling decimals (e.g., removing 06.2 → 06.3 becomes 06.2)
         const baseParts = normalized.split('.');
         const baseInt = baseParts[0];
@@ -1689,7 +1700,20 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // same number: the removals only delete. So that is where the consistency
       // of the result is decided, and it is refused outright in the two cases
       // that produce a duplicate, rather than written and reported afterwards.
-      if (!isDecimal) {
+      //
+      // The hint names the record the operator has to reconcile, so it reads
+      // the renumbering that actually happened rather than assuming one: a
+      // removal with nothing above it on disk moves no directory, and a hint
+      // that says otherwise sends the reader to look for damage in the one
+      // record that is intact.
+      const renumberedRecord =
+        renamedDirs.length > 0
+          ? `The phase directories have been renumbered, so ROADMAP.md now ` +
+            `names phases by their old numbers`
+          : `No phase directory needed renumbering, so the numbering on disk ` +
+            `is still the one ROADMAP.md uses`;
+
+      if (!isDecimal && !isLetter) {
         const removedInt = parseInt(normalized, 10);
         const offset = currentMilestoneOffset(roadmapContent);
         const head = roadmapContent.slice(0, offset);
@@ -1712,9 +1736,8 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
               `Renumbering was withheld: ROADMAP.md still names the removed ` +
               `phase (${roadmapMissed.join(', ')}), and shifting the later ` +
               `phases down on top of that would give two phases the same ` +
-              `number. The phase directories have been renumbered, so ` +
-              `ROADMAP.md now names phases by their old numbers — fix the ` +
-              `unreachable reference and reconcile ROADMAP.md by hand.`;
+              `number. ${renumberedRecord} — fix the unreachable reference ` +
+              `and reconcile the two by hand.`;
           }
         } else {
           const tail = renumberPhaseReferences(tailBefore, removedInt);
@@ -1733,8 +1756,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
               `Renumbering was withheld: applying it would have named phase ` +
               `${introduced.join(', ')} twice in ROADMAP.md, because some ` +
               `reference to it is written in a shape the rewrite cannot reach. ` +
-              `The phase directories have been renumbered, so ROADMAP.md now ` +
-              `names phases by their old numbers — reconcile it by hand.`;
+              `${renumberedRecord} — reconcile the two by hand.`;
           } else {
             roadmapContent = candidate;
             if (tail !== tailBefore) roadmapLanded.push('renumber');
