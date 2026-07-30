@@ -432,7 +432,7 @@ the ID Complete as soon as the *first* of them finished. Leave the plan's
 - `state record-metric`: Appends to Performance Metrics table
 - `state add-decision`: Adds to Decisions section, removes placeholders
 - `state record-session`: Updates Last session timestamp and Stopped At fields
-- `roadmap update-plan-progress`: Updates ROADMAP.md progress table row with PLAN vs SUMMARY counts
+- `roadmap update-plan-progress`: Updates ROADMAP.md progress table row with PLAN vs SUMMARY counts. `updated: false` means nothing matched; `missed_targets` names the rewrites that had a target in the current milestone and could not reach it — report those in the SUMMARY rather than treating ROADMAP.md as updated
 
 **Extract decisions from SUMMARY.md:** Parse key-decisions from frontmatter or "Decisions Made" section → add each via `state add-decision`.
 

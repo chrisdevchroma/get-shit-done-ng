@@ -138,7 +138,9 @@ The CLI handles:
 - Advancing STATE.md to next phase (Current Phase, Status → Ready to plan, Current Plan → Not started)
 - Detecting if this is the last phase in the milestone
 
-Extract from result: `completed_phase`, `plans_executed`, `next_phase`, `next_phase_name`, `is_last_phase`.
+Extract from result: `completed_phase`, `plans_executed`, `next_phase`, `next_phase_name`, `is_last_phase`, `roadmap_updated`, `roadmap_landed`, `roadmap_missed_targets`.
+
+`roadmap_missed_targets` names the ROADMAP.md rewrites that had a target in the current milestone and could not reach it — the file is written in a shape they do not recognise, or the live milestone sits above a collapsed one. Report them instead of announcing a clean transition.
 
 </step>
 

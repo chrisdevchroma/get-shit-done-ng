@@ -439,6 +439,8 @@ If SUMMARY "Issues Encountered" ≠ "None": yolo → log and continue. Interacti
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" roadmap update-plan-progress "${PHASE}"
 ```
 Counts PLAN vs SUMMARY files on disk. Updates progress table row with correct count and status (`In Progress` or `Complete` with date).
+
+`updated: false` means no rewrite matched anything. `missed_targets` names the rewrites that had a target in the current milestone and could not reach it — report those rather than treating the plan's bookkeeping as done.
 </step>
 
 <step name="requirements_are_not_closed_here">
