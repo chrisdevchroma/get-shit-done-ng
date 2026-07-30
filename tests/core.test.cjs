@@ -3373,8 +3373,31 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(findReverseNesting(fine), []);
   });
 
+  test('the health run holds the STATE.md lock and cannot reach the roadmap one', () => {
+    // health --repair holds the state lock across its checks, so everything that
+    // run can reach is inside the inner lock.
+    const source = read('verify.cjs');
+    const requires = [...source.matchAll(/require\('([^']+)'\)/g)].map(
+      (m) => m[1],
+    );
+    assert.deepStrictEqual(
+      requires.filter((r) => r === './roadmap.cjs' || r === './phase.cjs'),
+      [],
+      'verify.cjs must not depend on the modules that take the ROADMAP.md lock',
+    );
+    assert.ok(
+      !source.includes('withRoadmapLock'),
+      'verify.cjs must not acquire the ROADMAP.md lock — its repair run is inside the STATE.md one',
+    );
+  });
+
   test('the modules that take both locks take them in one order', () => {
-    for (const name of ['phase.cjs', 'roadmap.cjs', 'milestone.cjs']) {
+    for (const name of [
+      'phase.cjs',
+      'roadmap.cjs',
+      'milestone.cjs',
+      'verify.cjs',
+    ]) {
       assert.deepStrictEqual(
         findReverseNesting(read(name)),
         [],
