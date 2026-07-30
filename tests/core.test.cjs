@@ -29,6 +29,7 @@ const {
   findPhaseInternal,
   planningPaths,
   extractCurrentMilestone,
+  currentMilestoneOffset,
   writeFileAtomic,
   reapStaleAtomicTempFiles,
   lockPathFor,
@@ -1191,6 +1192,91 @@ describe('extractCurrentMilestone', () => {
     assert.ok(
       result.includes('Current content'),
       'should preserve current content',
+    );
+  });
+});
+
+// ─── <details> spellings both milestone scopes must agree on ─────────────────
+//
+// The two helpers answer different questions — what the current milestone is,
+// and where a rewrite may write — but they must understand the same documents.
+// A spelling only one of them recognises puts the other over the whole file.
+
+describe('milestone scoping tag spellings', () => {
+  const spellings = [
+    ['<details>', '</details>'],
+    ['<details open>', '</details>'],
+    ['<details markdown="1">', '</details>'],
+    ['<DETAILS>', '</DETAILS>'],
+    ['<details\n  class="archive">', '</details >'],
+  ];
+
+  for (const [open, close] of spellings) {
+    test(`${JSON.stringify(open)} … ${JSON.stringify(close)} archives on both scopes`, () => {
+      const content = `# Roadmap\n\n${open}\n<summary>v0.1</summary>\n\narchived line\n\n${close}\n\n## Current\n\nlive line\n`;
+      const milestone = extractCurrentMilestone(content);
+      const writable = content.slice(currentMilestoneOffset(content));
+
+      assert.ok(
+        !milestone.includes('archived line'),
+        'the archive is not part of the current milestone',
+      );
+      assert.ok(
+        milestone.includes('live line'),
+        'the live milestone survives the strip',
+      );
+      assert.ok(
+        !writable.includes('archived line'),
+        'no rewrite may reach the archive',
+      );
+      assert.ok(
+        writable.includes('live line'),
+        'the live milestone is writable',
+      );
+    });
+  }
+
+  test('an unclosed <details> leaves both scopes over the whole document', () => {
+    const content = '# Roadmap\n\n<details open>\n<summary>v0.1</summary>\n\nunterminated\n\n## Current\n\nlive line\n';
+
+    assert.ok(
+      extractCurrentMilestone(content).includes('unterminated'),
+      'nothing closed the block, so nothing is treated as archived',
+    );
+    assert.strictEqual(
+      currentMilestoneOffset(content),
+      0,
+      'and the whole document stays writable',
+    );
+  });
+
+  test('a fenced example tag counts as an archive on both scopes', () => {
+    const content =
+      '# Roadmap\n\n## Current\n\nlive line\n\n```markdown\n<details>\nan example\n</details>\n```\n\ntail line\n';
+
+    assert.ok(
+      !extractCurrentMilestone(content).includes('an example'),
+      'neither scope reads fences, so the example is archived like any block',
+    );
+    assert.ok(
+      !content.slice(currentMilestoneOffset(content)).includes('an example'),
+      'and the two agree about it, which is what stops a rewrite landing in one and not the other',
+    );
+  });
+
+  test('a nested <details> ends the archive at its own close tag', () => {
+    const content =
+      '# Roadmap\n\n<details open>\n<summary>v0.1</summary>\n\nouter\n\n<details>\ninner\n</details>\n\ntrailing\n\n</details>\n\n## Current\n\nlive line\n';
+    const milestone = extractCurrentMilestone(content);
+
+    assert.ok(!milestone.includes('inner'), 'the inner block is archived');
+    assert.ok(
+      milestone.includes('trailing'),
+      'what follows the inner close is not, which is the non-greedy match, not a nesting-aware one',
+    );
+    assert.ok(
+      !content.slice(currentMilestoneOffset(content)).includes('trailing'),
+      'the write scope still starts after the outermost close',
     );
   });
 });
