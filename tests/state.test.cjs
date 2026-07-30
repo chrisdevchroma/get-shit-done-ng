@@ -2799,13 +2799,38 @@ describe('state record-quick-task', () => {
     );
   });
 
-  test('an unreadable description file is reported, not written', () => {
-    const result = runGsdTools(
-      'state record-quick-task --id 260730-8id --description-file missing.md --json',
-      tmpDir,
+  // Absence is one way a description file fails to read and not the interesting
+  // one: a fixture that is merely not there exercises only the half of this a
+  // bare existence check would also cover. A directory at the path is present and
+  // still unreadable, whoever is running the suite. Both refusals have to name
+  // the argument that caused them — an errno reaching the caller instead says the
+  // read was never the command's to explain.
+  test('a description file that cannot be read is reported, not written', () => {
+    const recordFromFile = (file) =>
+      JSON.parse(
+        runGsdTools(
+          `state record-quick-task --id 260730-8id --description-file ${file} --json`,
+          tmpDir,
+        ).output,
+      );
+
+    const absent = recordFromFile('missing.md');
+    assert.strictEqual(
+      absent.recorded,
+      false,
+      'a description file that is not there should reject the call',
     );
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.recorded, false, 'should reject the call');
+    assert.match(absent.reason, /description file .*missing\.md/);
+
+    fs.mkdirSync(path.join(tmpDir, 'a-directory.md'));
+    const unreadable = recordFromFile('a-directory.md');
+    assert.strictEqual(
+      unreadable.recorded,
+      false,
+      'a description file that cannot be read should reject the call',
+    );
+    assert.match(unreadable.reason, /description file .*a-directory\.md/);
+
     assert.ok(
       !fs.readFileSync(statePath, 'utf-8').includes('260730-8id'),
       'nothing should have been written',
