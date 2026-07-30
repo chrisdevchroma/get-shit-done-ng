@@ -6057,7 +6057,9 @@ describe('phase remove milestone scoping', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // The phase list a new checkbox joins is the current milestone's. Scanning the
 // whole document put new phases inside a shipped <details> section whenever it
-// held the last checkbox in the file.
+// held the last checkbox in the file — which happens when the milestone in
+// progress has no list of its own, when the parent phase is listed only as
+// shipped, and when the collapsed section sits below the current list.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('phase add and insert milestone scoping', () => {
@@ -6071,26 +6073,41 @@ describe('phase add and insert milestone scoping', () => {
     cleanup(tmpDir);
   });
 
+  const SHIPPED = [
+    '<details>',
+    '<summary>v0.1 — Legacy (Shipped)</summary>',
+    '',
+    '## Roadmap v0.1: Legacy',
+    '',
+    '- [x] **Phase 1: Ancient**',
+    '- [x] Phase 2: Older',
+    '',
+    '</details>',
+  ];
+
   function writeRoadmap(currentLines) {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      [
-        '# Roadmap',
-        '',
-        '<details>',
-        '<summary>v0.1 — Legacy (Shipped)</summary>',
-        '',
-        '## Roadmap v0.1: Legacy',
-        '',
-        '- [x] Phase 1: Ancient',
-        '- [x] **Phase 2: Older**',
-        '',
-        '</details>',
-        '',
-        '## Roadmap v0.2: Current',
-        '',
-      ]
+      ['# Roadmap', '']
+        .concat(SHIPPED)
+        .concat(['', '## Roadmap v0.2: Current', ''])
         .concat(currentLines)
+        .join('\n'),
+    );
+  }
+
+  // The collapsed section moved down out of the way, below the list of the
+  // milestone in progress. The shipped checkboxes are then the last ones in the
+  // file, so a scan that runs to the end of the document lands in them.
+  function writeRoadmapShippedBelow(listLines, detailLines) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Roadmap v0.2: Current', '']
+        .concat(listLines)
+        .concat([''])
+        .concat(SHIPPED)
+        .concat([''])
+        .concat(detailLines)
         .join('\n'),
     );
   }
@@ -6098,6 +6115,19 @@ describe('phase add and insert milestone scoping', () => {
   function split(roadmap) {
     const close = roadmap.lastIndexOf('</details>') + '</details>'.length;
     return { archived: roadmap.slice(0, close), current: roadmap.slice(close) };
+  }
+
+  function shippedSection(roadmap) {
+    return roadmap.slice(
+      roadmap.indexOf('<details>'),
+      roadmap.lastIndexOf('</details>') + '</details>'.length,
+    );
+  }
+
+  function phaseCheckboxes(text) {
+    return text
+      .split('\n')
+      .filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l));
   }
 
   test('phase add lists the new phase in the current milestone', () => {
@@ -6120,30 +6150,32 @@ describe('phase add and insert milestone scoping', () => {
     );
   });
 
-  test('phase add appends to the current list, not the archived one', () => {
-    writeRoadmap([
-      '- [ ] **Phase 1: Alpha**',
-      '',
-      '### Phase 1: Alpha',
-      '**Goal:** a',
-      '',
-    ]);
+  test('phase add ignores a shipped list holding the last checkbox in the file', () => {
+    writeRoadmapShippedBelow(
+      ['- [ ] **Phase 3: Alpha**'],
+      ['### Phase 3: Alpha', '**Goal:** a', ''],
+    );
+    const before = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
 
     const result = runGsdTools('phase add "Gamma work" --json', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
-    const { archived, current } = split(
-      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+    const after = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    assert.strictEqual(
+      shippedSection(after),
+      shippedSection(before),
+      'the collapsed section is not where a new phase goes',
     );
     assert.deepStrictEqual(
-      archived.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
-      ['- [x] Phase 1: Ancient', '- [x] **Phase 2: Older**'],
-      'the archived list is left as it was',
-    );
-    assert.deepStrictEqual(
-      current.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
-      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 2: Gamma work**'],
-      'the new checkbox follows the current milestone list',
+      phaseCheckboxes(split(after).current),
+      ['- [ ] **Phase 4: Gamma work**'],
+      'the new checkbox is listed past the collapsed section',
     );
   });
 
@@ -6170,12 +6202,17 @@ describe('phase add and insert milestone scoping', () => {
     );
   });
 
-  test('phase insert places the decimal in the current milestone', () => {
+  test('phase insert joins the current list, not the shipped parent', () => {
+    // The parent phase is listed only in the shipped section; the milestone in
+    // progress has a list of its own, and that list is the one to join.
     writeRoadmap([
-      '- [ ] **Phase 1: Alpha**',
+      '- [ ] **Phase 3: Beta**',
       '',
       '### Phase 1: Alpha',
       '**Goal:** a',
+      '',
+      '### Phase 3: Beta',
+      '**Goal:** b',
       '',
     ]);
 
@@ -6185,14 +6222,15 @@ describe('phase add and insert milestone scoping', () => {
     const { archived, current } = split(
       fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
     );
-    assert.ok(
-      !/Hotfix/.test(archived),
-      'the inserted phase must not land in the shipped section',
+    assert.deepStrictEqual(
+      phaseCheckboxes(archived),
+      ['- [x] **Phase 1: Ancient**', '- [x] Phase 2: Older'],
+      'the shipped list is left as it was',
     );
     assert.deepStrictEqual(
-      current.split('\n').filter((l) => /^- \[[ x]\]\s*(?:\*\*)?Phase\s/.test(l)),
-      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 01.1: Hotfix (INSERTED)**'],
-      'the decimal follows its parent inside the current milestone',
+      phaseCheckboxes(current),
+      ['- [ ] **Phase 3: Beta**', '- [ ] **Phase 01.1: Hotfix (INSERTED)**'],
+      'the decimal is listed in the current milestone',
     );
   });
 });
