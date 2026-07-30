@@ -574,6 +574,37 @@ function withRoadmapLock(cwd, fn) {
   return withFileLock(planningPaths(cwd).roadmap, fn);
 }
 
+/**
+ * The canonical path of the guarded planning document `filePath` names, or null.
+ *
+ * For the generic commands that rewrite an arbitrary file — the frontmatter
+ * writers — pointed at a planning document. Their write is a whole-file rewrite
+ * built from a read, so outside the lock it discards whatever a locked writer
+ * appended in between and voids the lock for everyone who took it. Pointed at
+ * anything else, a todo in every workflow that calls them today, they get no lock:
+ * a lock nobody contends for is a lock file to leave behind and a deadlock surface
+ * for nothing.
+ *
+ * Returning the canonical path rather than a boolean is what keeps one lock per
+ * document: an absolute argument, a relative one and a symlinked tree must all
+ * resolve to the lock path the guarded commands use.
+ */
+function lockedPlanningDoc(cwd, filePath) {
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const target = real(filePath);
+  const paths = planningPaths(cwd);
+  for (const guarded of [paths.state, paths.roadmap, paths.requirements]) {
+    if (real(guarded) === target) return guarded;
+  }
+  return null;
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -1663,6 +1694,7 @@ module.exports = {
   releaseFileLock,
   withFileLock,
   withRoadmapLock,
+  lockedPlanningDoc,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,

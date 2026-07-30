@@ -3285,6 +3285,23 @@ describe('lock ordering', () => {
     );
   });
 
+  test('the STATE.md section cannot reach a frontmatter writer', () => {
+    // The frontmatter writers take the lock of whichever planning document they
+    // are pointed at, so one called from inside the STATE.md section could be
+    // pointed at ROADMAP.md and take the outer lock from within the inner one.
+    const source = read('state.cjs');
+    const reachable = [
+      'cmdFrontmatterSet',
+      'cmdFrontmatterMerge',
+      'cmdFrontmatterArrayAppend',
+    ].filter((name) => source.includes(name));
+    assert.deepStrictEqual(
+      reachable,
+      [],
+      `state.cjs must not call ${reachable.join(', ')} — a frontmatter writer aimed at ROADMAP.md takes the outer lock inside the inner one`,
+    );
+  });
+
   test('no helper in core.cjs takes the ROADMAP.md lock', () => {
     // A roadmap acquisition inside a shared helper would be reachable from the
     // STATE.md section without state.cjs naming the lock at all.
