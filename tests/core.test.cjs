@@ -3331,9 +3331,24 @@ describe('lock ordering', () => {
   // indented, so a chunk runs from its declaration to the next column-0 line
   // that is not a closing bracket — no brace matching, which regex literals
   // like `#{2,4}` would defeat.
+  //
+  // The declaration forms are wider than the payload uses today — `let`, `var`,
+  // generators and `exports.name =` all name a function this way — so a helper
+  // written in one of them is chunked rather than silently skipped. The
+  // declaration line is part of the body it opens, because a function written
+  // whole on one line has no other line to be read from. A column-0 line inside
+  // a template literal still ends a chunk early; recognising that needs a lexer,
+  // and no shipped source has one.
   function topLevelFunctions(source) {
-    const declaration =
-      /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function)/;
+    const named = String.raw`([A-Za-z_$][\w$]*)`;
+    const assigned = String.raw`\s*=\s*(?:async\s*)?(?:\(|function)`;
+    const declaration = new RegExp(
+      [
+        String.raw`^(?:async\s+)?function\s*\*?\s*${named}`,
+        String.raw`^(?:const|let|var)\s+${named}${assigned}`,
+        String.raw`^(?:module\.)?exports\.${named}${assigned}`,
+      ].join('|'),
+    );
     const lines = source.split('\n');
     const chunks = [];
     let current = null;
@@ -3341,7 +3356,7 @@ describe('lock ordering', () => {
       const match = lines[i].match(declaration);
       if (match) {
         if (current) chunks.push(current);
-        current = { name: match[1] || match[2], line: i + 1, body: [] };
+        current = { name: match.slice(1).find(Boolean), line: i + 1, body: [lines[i]] };
         continue;
       }
       if (!current) continue;
@@ -3705,6 +3720,56 @@ describe('lock ordering', () => {
       [],
       'a callee that reaches no outer acquisition is not a violation',
     );
+  });
+
+  test('the analysis chunks every declaration form that can name a helper', () => {
+    // A lock reached through a helper is only seen if the helper was chunked, so
+    // the forms the payload does not use today are recognised rather than
+    // skipped — including the one-line body, which lives on its own declaration.
+    const declarations = {
+      'const arrow': 'const helper = (cwd) => withRoadmapLock(cwd, () => {});',
+      'let arrow': 'let helper = (cwd) => withRoadmapLock(cwd, () => {});',
+      'var function': 'var helper = function (cwd) { withRoadmapLock(cwd, () => {}); };',
+      generator: 'function* helper(cwd) { yield withRoadmapLock(cwd, () => {}); }',
+      'async function': 'async function helper(cwd) { withRoadmapLock(cwd, () => {}); }',
+      export: 'exports.helper = (cwd) => withRoadmapLock(cwd, () => {});',
+      'namespaced export':
+        'module.exports.helper = (cwd) => withRoadmapLock(cwd, () => {});',
+    };
+    for (const [form, declaration] of Object.entries(declarations)) {
+      const { closureViolations, nestingViolations } = analyseLockOrdering({
+        'roadmap.cjs': [
+          'function withRoadmapLock(cwd, fn) {',
+          '  return fn();',
+          '}',
+        ].join('\n'),
+        'helpers.cjs': [
+          "const { withRoadmapLock } = require('./roadmap.cjs');",
+          declaration,
+        ].join('\n'),
+        'state.cjs': [
+          "const { helper } = require('./helpers.cjs');",
+          'function withStateLock(cwd, fn) {',
+          '  return fn();',
+          '}',
+          'function cmdState(cwd) {',
+          '  return withStateLock(cwd, () => {',
+          '    helper(cwd);',
+          '  });',
+          '}',
+        ].join('\n'),
+      });
+      assert.deepStrictEqual(
+        nestingViolations,
+        ['state.cjs:7: helper reaches withRoadmapLock'],
+        `${form}: the helper takes the ROADMAP.md lock and the analysis must see it`,
+      );
+      assert.deepStrictEqual(
+        closureViolations,
+        ['state.cjs -> helpers.cjs: withStateLock reaches withRoadmapLock'],
+        `${form}: the require edge to it is a violation too`,
+      );
+    }
   });
 
   test('the analysis ranks the middle lock against both of the others', () => {
