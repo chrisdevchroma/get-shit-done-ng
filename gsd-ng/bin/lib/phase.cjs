@@ -1411,12 +1411,32 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // not exist, and removing it is nothing. Falling through decremented the
       // phase count for a phase that was never counted — a number that was never
       // true — and reported the write as an update.
+      //
+      // A progress-table row is not evidence on its own. A shipped milestone
+      // keeps its rows outside the <details> that collapses the rest of it, so
+      // every phase it delivered is named in the region the probes read as
+      // current. Counted as existing, a number belonging to the archive was
+      // removed from that table and the phases still in progress were shifted
+      // down to compensate for a removal that had happened in neither record.
       const namedInRoadmap =
         hasPhaseHeader(roadmapBeforeAnything, targetPhase) ||
-        hasPhaseTableRow(roadmapBeforeAnything, targetPhase) ||
         parsePhaseCheckboxes(
           extractCurrentMilestone(roadmapBeforeAnything),
         ).some((entry) => comparePhaseNum(entry.num, targetPhase) === 0);
+
+      if (
+        !targetDir &&
+        !namedInRoadmap &&
+        hasPhaseTableRow(roadmapBeforeAnything, targetPhase)
+      ) {
+        error(
+          `Phase ${targetPhase} has no directory, and ROADMAP.md names it only ` +
+            `in a progress table — which is where a shipped milestone keeps ` +
+            `the history of the phases it delivered. Removing it would renumber ` +
+            `the phases still in progress to compensate for a removal that ` +
+            `happened nowhere. Delete the row by hand if it is stale.`,
+        );
+      }
 
       if (!targetDir && !namedInRoadmap) {
         output({

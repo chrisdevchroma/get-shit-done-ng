@@ -7426,3 +7426,97 @@ describe('phase remove deletes one phase section, not the file below it', () => 
     ]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A shipped milestone's phases keep their progress rows outside the <details>
+// that collapses the rest of it, so a phase number that belongs to the archive
+// is named in the region every probe reads as current. Accepted on that
+// evidence, the removal deleted a shipped phase's row and shifted the archive
+// and the live phases together, and reported all of it as clean.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove refuses a phase belonging to a shipped milestone', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    for (const dir of ['04-delta', '05-epsilon']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '<details>',
+        '<summary>v0.1 — Legacy (Shipped) — Phases 1-3</summary>',
+        '',
+        '## Roadmap v0.1: Legacy',
+        '',
+        '- [x] **Phase 1: Ancient**',
+        '- [x] **Phase 2: Older**',
+        '- [x] **Phase 3: Oldest**',
+        '',
+        '</details>',
+        '',
+        '## Progress',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+        '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+        '| 3. Oldest | 1/1 | Complete | 2020-03-01 |',
+        '| 4. Delta | 0/0 | Pending | - |',
+        '| 5. Epsilon | 0/0 | Pending | - |',
+        '',
+        '## Roadmap v0.2: Current',
+        '',
+        '- [ ] **Phase 4: Delta**',
+        '- [ ] **Phase 5: Epsilon**',
+        '',
+        '### Phase 4: Delta',
+        '**Goal:** d',
+        '',
+        '### Phase 5: Epsilon',
+        '**Goal:** e',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('leaves the shipped row and the live phases exactly as they were', () => {
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+
+    assert.strictEqual(
+      result.success,
+      false,
+      'a shipped phase is not the current milestone’s to renumber',
+    );
+    assert.match(result.stderr, /shipped|archived/i);
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      before,
+      'neither the archived rows nor the live phases may shift',
+    );
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort(),
+      ['04-delta', '05-epsilon'],
+    );
+  });
+
+  test('a phase number nothing names at all is still a reported no-op', () => {
+    const result = runGsdTools('phase remove 9 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).found, false);
+  });
+});
