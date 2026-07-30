@@ -49,10 +49,10 @@ function escapeRegex(value) {
  * Readers are deliberately not wrapped: writeFileAtomic already hands them a
  * whole file, and they publish nothing for anyone else to lose.
  *
- * Ordering: this is the inner lock. Commands that mutate both files take the
- * ROADMAP.md lock first and this one inside it, never the reverse — the require
- * graph is what holds that (state.cjs is below phase.cjs and roadmap.cjs, so
- * nothing reachable from inside this section can acquire the roadmap lock), and
+ * Ordering: this is the innermost of the three locks — ROADMAP.md, then
+ * REQUIREMENTS.md, then this one, never the reverse. The require graph is what
+ * holds that (state.cjs is below phase.cjs, roadmap.cjs and milestone.cjs, so
+ * nothing reachable from inside this section can acquire either outer lock), and
  * tests/core.test.cjs asserts the direction.
  */
 function withStateLock(cwd, fn) {

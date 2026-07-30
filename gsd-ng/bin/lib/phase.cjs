@@ -32,6 +32,7 @@ const {
   error,
   planningPaths,
   withRoadmapLock,
+  withRequirementsLock,
   writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
@@ -440,102 +441,107 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
   };
   const reqPath = planningPaths(cwd).requirements;
   if (reqIds.length === 0 || !fs.existsSync(reqPath)) return result;
+  // The read and the rewrite are one section: the file is written back from the
+  // read, so a mark another writer made in between is dropped. Inside the
+  // ROADMAP.md lock that phase complete already holds, which is the supported
+  // order — roadmap, requirements, state.
+  return withRequirementsLock(cwd, () => {
+    const originalContent = fs.readFileSync(reqPath, 'utf-8');
+    const lines = originalContent.split('\n');
+    const { rows, tableFound: hasTable } = parseTraceabilityRows(lines);
 
-  const originalContent = fs.readFileSync(reqPath, 'utf-8');
-  const lines = originalContent.split('\n');
-  const { rows, tableFound: hasTable } = parseTraceabilityRows(lines);
+    const rowsById = new Map();
+    for (const row of rows) {
+      const key = row.id.toLowerCase();
+      if (!rowsById.has(key)) rowsById.set(key, []);
+      rowsById.get(key).push(row);
+    }
 
-  const rowsById = new Map();
-  for (const row of rows) {
-    const key = row.id.toLowerCase();
-    if (!rowsById.has(key)) rowsById.set(key, []);
-    rowsById.get(key).push(row);
-  }
+    const rowsToClose = [];
+    const idsToCheck = [];
 
-  const rowsToClose = [];
-  const idsToCheck = [];
+    for (const reqId of reqIds) {
+      const idRows = rowsById.get(reqId.toLowerCase()) || [];
 
-  for (const reqId of reqIds) {
-    const idRows = rowsById.get(reqId.toLowerCase()) || [];
+      if (idRows.length === 0) {
+        result.closed.push(reqId);
+        idsToCheck.push(reqId);
+        // Only meaningful as a discrepancy when there is a table to be absent
+        // from — a project without one has nothing to be inconsistent with.
+        if (hasTable) result.unmapped.push(reqId);
+        continue;
+      }
 
-    if (idRows.length === 0) {
+      const ours = idRows.filter((r) => phaseCellNamesPhase(r.phase, phaseNum));
+      if (ours.length === 0) {
+        result.otherPhase.push({
+          id: reqId,
+          phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
+        });
+        continue;
+      }
+
+      const unreadable = ours.filter((r) => !r.recognised);
+      if (unreadable.length > 0) {
+        result.unreadable.push({
+          id: reqId,
+          status: [...new Set(unreadable.map((r) => r.status))].join(', '),
+        });
+        continue;
+      }
+
+      // 'Complete' is not closeable but does mean done, so it must not count as
+      // held — that case is the idempotent re-run.
+      const held = ours.filter(
+        (r) =>
+          !CLOSEABLE_STATUSES.test(r.status) &&
+          r.status.trim().toLowerCase() !== 'complete',
+      );
+      if (held.length > 0) {
+        result.blocked.push({
+          id: reqId,
+          status: [...new Set(held.map((r) => r.status.trim()))].join(', '),
+        });
+        continue;
+      }
+
       result.closed.push(reqId);
-      idsToCheck.push(reqId);
-      // Only meaningful as a discrepancy when there is a table to be absent
-      // from — a project without one has nothing to be inconsistent with.
-      if (hasTable) result.unmapped.push(reqId);
-      continue;
+      rowsToClose.push(...ours);
+
+      // An ID split across several phases is only finished when no row still
+      // attributes outstanding work elsewhere — tick the box then, and not before.
+      const outstandingElsewhere = idRows.some(
+        (r) => !ours.includes(r) && r.status.toLowerCase() !== 'complete',
+      );
+      if (!outstandingElsewhere) idsToCheck.push(reqId);
     }
 
-    const ours = idRows.filter((r) => phaseCellNamesPhase(r.phase, phaseNum));
-    if (ours.length === 0) {
-      result.otherPhase.push({
-        id: reqId,
-        phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
-      });
-      continue;
+    for (const row of rowsToClose) {
+      if (!CLOSEABLE_STATUSES.test(row.status)) continue;
+      const cells = lines[row.lineIndex].split('|');
+      // Replace the cell's text, preserving its padding so the table stays aligned.
+      cells[3] = cells[3].replace(/\S.*\S|\S/, 'Complete');
+      lines[row.lineIndex] = cells.join('|');
     }
 
-    const unreadable = ours.filter((r) => !r.recognised);
-    if (unreadable.length > 0) {
-      result.unreadable.push({
-        id: reqId,
-        status: [...new Set(unreadable.map((r) => r.status))].join(', '),
-      });
-      continue;
+    let reqContent = lines.join('\n');
+    for (const reqId of idsToCheck) {
+      // Checkbox: - [ ] **<id>** → - [x] **<id>**
+      reqContent = reqContent.replace(
+        new RegExp(
+          `(-\\s*\\[)[ ](\\]\\s*\\*\\*${escapeRegex(reqId)}\\*\\*)`,
+          'gi',
+        ),
+        '$1x$2',
+      );
     }
 
-    // 'Complete' is not closeable but does mean done, so it must not count as
-    // held — that case is the idempotent re-run.
-    const held = ours.filter(
-      (r) =>
-        !CLOSEABLE_STATUSES.test(r.status) &&
-        r.status.trim().toLowerCase() !== 'complete',
-    );
-    if (held.length > 0) {
-      result.blocked.push({
-        id: reqId,
-        status: [...new Set(held.map((r) => r.status.trim()))].join(', '),
-      });
-      continue;
-    }
+    if (reqContent === originalContent) return result;
 
-    result.closed.push(reqId);
-    rowsToClose.push(...ours);
-
-    // An ID split across several phases is only finished when no row still
-    // attributes outstanding work elsewhere — tick the box then, and not before.
-    const outstandingElsewhere = idRows.some(
-      (r) => !ours.includes(r) && r.status.toLowerCase() !== 'complete',
-    );
-    if (!outstandingElsewhere) idsToCheck.push(reqId);
-  }
-
-  for (const row of rowsToClose) {
-    if (!CLOSEABLE_STATUSES.test(row.status)) continue;
-    const cells = lines[row.lineIndex].split('|');
-    // Replace the cell's text, preserving its padding so the table stays aligned.
-    cells[3] = cells[3].replace(/\S.*\S|\S/, 'Complete');
-    lines[row.lineIndex] = cells.join('|');
-  }
-
-  let reqContent = lines.join('\n');
-  for (const reqId of idsToCheck) {
-    // Checkbox: - [ ] **<id>** → - [x] **<id>**
-    reqContent = reqContent.replace(
-      new RegExp(
-        `(-\\s*\\[)[ ](\\]\\s*\\*\\*${escapeRegex(reqId)}\\*\\*)`,
-        'gi',
-      ),
-      '$1x$2',
-    );
-  }
-
-  if (reqContent === originalContent) return result;
-
-  writeFileAtomic(reqPath, reqContent);
-  result.updated = true;
-  return result;
+    writeFileAtomic(reqPath, reqContent);
+    result.updated = true;
+    return result;
+  });
 }
 
 /**

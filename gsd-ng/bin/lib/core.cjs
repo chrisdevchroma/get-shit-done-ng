@@ -567,11 +567,30 @@ function withFileLock(filePath, fn, opts = {}) {
  * The section must span the read, so callers wrap their whole body rather than
  * the write; planningPaths is called inside to keep the one lock path per project.
  *
- * Ordering: this is the outer lock. A command that mutates ROADMAP.md and
- * STATE.md takes this one first and withStateLock inside it, never the reverse.
+ * Ordering: this is the outermost of the three locks, which are taken
+ * ROADMAP.md, then REQUIREMENTS.md, then STATE.md, and never the other way.
  */
 function withRoadmapLock(cwd, fn) {
   return withFileLock(planningPaths(cwd).roadmap, fn);
+}
+
+/**
+ * Run a REQUIREMENTS.md read-modify-write as one indivisible step.
+ *
+ * Two commands rewrite the file from a read of it: `requirements mark-complete`
+ * and the requirement closure inside `phase complete`. Marking two IDs at once
+ * from separate processes loses one of them, with both reporting the ID they
+ * marked — and the closure path is only serialised today by happening to sit
+ * inside the roadmap lock, which the CLI entry point does not take.
+ *
+ * Locking one writer and not the other would be worth nothing: an unlocked
+ * whole-file write lands on top of whatever the lock holder wrote.
+ *
+ * Ordering: between the roadmap lock and the state lock. `milestone complete`
+ * holds all three, outermost first.
+ */
+function withRequirementsLock(cwd, fn) {
+  return withFileLock(planningPaths(cwd).requirements, fn);
 }
 
 /**
@@ -1694,6 +1713,7 @@ module.exports = {
   releaseFileLock,
   withFileLock,
   withRoadmapLock,
+  withRequirementsLock,
   lockedPlanningDoc,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,

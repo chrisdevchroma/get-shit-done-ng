@@ -3254,34 +3254,44 @@ describe('getMilestonePhaseFilter checkbox forms', () => {
 // Lock ordering
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Two locks exist, on ROADMAP.md and on STATE.md, and two commands hold the
-// first across the second: phase remove and phase complete both mutate the
-// roadmap and then the state. That nesting is safe only while it is one way, so
-// the ordering is ROADMAP.md outer, STATE.md inner, everywhere.
+// Three locks exist — ROADMAP.md, REQUIREMENTS.md, STATE.md — and commands hold
+// them nested: phase remove and phase complete mutate the roadmap and then the
+// state, phase complete closes requirements in between, and milestone complete
+// holds all three. That nesting is safe only while it is one way, so the ordering
+// is ROADMAP.md outer, REQUIREMENTS.md next, STATE.md inner, everywhere.
 //
 // What keeps it that way is the require graph rather than discipline: state.cjs
-// is below phase.cjs and roadmap.cjs, so nothing inside the STATE.md section can
-// reach a roadmap-lock acquisition. These assertions are that direction, so a
-// change that adds the reverse edge fails here rather than deadlocking a user's
-// project.
+// is below phase.cjs, roadmap.cjs and milestone.cjs, so nothing inside the
+// STATE.md section can reach an outer acquisition. These assertions are that
+// direction, so a change that adds a reverse edge fails here rather than
+// deadlocking a user's project.
 
 describe('lock ordering', () => {
   const LIB_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib');
   const read = (name) => fs.readFileSync(path.join(LIB_DIR, name), 'utf-8');
 
-  test('the STATE.md section cannot reach a ROADMAP.md acquisition', () => {
+  test('the STATE.md section cannot reach an outer acquisition', () => {
     const source = read('state.cjs');
-    assert.ok(
-      !source.includes('withRoadmapLock'),
-      'state.cjs must not acquire the ROADMAP.md lock — the order is roadmap outer, state inner',
+    const named = ['withRoadmapLock', 'withRequirementsLock'].filter((name) =>
+      source.includes(name),
+    );
+    assert.deepStrictEqual(
+      named,
+      [],
+      `state.cjs must not acquire ${named.join(', ')} — the order is roadmap, requirements, state`,
     );
     const requires = [...source.matchAll(/require\('([^']+)'\)/g)].map(
       (m) => m[1],
     );
     assert.deepStrictEqual(
-      requires.filter((r) => r === './roadmap.cjs' || r === './phase.cjs'),
+      requires.filter(
+        (r) =>
+          r === './roadmap.cjs' ||
+          r === './phase.cjs' ||
+          r === './milestone.cjs',
+      ),
       [],
-      'state.cjs must not depend on the modules that take the ROADMAP.md lock',
+      'state.cjs must not depend on the modules that take an outer lock',
     );
   });
 
@@ -3322,27 +3332,40 @@ describe('lock ordering', () => {
     );
   });
 
+  // Outermost first. A lock may be taken inside one that ranks above it and
+  // never inside one that ranks below.
+  const LOCK_RANK = [
+    ['withRoadmapLock(', 1],
+    ['withRequirementsLock(', 2],
+    ['withStateLock(', 3],
+  ];
+
   /**
-   * Line numbers where a ROADMAP.md acquisition sits inside a STATE.md one.
+   * Line numbers where a lock acquisition sits inside one that must be outside it.
    *
-   * Indentation stands in for block nesting: a state acquisition opens a region
-   * that ends at the first later line indented no further than it.
+   * Indentation stands in for block nesting: an acquisition opens a region that
+   * ends at the first later line indented no further than it. Regions nest, so
+   * the open ones are kept as a stack and a line is compared against the
+   * innermost rank that is still open.
    */
   function findReverseNesting(source) {
     const lines = source.split('\n');
     const found = [];
-    let stateIndent = null;
+    const open = [];
     for (let i = 0; i < lines.length; i++) {
       const indent = lines[i].search(/\S/);
       if (indent === -1) continue;
-      if (stateIndent !== null && indent <= stateIndent) stateIndent = null;
-      if (lines[i].includes('withStateLock(')) {
-        stateIndent = indent;
-        continue;
+      while (open.length > 0 && indent <= open[open.length - 1].indent) {
+        open.pop();
       }
-      if (stateIndent !== null && lines[i].includes('withRoadmapLock(')) {
-        found.push(i + 1);
-      }
+      const held = LOCK_RANK.find(([name]) => lines[i].includes(name));
+      if (!held) continue;
+      const rank = held[1];
+      // A declaration is not an acquisition.
+      if (lines[i].includes(`function ${held[0].slice(0, -1)}`)) continue;
+      const inner = open.length > 0 ? open[open.length - 1].rank : 0;
+      if (rank < inner) found.push(i + 1);
+      open.push({ indent, rank });
     }
     return found;
   }
@@ -3358,11 +3381,24 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(findReverseNesting(offending), [3]);
   });
 
+  test('findReverseNesting flags a requirements acquisition inside a state one', () => {
+    const offending = [
+      'function bad(cwd) {',
+      '  return withStateLock(cwd, () => {',
+      '    withRequirementsLock(cwd, () => {});',
+      '  });',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(findReverseNesting(offending), [3]);
+  });
+
   test('findReverseNesting accepts the supported order', () => {
     const fine = [
       'function good(cwd) {',
       '  return withRoadmapLock(cwd, () => {',
-      '    withStateLock(cwd, () => {});',
+      '    withRequirementsLock(cwd, () => {',
+      '      withStateLock(cwd, () => {});',
+      '    });',
       '  });',
       '}',
       'function alsoGood(cwd) {',
@@ -3391,7 +3427,7 @@ describe('lock ordering', () => {
     );
   });
 
-  test('the modules that take both locks take them in one order', () => {
+  test('the modules that take several locks take them in one order', () => {
     for (const name of [
       'phase.cjs',
       'roadmap.cjs',
@@ -3401,7 +3437,7 @@ describe('lock ordering', () => {
       assert.deepStrictEqual(
         findReverseNesting(read(name)),
         [],
-        `${name} takes the ROADMAP.md lock inside the STATE.md lock — the order is roadmap outer, state inner`,
+        `${name} takes an outer lock inside an inner one — the order is roadmap, requirements, state`,
       );
     }
   });
