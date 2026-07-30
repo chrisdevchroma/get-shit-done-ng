@@ -543,7 +543,7 @@ Neither is a bug you can configure away — it is how atomic replacement works. 
 
 ### A `.STATE.md.gsd-lock` File Appeared in `.planning/`
 
-Parallel executors in a wave all write to the same `STATE.md`, so each one takes a short lock while it reads the file, makes its change and writes it back. That is what stops two executors' entries overwriting each other. The lock is held for about a millisecond and removed straight after, including when a command fails or is interrupted.
+Parallel executors in a wave all write to the same `STATE.md`, so each one takes a short lock while it reads the file, makes its change and writes it back. That is what stops two executors' entries overwriting each other. The lock is held for about a millisecond and removed straight after, including when a command fails or is interrupted with Ctrl-C.
 
 It only survives a hard kill (`kill -9`, a machine losing power). Nothing needs doing: the next GSD command sees the recorded process is gone and takes the lock over immediately. Deleting the file by hand is also safe as long as no GSD command is running.
 

@@ -210,10 +210,31 @@ function releaseAllHeldLocks() {
   }
 }
 
+// Ctrl-C is the ordinary way a command ends early, and `exit` does not run for
+// signal termination — the lock outlived the process and the next command waited
+// out the staleness threshold behind a holder that was already gone.
+const LOCK_RELEASE_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
 function installLockExitHook() {
   if (lockExitHookInstalled) return;
   lockExitHookInstalled = true;
   process.on('exit', releaseAllHeldLocks);
+  for (const signal of LOCK_RELEASE_SIGNALS) {
+    const handler = () => {
+      releaseAllHeldLocks();
+      // Listening for a signal suppresses the default termination, so hand the
+      // signal back: with this listener gone the process dies by it and reports
+      // the status it would have without the lock. A host that installed its own
+      // listener keeps it, and decides for itself.
+      process.removeListener(signal, handler);
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(1);
+      }
+    };
+    process.on(signal, handler);
+  }
 }
 
 function readLockHolder(lockPath) {

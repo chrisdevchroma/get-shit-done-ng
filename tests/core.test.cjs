@@ -2324,6 +2324,12 @@ describe('withFileLock', () => {
     process.exit(0);
   `;
 
+  const RELEASER_SRC = `
+    const [lib, target] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    withFileLock(target, () => 'done');
+  `;
+
   // Holds the lock inside its critical section until the go flag appears, so the
   // window a second process is tested against is one this test opens and closes.
   // The wait is bounded so a go flag that never arrives fails the parent's
@@ -2874,6 +2880,82 @@ describe('withFileLock', () => {
     });
     assert.strictEqual(ran, 'ran');
     assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  // Ctrl-C is the ordinary way a command ends early, and process.on('exit') does
+  // not run for signal termination: the lock outlived the process and the next
+  // command had to wait out the staleness threshold behind a holder that was
+  // already gone.
+  async function assertSignalReleasesLock(signal) {
+    const readyFlag = path.join(tmpDir, `ready-${signal}`);
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLDER_SRC, '--', CORE_LIB, target, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    await waitForFlag(readyFlag);
+
+    const lockPath = lockPathFor(target);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      true,
+      `the child should hold the lock: ${stderr}`,
+    );
+
+    child.kill(signal);
+    const ended = await new Promise((r) =>
+      child.on('close', (code, sig) => r({ code, sig })),
+    );
+
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      false,
+      `${signal} left the lock behind`,
+    );
+    assert.strictEqual(
+      ended.sig,
+      signal,
+      `${signal} must still end the process by that signal, got code ${ended.code}`,
+    );
+  }
+
+  test('SIGINT releases the lock', async () => {
+    await assertSignalReleasesLock('SIGINT');
+  });
+
+  test('SIGTERM releases the lock', async () => {
+    await assertSignalReleasesLock('SIGTERM');
+  });
+
+  test('SIGHUP releases the lock', async () => {
+    await assertSignalReleasesLock('SIGHUP');
+  });
+
+  test('a command that has finished with the lock still exits on its own', async () => {
+    // The signal handlers are installed on first acquire. A handler that kept
+    // the event loop referenced would hang every command that takes a lock.
+    const child = spawn(
+      process.execPath,
+      ['-e', RELEASER_SRC, '--', CORE_LIB, target],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const killer = setTimeout(() => child.kill('SIGKILL'), 5000);
+    const ended = await new Promise((r) =>
+      child.on('close', (code, sig) => r({ code, sig })),
+    );
+    clearTimeout(killer);
+
+    assert.strictEqual(
+      ended.sig,
+      null,
+      'the child had to be killed: something is holding the event loop open',
+    );
+    assert.strictEqual(ended.code, 0, `child exited ${ended.code}: ${stderr}`);
+    assert.strictEqual(fs.existsSync(lockPathFor(target)), false);
   });
 
   test('a lock held at process exit is released by the exit hook', async () => {
