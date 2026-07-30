@@ -3043,6 +3043,56 @@ describe('parsePhaseCheckboxes', () => {
       [{ num: '9', name: null }],
     );
   });
+
+  test('reads the milestone rollover shape without its trailing metadata', () => {
+    // What complete-milestone writes on every rollover. The bare form has no
+    // closing delimiter, so the name used to run to the end of the line and
+    // reached next_phase_name, which is slugified.
+    const entries = parsePhaseCheckboxes(
+      [
+        '- [x] Phase 5: Security Audit (1 plan) — completed 2026-02-01',
+        '- [x] Phase 6: Hardening (2/2 plans) — completed 2026-02-03',
+        '- [ ] Phase 7: Hardening (2 plans)',
+      ].join('\n'),
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => e.name),
+      ['Security Audit', 'Hardening', 'Hardening'],
+    );
+  });
+
+  test('reads an indented checkbox', () => {
+    // Nesting a phase list under its milestone is ordinary markdown, and the
+    // rewriters tick an indented entry, so a reader that skips one disagrees
+    // with the writer about which phases exist.
+    const entries = parsePhaseCheckboxes(
+      '  - [ ] Phase 1: Alpha\n\t- [x] **Phase 2: Beta**\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name, checked: e.checked })),
+      [
+        { num: '1', name: 'Alpha', checked: false },
+        { num: '2', name: 'Beta', checked: true },
+      ],
+    );
+  });
+
+  test('takes a colonless entry as a phase, as the rewriters do', () => {
+    // Deliberate: the colon is optional here because it is optional in the
+    // pattern the four rewriters share, and a line they will tick has to be a
+    // line the readers can see. The cost is that a checklist item opening with a
+    // phase number reads as an entry for that phase.
+    const entries = parsePhaseCheckboxes(
+      '- [ ] Phase 4 needs review\n- [x] Phase 5 - Polish\n',
+    );
+    assert.deepStrictEqual(
+      entries.map((e) => ({ num: e.num, name: e.name })),
+      [
+        { num: '4', name: 'needs review' },
+        { num: '5', name: 'Polish' },
+      ],
+    );
+  });
 });
 
 describe('phaseCheckboxLinePattern', () => {
@@ -3095,6 +3145,28 @@ describe('phaseCheckboxName', () => {
 
   test('keeps a trailing parenthetical that is part of the name', () => {
     assert.strictEqual(phaseCheckboxName('Auth (JWT)'), 'Auth (JWT)');
+    assert.strictEqual(
+      phaseCheckboxName('Security Audit (external review)'),
+      'Security Audit (external review)',
+    );
+  });
+
+  test('cuts the bare form at its separator and drops the roadmap metadata', () => {
+    assert.strictEqual(
+      phaseCheckboxName('Security Audit (1 plan) — completed 2026-02-01'),
+      'Security Audit',
+    );
+    assert.strictEqual(
+      phaseCheckboxName('Foundation (2/2 plans) - completed 2026-02-01'),
+      'Foundation',
+    );
+    assert.strictEqual(
+      phaseCheckboxName('Polish (1 plan) (completed 2026-02-01)'),
+      'Polish',
+    );
+    assert.strictEqual(phaseCheckboxName('Hardening ([N] plans)'), 'Hardening');
+    assert.strictEqual(phaseCheckboxName('Alpha – a description'), 'Alpha');
+    assert.strictEqual(phaseCheckboxName('- Polish'), 'Polish');
   });
 
   test('returns null for an empty name', () => {

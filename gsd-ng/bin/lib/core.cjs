@@ -949,6 +949,9 @@ function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
 // The bare-or-bold prefix is phaseCheckboxPattern's — a reader that takes only
 // the bold form reports a bare-form roadmap as having no phases at all, which
 // is how `phase complete` came to call a milestone finished with a phase left.
+// Leading whitespace is allowed for the same reason: the rewriters' pattern is
+// not anchored, so they tick an entry nested under its milestone heading, and a
+// reader that cannot see one disagrees with them about which phases exist.
 function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
   const num =
     phaseNum == null
@@ -956,21 +959,44 @@ function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
       : phaseNumPattern(phaseNum) +
         String.raw`[A-Z]?` +
         (opts.withDecimals ? String.raw`(?:\.\d+)*` : '');
-  return String.raw`^[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
+  return String.raw`^[ \t]*[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
 }
 
-// The name as written after the colon, minus the bold markers and the
-// `(completed DATE)` suffix `phase complete` appends. Null when nothing is left:
-// a checkbox may carry only a number.
+// What the roadmap appends after the name and is not part of it: the plan count
+// the templates carry, and the completion or insertion marker. A parenthetical
+// that says none of those is part of the name — `Auth (JWT)`.
+const PHASE_CHECKBOX_META_SUFFIX =
+  /\s*\((?:(?:completed|inserted)\b[^)]*|[^)]*\bplans?\b[^)]*)\)\s*$/i;
+
+// A description follows the name after a spaced dash, as it does after the bold
+// markers in `**Phase N: Name** - description`.
+const PHASE_CHECKBOX_DESCRIPTION = /\s+(?:[—–]|-{1,2})\s+[^\n]*$/;
+
+// The name as written after the colon, minus the bold markers, any description
+// after it and the roadmap's own trailing metadata. Null when nothing is left: a
+// checkbox may carry only a number.
 function phaseCheckboxName(rest) {
   // A bold entry closes its markers at the end of the name; anything after them
-  // is a trailing description, not part of it.
+  // is a trailing description, not part of it. The bare form has no closing
+  // delimiter, so it ends at the description separator instead — without one,
+  // `Phase N: Audit (1 plan) — completed DATE` named the phase after the whole
+  // line, and that name reaches slugified fields.
   const raw = String(rest).replace(/^\s*\*\*\s*/, '');
   const bolded = raw.match(/^([^*\n]*?)\s*\*\*/);
-  const name = (bolded ? bolded[1] : raw)
-    .replace(/\*\*/g, '')
-    .replace(/\s*\((?:completed|inserted)\b[^)]*\)\s*$/i, '')
-    .trim();
+  const body = bolded
+    ? bolded[1]
+    : raw
+        .replace(/^(?:[—–]|-{1,2})\s+/, '')
+        .replace(PHASE_CHECKBOX_DESCRIPTION, '');
+
+  let name = body.replace(/\*\*/g, '').trim();
+  // Repeated because both markers can be there at once: `phase complete`
+  // appends its own to a line the template already gave a plan count.
+  for (;;) {
+    const stripped = name.replace(PHASE_CHECKBOX_META_SUFFIX, '').trim();
+    if (stripped === name) break;
+    name = stripped;
+  }
   return name || null;
 }
 
