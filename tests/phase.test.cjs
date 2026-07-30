@@ -7327,3 +7327,102 @@ describe('phase remove keeps ROADMAP.md and the phase tree agreeing', () => {
     ]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The phase section a removal deletes ends where the next section begins. Ended
+// at the next phase header or the end of the file, removing the last phase in
+// the list deleted everything below it — the progress table the very next
+// rewrite then reported as a target it could not reach, and whatever else the
+// roadmap carried after that.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove deletes one phase section, not the file below it', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 3: Gamma',
+        '',
+        '## Phase Details',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** a',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** b',
+        '',
+        '### Phase 3: Gamma',
+        '**Goal:** g',
+        '',
+        '## Progress',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 1. Alpha | 0/0 | Pending | - |',
+        '| 2. Beta | 0/0 | Pending | - |',
+        '| 3. Gamma | 0/0 | Pending | - |',
+        '',
+        '## Notes',
+        '',
+        'Keep me.',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('removing the highest-numbered phase leaves the sections below it', () => {
+    const result = runGsdTools('phase remove 3 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^#{2,4} /.test(l)),
+      [
+        '## Roadmap v0.1: Current',
+        '## Phase Details',
+        '### Phase 1: Alpha',
+        '### Phase 2: Beta',
+        '## Progress',
+        '## Notes',
+      ],
+      'only the removed phase section goes',
+    );
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^\| \d\./.test(l)),
+      ['| 1. Alpha | 0/0 | Pending | - |', '| 2. Beta | 0/0 | Pending | - |'],
+      'the surviving phases keep their progress rows',
+    );
+    assert.match(roadmap, /^Keep me\.$/m, 'a later section is not a phase');
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'the progress table was reachable, and was reached',
+    );
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+    ]);
+  });
+});

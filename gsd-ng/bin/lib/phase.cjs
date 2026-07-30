@@ -1605,10 +1605,20 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const roadmapWithheld = [];
       let roadmapWithheldHint = null;
 
-      // Remove the target phase section
+      // Remove the target phase section, which runs to the next heading of its
+      // own level or shallower. Bounded by the next phase header or the end of
+      // the file, removing the last phase in the list deleted everything below
+      // it — the progress table, which the next rewrite then reported as a
+      // target it could not reach rather than one it had destroyed, and any
+      // section after that. A deeper heading belongs to the phase, so the bound
+      // is the header's own level and not simply the next heading.
       const targetEscaped = phaseNumPattern(targetPhase);
+      const headerMatch = roadmapContent
+        .slice(currentMilestoneOffset(roadmapContent))
+        .match(new RegExp(`(#{2,4})\\s*Phase\\s+${targetEscaped}\\s*:`, 'i'));
+      const headerLevel = headerMatch ? headerMatch[1].length : 4;
       const sectionPattern = new RegExp(
-        `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
+        `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{1,${headerLevel}}\\s|$)`,
         'i',
       );
       const section = replaceInCurrentMilestone(
