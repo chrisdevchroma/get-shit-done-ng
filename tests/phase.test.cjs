@@ -6350,6 +6350,246 @@ describe('phase remove milestone scoping', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Both milestone scopes read the same tag. ROADMAP.md is user-editable, and
+// `<details open>` is what you write to keep the archive expanded; the probes
+// tolerated case but no attributes and the write scope attributes but no case,
+// so either spelling put one of the two over the whole document — a false miss
+// and a withheld renumber from the first, rewrites inside the archive from the
+// second.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('roadmap milestone scoping across <details> spellings', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeRoadmap(text) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), text);
+  }
+
+  function readRoadmap() {
+    return fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+  }
+
+  const CURRENT_WITHOUT_SECTION = [
+    '',
+    '## Roadmap v0.2: Current',
+    '',
+    '- [ ] **Phase 2: Beta**',
+    '- [ ] **Phase 3: Gamma**',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 2. Beta | 0/0 | Pending | - |',
+    '| 3. Gamma | 0/0 | Pending | - |',
+    '',
+    '### Phase 3: Gamma',
+    '**Goal:** c',
+    '',
+  ].join('\n');
+
+  test('an attributed <details> is not read as current milestone content', () => {
+    const archive = [
+      '# Roadmap',
+      '',
+      '<details open>',
+      '<summary>v0.1 — Legacy (Shipped)</summary>',
+      '',
+      '- [x] **Phase 2: Older**',
+      '- [x] **Phase 3: Oldest**',
+      '',
+      '### Phase 2: Older',
+      '**Goal:** old',
+      '',
+      '</details>',
+    ].join('\n');
+    writeRoadmap(archive + CURRENT_WITHOUT_SECTION);
+    for (const dir of ['02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'the only Phase 2 section is archived, which is out of scope by design',
+    );
+    assert.deepStrictEqual(
+      output.roadmap_withheld,
+      [],
+      'nothing was missed, so the renumbering had no reason to be withheld',
+    );
+    assert.ok(
+      output.roadmap_landed.includes('renumber'),
+      `the renumbering must land: ${JSON.stringify(output)}`,
+    );
+
+    const roadmap = readRoadmap();
+    assert.strictEqual(
+      roadmap.slice(0, archive.length),
+      archive,
+      'the archive is left byte-identical',
+    );
+    const current = roadmap.slice(archive.length);
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^- \[/.test(l)),
+      ['- [ ] **Phase 2: Gamma**'],
+      'Beta goes and Gamma takes its number',
+    );
+    assert.deepStrictEqual(
+      current.split('\n').filter((l) => /^\| \d\./.test(l)),
+      ['| 2. Gamma | 0/0 | Pending | - |'],
+    );
+  });
+
+  test('an attributed <details> does not make an archived Plans line a miss', () => {
+    const archive = [
+      '# Roadmap',
+      '',
+      '<details markdown="1">',
+      '<summary>v0.9 — SHIPPED 2020-01-01</summary>',
+      '',
+      '### Phase 1: Foundation',
+      '**Plans**: 1/1 plans complete',
+      '',
+      '</details>',
+    ].join('\n');
+    const current = [
+      '',
+      '',
+      '- [ ] **Phase 1: Foundation** - set up',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|---------------|--------|-----------|',
+      '| 1. Foundation | 0/1 | Planned |  |',
+      '',
+    ].join('\n');
+    writeRoadmap(archive + current);
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runGsdTools('phase complete 1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.roadmap_updated, true, 'the reachable targets landed');
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'the archived Plans line is out of scope by design, not missed',
+    );
+
+    const roadmap = readRoadmap();
+    assert.strictEqual(
+      roadmap.slice(0, archive.length),
+      archive,
+      'the archive is left byte-identical',
+    );
+    assert.match(
+      roadmap.slice(archive.length),
+      /^- \[x\] \*\*Phase 1: Foundation\*\*/m,
+      'the current checkbox is the one that gets ticked',
+    );
+  });
+
+  test('an uppercase </DETAILS> still bounds where a rewrite may write', () => {
+    const archive = [
+      '# Roadmap',
+      '',
+      '<DETAILS>',
+      '<summary>v0.1 — Legacy (Shipped)</summary>',
+      '',
+      '- [x] **Phase 2: Older**',
+      '- [x] **Phase 3: Oldest**',
+      '',
+      '| Phase | Plans | Status | Completed |',
+      '|-------|-------|--------|-----------|',
+      '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+      '| 3. Oldest | 2/2 | Complete | 2020-03-01 |',
+      '',
+      '### Phase 2: Older',
+      '**Goal:** old',
+      '',
+      '### Phase 3: Oldest',
+      '**Goal:** older',
+      '',
+      '</DETAILS>',
+    ].join('\n');
+    const current = [
+      '',
+      '## Roadmap v0.2: Current',
+      '',
+      '- [ ] **Phase 2: Beta**',
+      '- [ ] **Phase 3: Gamma**',
+      '',
+      '| Phase | Plans | Status | Completed |',
+      '|-------|-------|--------|-----------|',
+      '| 2. Beta | 0/0 | Pending | - |',
+      '| 3. Gamma | 0/0 | Pending | - |',
+      '',
+      '### Phase 2: Beta',
+      '**Goal:** b',
+      '',
+      '### Phase 3: Gamma',
+      '**Goal:** c',
+      '',
+    ].join('\n');
+    writeRoadmap(archive + current);
+    for (const dir of ['02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const roadmap = readRoadmap();
+    assert.strictEqual(
+      roadmap.slice(0, archive.length),
+      archive,
+      'the archive is left byte-identical',
+    );
+    assert.deepStrictEqual(output.roadmap_missed_targets, []);
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+      'renumber',
+    ]);
+
+    const remaining = roadmap.slice(archive.length);
+    assert.deepStrictEqual(
+      remaining.split('\n').filter((l) => /^- \[/.test(l)),
+      ['- [ ] **Phase 2: Gamma**'],
+    );
+    assert.deepStrictEqual(
+      remaining.split('\n').filter((l) => /^\| \d\./.test(l)),
+      ['| 2. Gamma | 0/0 | Pending | - |'],
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The phase list a new checkbox joins is the current milestone's. Scanning the
 // whole document put new phases inside a shipped <details> section whenever it
 // held the last checkbox in the file — which happens when the milestone in

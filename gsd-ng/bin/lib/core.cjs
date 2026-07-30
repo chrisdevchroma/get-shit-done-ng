@@ -1308,6 +1308,13 @@ function getArchivedPhaseDirs(cwd) {
 
 // ─── Roadmap milestone scoping ───────────────────────────────────────────────
 
+// The tag both scopes below read. ROADMAP.md is written by hand as often as by
+// GSD, so `<details open>` and `<DETAILS>` are spellings of the same archive as
+// far as either of them is concerned; recognising one spelling and not the
+// other put whichever helper missed it over the whole document.
+const DETAILS_OPEN_SOURCE = String.raw`<details\b[^>]*>`;
+const DETAILS_CLOSE_SOURCE = String.raw`</details\s*>`;
+
 /**
  * Extract the current (active) milestone content from ROADMAP.md.
  * Strips shipped milestone sections wrapped in <details> blocks.
@@ -1320,7 +1327,10 @@ function getArchivedPhaseDirs(cwd) {
  * rewrite probes read this function rather than the write scope.
  */
 function extractCurrentMilestone(content) {
-  return content.replace(/<details>[\s\S]*?<\/details>/gi, '');
+  return content.replace(
+    new RegExp(`${DETAILS_OPEN_SOURCE}[\\s\\S]*?${DETAILS_CLOSE_SOURCE}`, 'gi'),
+    '',
+  );
 }
 
 /**
@@ -1347,8 +1357,13 @@ function replaceInCurrentMilestone(content, pattern, replacement) {
 // contiguous tail, which is narrower than the current milestone whenever live
 // content sits above a collapsed section.
 function currentMilestoneOffset(content) {
-  const lastDetailsClose = content.lastIndexOf('</details>');
-  return lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
+  let offset = 0;
+  for (const match of content.matchAll(
+    new RegExp(DETAILS_CLOSE_SOURCE, 'gi'),
+  )) {
+    offset = match.index + match[0].length;
+  }
+  return offset;
 }
 
 function currentMilestoneSlice(content) {
