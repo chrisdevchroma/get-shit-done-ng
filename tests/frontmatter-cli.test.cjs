@@ -424,29 +424,66 @@ describe('frontmatter get --default flag', () => {
 
 describe('frontmatter writers and the planning-document locks', () => {
   const { spawn } = require('child_process');
-  const { createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
+  const {
+    createTempProject,
+    cleanup,
+    TOOLS_PATH,
+    waitForReadyFlag,
+    trackExit,
+    waitForExit,
+  } = require('./helpers.cjs');
+
+  const LOCK_SIGNAL_PRELOAD = path.join(
+    __dirname,
+    'fixtures',
+    'signal-lock-attempt.cjs',
+  );
 
   let tmpDir;
   let statePath;
   let stateLock;
+  let lockFlag;
 
-  const runDetached = (args) => {
-    const child = spawn(process.execPath, [TOOLS_PATH, ...args, '--json'], {
-      cwd: tmpDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+  // `signalLockAttempt` preloads the fixture that creates lockFlag the moment the
+  // child reaches its first lock. The child is the CLI and cannot announce itself,
+  // and a timed window in its place has to cover node startup and module load as
+  // well as the work — so a slow start observes nothing and passes.
+  const runDetached = (args, opts = {}) => {
+    const preload = opts.signalLockAttempt
+      ? ['--require', LOCK_SIGNAL_PRELOAD]
+      : [];
+    const child = spawn(
+      process.execPath,
+      [...preload, TOOLS_PATH, ...args, '--json'],
+      {
+        cwd: tmpDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GSD_TEST_LOCK_FLAG: lockFlag },
+      },
+    );
     child._out = '';
     child._err = '';
     child.stdout.on('data', (d) => (child._out += d));
     child.stderr.on('data', (d) => (child._err += d));
-    child._exited = new Promise((r) => child.on('close', r));
-    return child;
+    return trackExit(child);
+  };
+
+  // A live pid, so the holder is never judged stale and reclaimed.
+  const holdLock = (lockPath) => {
+    const payload = JSON.stringify({
+      pid: process.pid,
+      host: require('os').hostname(),
+      at: new Date().toISOString(),
+    });
+    fs.writeFileSync(lockPath, payload);
+    return payload;
   };
 
   beforeEach(() => {
     tmpDir = createTempProject();
     statePath = path.join(tmpDir, '.planning', 'STATE.md');
     stateLock = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    lockFlag = path.join(tmpDir, 'child-at-lock');
     fs.writeFileSync(statePath, '---\nphase: 01\n---\n\n# Project State\n');
   });
 
@@ -456,41 +493,146 @@ describe('frontmatter writers and the planning-document locks', () => {
 
   test('frontmatter set on STATE.md waits for the state lock', async () => {
     const before = fs.readFileSync(statePath, 'utf-8');
-    fs.writeFileSync(
-      stateLock,
-      JSON.stringify({
-        pid: process.pid,
-        host: require('os').hostname(),
-        at: new Date().toISOString(),
-      }),
+    holdLock(stateLock);
+
+    const child = runDetached(
+      [
+        'frontmatter',
+        'set',
+        '.planning/STATE.md',
+        '--field',
+        'phase',
+        '--value',
+        '02',
+      ],
+      { signalLockAttempt: true },
     );
 
-    const child = runDetached([
-      'frontmatter',
-      'set',
-      '.planning/STATE.md',
-      '--field',
-      'phase',
-      '--value',
-      '02',
-    ]);
-
-    // A window far wider than the read and rewrite the command performs; the
-    // lock, not the clock, is what keeps the child out.
-    await new Promise((r) => setTimeout(r, 600));
+    // From here the child is loaded, dispatched and inside the acquire loop:
+    // anything it does before waiting for the lock, it has already done.
+    await waitForReadyFlag(lockFlag, 'the child');
     assert.strictEqual(
       fs.readFileSync(statePath, 'utf-8'),
       before,
       'STATE.md was rewritten while another writer held the lock',
     );
 
+    // What the lock holder was in the middle of writing. Waiting for the lock and
+    // then rewriting from a read taken before the wait discards all of it and
+    // reports success, which is the whole failure the lock exists to stop.
+    fs.writeFileSync(
+      statePath,
+      '---\nphase: 01\nstatus: shipped\n---\n\n# Project State\n\n## Blockers\n\nNone.\n',
+    );
     fs.unlinkSync(stateLock);
-    const code = await child._exited;
+
+    const code = await waitForExit(child, 'frontmatter set');
     assert.strictEqual(code, 0, `the write should succeed: ${child._err.trim()}`);
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.match(after, /phase: 02/, 'the write should land once the lock is free');
     assert.match(
-      fs.readFileSync(statePath, 'utf-8'),
-      /phase: 02/,
-      'the write should land once the lock is free',
+      after,
+      /status: shipped/,
+      'the rewrite must be built from what the lock holder left, not from a read taken before the wait',
+    );
+    assert.match(
+      after,
+      /## Blockers/,
+      'the body the lock holder wrote must survive the rewrite',
+    );
+  });
+
+  test('frontmatter merge on REQUIREMENTS.md waits for the requirements lock', async () => {
+    const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    const reqLock = path.join(tmpDir, '.planning', '.REQUIREMENTS.md.gsd-lock');
+    fs.writeFileSync(reqPath, '---\nversion: 1\n---\n\n# Requirements\n');
+    const before = fs.readFileSync(reqPath, 'utf-8');
+    holdLock(reqLock);
+
+    const child = runDetached(
+      [
+        'frontmatter',
+        'merge',
+        '.planning/REQUIREMENTS.md',
+        '--data',
+        '{"status":"active"}',
+      ],
+      { signalLockAttempt: true },
+    );
+
+    await waitForReadyFlag(lockFlag, 'the child');
+    assert.strictEqual(
+      fs.readFileSync(reqPath, 'utf-8'),
+      before,
+      'REQUIREMENTS.md was rewritten while another writer held the lock',
+    );
+
+    fs.writeFileSync(
+      reqPath,
+      '---\nversion: 1\nowner: crew\n---\n\n# Requirements\n\n- [ ] REQ-02\n',
+    );
+    fs.unlinkSync(reqLock);
+
+    const code = await waitForExit(child, 'frontmatter merge');
+    assert.strictEqual(code, 0, `the merge should succeed: ${child._err.trim()}`);
+    const after = fs.readFileSync(reqPath, 'utf-8');
+    assert.match(after, /status: active/, 'the merge should land once the lock is free');
+    assert.match(
+      after,
+      /owner: crew/,
+      'the merge must be built from what the lock holder left, not from a read taken before the wait',
+    );
+    assert.match(
+      after,
+      /- \[ \] REQ-02/,
+      'the body the lock holder wrote must survive the merge',
+    );
+  });
+
+  test('array-append on ROADMAP.md waits for the roadmap lock', async () => {
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    const roadmapLock = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    fs.writeFileSync(roadmapPath, '---\ntags:\n  - one\n---\n\n# Roadmap\n');
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+    holdLock(roadmapLock);
+
+    const child = runDetached(
+      [
+        'frontmatter',
+        'array-append',
+        '.planning/ROADMAP.md',
+        '--field',
+        'tags',
+        '--value',
+        'two',
+      ],
+      { signalLockAttempt: true },
+    );
+
+    await waitForReadyFlag(lockFlag, 'the child');
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      before,
+      'ROADMAP.md was rewritten while another writer held the lock',
+    );
+
+    // The append the lock holder made. An append composed with it reads
+    // [one, held, two]; one built from a read taken before the wait reads
+    // [one, two] and the holder's entry is gone.
+    fs.writeFileSync(
+      roadmapPath,
+      '---\ntags:\n  - one\n  - held\n---\n\n# Roadmap\n\n## Phase 2\n',
+    );
+    fs.unlinkSync(roadmapLock);
+
+    const code = await waitForExit(child, 'frontmatter array-append');
+    assert.strictEqual(code, 0, `the write should succeed: ${child._err.trim()}`);
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.match(after, /tags: \[one, held, two\]/);
+    assert.match(
+      after,
+      /## Phase 2/,
+      'the body the lock holder wrote must survive the append',
     );
   });
 
@@ -498,19 +640,16 @@ describe('frontmatter writers and the planning-document locks', () => {
     const todoDir = path.join(tmpDir, '.planning', 'todos', 'pending');
     fs.mkdirSync(todoDir, { recursive: true });
     const todo = path.join(todoDir, 'a-todo.md');
+    const todoLock = path.join(todoDir, '.a-todo.md.gsd-lock');
     fs.writeFileSync(todo, '---\narea: docs\n---\n\n## Problem\n');
 
-    // Held for the whole test. A todo write that took this lock would wait out
-    // the acquire budget and exit non-zero, so the assertion below is what
-    // reports it rather than the test hanging.
-    fs.writeFileSync(
-      stateLock,
-      JSON.stringify({
-        pid: process.pid,
-        host: require('os').hostname(),
-        at: new Date().toISOString(),
-      }),
-    );
+    // Two locks nobody may take, both held for the whole test: the one beside the
+    // todo, and the state lock, which is what a todo misclassified as STATE.md
+    // would wait for. A writer that took either would spend the acquire budget
+    // waiting and exit non-zero instead of writing, so the write landing at all
+    // is the evidence that no lock was taken while it happened.
+    const todoLockPayload = holdLock(todoLock);
+    holdLock(stateLock);
 
     const child = runDetached([
       'frontmatter',
@@ -521,51 +660,16 @@ describe('frontmatter writers and the planning-document locks', () => {
       '--value',
       'architecture',
     ]);
-    const code = await child._exited;
+    const code = await waitForExit(child, 'frontmatter set on a todo');
 
     assert.strictEqual(code, 0, `the write should succeed: ${child._err.trim()}`);
     assert.match(fs.readFileSync(todo, 'utf-8'), /area: architecture/);
-    assert.ok(
-      !fs.existsSync(path.join(todoDir, '.a-todo.md.gsd-lock')),
-      'a todo write must not leave a lock file beside the todo',
-    );
-    fs.unlinkSync(stateLock);
-  });
-
-  test('array-append on ROADMAP.md waits for the roadmap lock', async () => {
-    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
-    const roadmapLock = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
-    fs.writeFileSync(roadmapPath, '---\ntags:\n  - one\n---\n\n# Roadmap\n');
-    const before = fs.readFileSync(roadmapPath, 'utf-8');
-    fs.writeFileSync(
-      roadmapLock,
-      JSON.stringify({
-        pid: process.pid,
-        host: require('os').hostname(),
-        at: new Date().toISOString(),
-      }),
-    );
-
-    const child = runDetached([
-      'frontmatter',
-      'array-append',
-      '.planning/ROADMAP.md',
-      '--field',
-      'tags',
-      '--value',
-      'two',
-    ]);
-
-    await new Promise((r) => setTimeout(r, 600));
     assert.strictEqual(
-      fs.readFileSync(roadmapPath, 'utf-8'),
-      before,
-      'ROADMAP.md was rewritten while another writer held the lock',
+      fs.readFileSync(todoLock, 'utf-8'),
+      todoLockPayload,
+      'the lock beside the todo was taken by a write that must not take one',
     );
-
-    fs.unlinkSync(roadmapLock);
-    const code = await child._exited;
-    assert.strictEqual(code, 0, `the write should succeed: ${child._err.trim()}`);
-    assert.match(fs.readFileSync(roadmapPath, 'utf-8'), /tags: \[one, two\]/);
+    fs.unlinkSync(todoLock);
+    fs.unlinkSync(stateLock);
   });
 });

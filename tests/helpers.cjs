@@ -255,4 +255,53 @@ async function waitForReadyFlag(flagPath, label, timeoutMs = 10000) {
   }
 }
 
-module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule, waitForReadyFlag };
+/**
+ * Record a spawned child's exit so waitForExit can wait on it later.
+ *
+ * The promise has to be created at spawn time: a child that exits before anyone
+ * asks about it has already emitted 'close', and a listener attached afterwards
+ * never fires.
+ *
+ * @param {import('child_process').ChildProcess} child
+ * @returns {import('child_process').ChildProcess} the same child
+ */
+function trackExit(child) {
+  child._exited = new Promise((r) => child.on('close', r));
+  return child;
+}
+
+/**
+ * Wait for a tracked child to exit, failing rather than hanging.
+ *
+ * Nothing bounds a test in this suite — the runner passes no --test-timeout — so
+ * an await on a child's exit is only as bounded as the child is. The lock-wait
+ * tests are bounded today by the acquire budget, which is a property of the
+ * library under test: the thing being asserted on cannot also be what guarantees
+ * the assertion is reached. The default deadline sits above that budget so a
+ * child legitimately waiting out a held lock still reports its own error rather
+ * than being cut short here.
+ *
+ * @param {import('child_process').ChildProcess} child - passed through trackExit
+ * @param {string} label - How to name the child in the failure message
+ * @param {number} [timeoutMs=30000] - deadline, above LOCK_ACQUIRE_BUDGET_MS
+ * @returns {Promise<number>} the child's exit code
+ */
+async function waitForExit(child, label, timeoutMs = 30000) {
+  assert.ok(child._exited, `${label} was not passed through trackExit`);
+  const EXPIRED = Symbol('expired');
+  let timer;
+  const expired = new Promise((r) => {
+    timer = setTimeout(() => r(EXPIRED), timeoutMs);
+  });
+  const result = await Promise.race([child._exited, expired]);
+  clearTimeout(timer);
+  if (result === EXPIRED) child.kill('SIGKILL');
+  assert.notStrictEqual(
+    result,
+    EXPIRED,
+    `${label} had not exited ${timeoutMs}ms after it was expected to`,
+  );
+  return result;
+}
+
+module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule, waitForReadyFlag, trackExit, waitForExit };
