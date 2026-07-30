@@ -2288,6 +2288,9 @@ main()
     }
   })
   .catch((err) => {
-    process.stderr.write((err && err.message) || String(err));
+    // Terminated, so the message cannot run into the next shell prompt. error()
+    // writes its own; a thrown Error carries none.
+    const message = (err && err.message) || String(err);
+    process.stderr.write(message.endsWith('\n') ? message : message + '\n');
     process.exit(1);
   });

@@ -13,6 +13,7 @@ const {
   cleanup,
   cleanupSubdir,
   waitForReadyFlag,
+  TOOLS_PATH,
 } = require('./helpers.cjs');
 
 // Direct-invocation helper for branches unreachable through validateArgs.
@@ -6536,4 +6537,160 @@ describe('STATE.md mutations wait for the lock', () => {
       );
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A failure partway through names what it already wrote
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both commands write ROADMAP.md and then STATE.md, and locks make each write
+// exclusive without making the pair atomic. A failure in between leaves the
+// first file updated and the second not, and an error that says nothing about it
+// leaves the operator unable to tell that case from a failure that wrote
+// nothing — the first needs reconciling or a re-run, the second only a retry.
+//
+// The failure is staged by putting a directory where STATE.md belongs: the
+// existence check passes and the read throws. Any cause has the same shape here
+// — a lock timeout on STATE.md is the one this was reported for — and this one
+// costs no wait for the lock-acquire budget.
+
+describe('a partway failure reports what already landed', () => {
+  let tmpDir;
+  let roadmapPath;
+  let statePath;
+
+  const FULL_ROADMAP = [
+    '# Roadmap',
+    '',
+    '- [ ] Phase 1: Alpha',
+    '- [ ] Phase 2: Beta',
+    '- [ ] Phase 3: Gamma',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 1. Alpha | 0/1 | Pending | - |',
+    '| 2. Beta | 0/1 | Pending | - |',
+    '| 3. Gamma | 0/1 | Pending | - |',
+    '',
+    '### Phase 1: Alpha',
+    '**Goal:** a',
+    '**Plans:** 1 plans',
+    '',
+    '### Phase 2: Beta',
+    '**Goal:** b',
+    '**Plans:** 1 plans',
+    '',
+    '### Phase 3: Gamma',
+    '**Goal:** c',
+    '**Plans:** 1 plans',
+    '',
+  ].join('\n');
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(roadmapPath, FULL_ROADMAP);
+    for (const [num, name] of [
+      ['01', 'alpha'],
+      ['02', 'beta'],
+      ['03', 'gamma'],
+    ]) {
+      const dir = path.join(tmpDir, '.planning', 'phases', `${num}-${name}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-01-PLAN.md`), '# Plan');
+      fs.writeFileSync(path.join(dir, `${num}-01-SUMMARY.md`), '# Summary');
+    }
+    fs.mkdirSync(statePath);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // spawnSync directly rather than through runGsdTools, which trims stderr and
+  // would hide the trailing newline this also checks.
+  function runRaw(args) {
+    return spawnSync(process.execPath, [TOOLS_PATH, ...args], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+    });
+  }
+
+  test('phase complete names ROADMAP.md and says it is safe to re-run', () => {
+    const result = runRaw(['phase', 'complete', '1']);
+
+    assert.strictEqual(result.status, 1, `expected a failure: ${result.stdout}`);
+    assert.match(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      /- \[x\] Phase 1: Alpha/,
+      'the roadmap write is the one that landed before the failure',
+    );
+    assert.match(
+      result.stderr,
+      /Already applied before this failure: ROADMAP\.md \(/,
+      'the error must name the file it already wrote',
+    );
+    assert.match(
+      result.stderr,
+      /safe to re-run/,
+      'the error must say what the remedy is',
+    );
+    assert.ok(
+      result.stderr.endsWith('\n'),
+      `the message must not run into the next shell prompt: ${JSON.stringify(result.stderr.slice(-40))}`,
+    );
+  });
+
+  test('phase complete claims nothing when the roadmap rewrite matched nothing', () => {
+    // Every phase-complete target for phase 1 is absent or unreachable, so the
+    // roadmap is left alone and the same failure follows. An error that named
+    // ROADMAP.md here would send the operator reconciling a file nobody touched.
+    fs.writeFileSync(
+      roadmapPath,
+      ['# Roadmap', '', '### Phase 2: Beta', '**Goal:** b', ''].join('\n'),
+    );
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+
+    const result = runRaw(['phase', 'complete', '1']);
+
+    assert.strictEqual(result.status, 1, `expected a failure: ${result.stdout}`);
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      before,
+      'nothing matched, so nothing may have been written',
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /Already applied before this failure/,
+      'a failure that wrote nothing must stay distinguishable from one that wrote half',
+    );
+    assert.doesNotMatch(result.stderr, /ROADMAP\.md/);
+  });
+
+  test('phase remove names the renumbered directories and refuses to call a re-run a repair', () => {
+    const result = runRaw(['phase', 'remove', '2', '--force']);
+
+    assert.strictEqual(result.status, 1, `expected a failure: ${result.stdout}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'phases', '02-gamma')),
+      'the directory renumbering is what landed before the failure',
+    );
+    assert.match(
+      result.stderr,
+      /Already applied before this failure:[^\n]*\.planning\/phases\/02-beta deleted/,
+      'the error must name the deleted directory',
+    );
+    assert.match(
+      result.stderr,
+      /1 directory renumbering\(s\) under \.planning\/phases\//,
+      'the error must name the renumbering',
+    );
+    assert.match(result.stderr, /ROADMAP\.md \(/);
+    assert.match(
+      result.stderr,
+      /not a repair/,
+      'a re-run would renumber again, and the message must say so',
+    );
+  });
 });

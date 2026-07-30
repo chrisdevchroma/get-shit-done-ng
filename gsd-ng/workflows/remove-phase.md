@@ -105,6 +105,8 @@ The CLI handles:
 Extract from result: `removed`, `directory_deleted`, `renamed_directories`, `renamed_files`, `roadmap_updated`, `roadmap_landed`, `roadmap_missed_targets`, `state_updated`.
 
 `roadmap_updated` is false when no ROADMAP.md rewrite matched anything — the file was left as it was. `roadmap_landed` names the rewrites that did land (`phase-section`, `phase-checkbox`, `progress-table`, `renumber`) and `roadmap_missed_targets` names the ones that had a target and could not reach it, which means ROADMAP.md is written in a shape the rewrite does not recognise. Report those to the user; do not present the removal as clean when the list is non-empty.
+
+**If the removal fails partway.** The directory deletion and renumbering happen before ROADMAP.md is rewritten, and STATE.md is written last. On a failure the error names what already landed — `Already applied before this failure: ...`. Unlike `phase complete`, **re-running is not a repair**: the renumbering has already shifted what the later phases are called, so the same number now names a different phase. Reconcile `.planning/phases/` against ROADMAP.md and STATE.md, and tell the user what was left in that state. The usual cause is a lock timeout (`Timed out waiting for a lock on ...`, error code `GSD_LOCK_TIMEOUT`) — another gsd process held the file for the whole acquire budget.
 </step>
 
 <step name="commit">
