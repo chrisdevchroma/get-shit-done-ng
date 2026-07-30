@@ -1227,23 +1227,19 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
   });
 }
 
-// True when the current milestone still names an integer phase above
-// `removedInt`, by header or by checkbox. That is what the renumbering exists to
-// rewrite, so a renumbering that changed nothing while one is present has missed
-// its target. Called with the whole current milestone rather than the write
-// scope, for the reason the other probes are: a phase above a collapsed section
-// is a target the renumbering cannot reach, not one it has no business reaching.
-function namesPhaseAbove(region, removedInt) {
-  const headerPattern = /^#{2,4}\s*Phase\s+(\d+)/gim;
-  const numbers = [];
+// True when the current milestone still names a phase the shift would move, by
+// header or by checkbox. That is what the renumbering exists to rewrite, so a
+// renumbering that changed nothing while one is present has missed its target.
+// Called with the whole current milestone rather than the write scope, for the
+// reason the other probes are: a phase above a collapsed section is a target the
+// renumbering cannot reach, not one it has no business reaching.
+function namesShiftTarget(region, shiftId) {
+  const headerPattern = /^#{2,4}\s*Phase\s+(\d+[A-Za-z]?(?:\.\d+)*)/gim;
+  const ids = [];
   let m;
-  while ((m = headerPattern.exec(region)) !== null) {
-    numbers.push(parseInt(m[1], 10));
-  }
-  for (const entry of parsePhaseCheckboxes(region)) {
-    numbers.push(parseInt(entry.num, 10));
-  }
-  return numbers.some((n) => Number.isFinite(n) && n > removedInt);
+  while ((m = headerPattern.exec(region)) !== null) ids.push(m[1]);
+  for (const entry of parsePhaseCheckboxes(region)) ids.push(entry.num);
+  return ids.some((id) => shiftId(id, 'phase') !== null);
 }
 
 /**
@@ -1286,62 +1282,103 @@ function duplicatePhaseIds(content) {
 // Phase — is under thirty characters, so this is generous rather than a limit.
 const RENUMBER_CONTEXT_CHARS = 64;
 
+// A whole phase identifier: the integer, the sidecar letter that may hang off
+// it, and the decimal segments that may follow. Read as bare digit runs instead,
+// a decimal identifier was two separate tokens whose context neither half
+// matched, so the renumbering reached the integer phases and left every decimal
+// and lettered one at the number the directory rename had just moved it off.
+const PHASE_ID_TOKEN = /\d+[A-Za-z]?(?:\.\d+)*/g;
+const PHASE_ID_PARTS = /^(\d+)([A-Za-z]?(?:\.\d+)*)$/;
+
+// Zero-padding is preserved at the width it was found, so a roadmap that pads
+// its phase numbers to two digits goes on doing so and one that writes them bare
+// is not padded against its will. Reaching only the bare spelling left every
+// padded reference pointing at whichever phase now holds its old number.
+//
+// Which of those two a reference is depends on where it was read. A plan
+// reference is the name of a file on disk, and those are padded to two digits
+// whatever the number needs, so it pads to the width it was found at even when
+// the decrement would shorten it. A heading is prose and is written at its
+// natural width, so the same decrement unpads it. Padding both the same way gets
+// one of them wrong: keyed on a leading zero alone, a plan reference shortened
+// across the ten boundary named a file that does not exist.
+function integerPhaseShift(removedInt) {
+  return (written, kind) => {
+    const parts = PHASE_ID_PARTS.exec(written);
+    if (!parts) return null;
+    const num = parseInt(parts[1], 10);
+    if (!Number.isFinite(num) || num <= removedInt) return null;
+    const pad =
+      kind === 'plan' || parts[1].startsWith('0') ? parts[1].length : 0;
+    return String(num - 1).padStart(pad, '0') + parts[2];
+  };
+}
+
+// Removing a decimal closes the gap among its own siblings and nothing else:
+// the integer it hangs off keeps its number, and so does every other base's
+// decimals. Bases are compared unpadded, since the directories pad and the
+// document does not.
+function decimalSiblingShift(baseId, removedDecimal) {
+  const unpad = (id) => id.replace(/^0+(?=\d)/, '').toUpperCase();
+  const base = unpad(String(baseId));
+  return (written) => {
+    const parts = /^(\d+[A-Za-z]?)\.(\d+)$/.exec(written);
+    if (!parts || unpad(parts[1]) !== base) return null;
+    const decimal = parseInt(parts[2], 10);
+    if (!Number.isFinite(decimal) || decimal <= removedDecimal) return null;
+    return `${parts[1]}.${decimal - 1}`;
+  };
+}
+
 /**
- * Shift every reference to a phase above `removedInt` down by one.
+ * Shift every phase reference `shiftId` claims, leaving the rest alone.
  *
- * One pass over the digit runs, each judged by the text as it was read and
+ * One pass over the identifiers, each judged by the text as it was read and
  * rewritten at most once. Rewriting in a pass per source number, walking down
  * from the highest, re-read its own output: a reference lowered to N by the pass
  * for N+1 was lowered again by the pass for N, and again by the pass below that,
  * so every phase above the removed one collapsed onto the removed one's number.
- *
- * Zero-padding is preserved at the width it was found, so a roadmap that pads
- * its phase numbers to two digits goes on doing so and one that writes them bare
- * is not padded against its will. Reaching only the bare spelling left every
- * padded reference pointing at whichever phase now holds its old number.
  */
-function renumberPhaseReferences(text, removedInt) {
-  const shift = (written) => {
-    const num = parseInt(written, 10);
-    if (!Number.isFinite(num) || num <= removedInt) return null;
-    const next = String(num - 1);
-    return written.startsWith('0') ? next.padStart(written.length, '0') : next;
-  };
-
-  const isPhaseReference = (written, before, after) => {
+function renumberPhaseReferences(text, shiftId) {
+  const referenceKind = (written, before, after) => {
     // A section heading, and the bare `Phase N:` / `Phase N ` that covers
     // checkbox items, dependency lines and prose alike.
-    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after)) return true;
-    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return true;
+    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after))
+      return 'phase';
+    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return 'phase';
     // A progress-table row: `| N. Name`.
-    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return true;
-    // A dependency whose number ends the line, which the shapes above miss.
+    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return 'phase';
+    // A dependency whose identifier ends the line, which the shapes above miss.
     if (
       /Depends on:\*\*\s*Phase\s+$/i.test(before) &&
       !/^[A-Za-z0-9_]/.test(after)
     ) {
-      return true;
+      return 'phase';
     }
     // A plan reference, `18-01`. A preceding digit, dot or hyphen disqualifies
     // it, or the rewrite walks into dates and version-like tokens: 2020-01-01,
-    // `ref 3.14-05`, `version 1.05-01`. The trailing side stays open to a hyphen
-    // so that 18-01-PLAN.md is still a plan reference.
-    return (
-      written.length === 2 &&
+    // `ref 3.14-05`, `version 1.05-01`. A decimal one is admitted only where a
+    // version number cannot follow: the directories number their decimals from
+    // one and never pad them, so a padded fraction is somebody else's token.
+    // The trailing side stays open to a hyphen so that 18-01-PLAN.md is still a
+    // plan reference.
+    const plan =
+      /^\d{2}(?:[A-Za-z]|\.[1-9]\d*)?$/.test(written) &&
       !/[\d.-]$/.test(before) &&
-      /^-\d{2}(?!\d)/.test(after)
-    );
+      /^-\d{2}(?!\d)/.test(after);
+    return plan ? 'plan' : null;
   };
 
-  return text.replace(/\d+/g, (written, index) => {
+  return text.replace(PHASE_ID_TOKEN, (written, index) => {
     const before = text.slice(
       Math.max(0, index - RENUMBER_CONTEXT_CHARS),
       index,
     );
     const end = index + written.length;
     const after = text.slice(end, end + RENUMBER_CONTEXT_CHARS);
-    if (!isPhaseReference(written, before, after)) return written;
-    const next = shift(written);
+    const kind = referenceKind(written, before, after);
+    if (kind === null) return written;
+    const next = shiftId(written, kind);
     return next === null ? written : next;
   });
 }
@@ -1380,6 +1417,15 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // Normalize the target
       const normalized = normalizePhaseName(targetPhase);
       const isDecimal = targetPhase.includes('.');
+      // A letter phase is a sidecar hung off an integer, not the integer. The
+      // integer renumbering reads its number with parseInt, which drops the
+      // letter, so removing one shifted every phase above the integer down onto
+      // a number that was never vacated — two directories parsing alike, and
+      // their plan files renamed to match. Nothing follows a sidecar's number
+      // the way the next decimal follows a decimal's, so removing one renumbers
+      // nothing: it leaves a gap, which is what a gap in a lettered sequence
+      // means.
+      const isLetter = !isDecimal && /[A-Za-z]/.test(normalized);
       // Read before anything is deleted, so the existence check below sees the
       // document as it stood.
       const roadmapBeforeAnything = fs.readFileSync(roadmapPath, 'utf-8');
@@ -1401,12 +1447,32 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // not exist, and removing it is nothing. Falling through decremented the
       // phase count for a phase that was never counted — a number that was never
       // true — and reported the write as an update.
+      //
+      // A progress-table row is not evidence on its own. A shipped milestone
+      // keeps its rows outside the <details> that collapses the rest of it, so
+      // every phase it delivered is named in the region the probes read as
+      // current. Counted as existing, a number belonging to the archive was
+      // removed from that table and the phases still in progress were shifted
+      // down to compensate for a removal that had happened in neither record.
       const namedInRoadmap =
         hasPhaseHeader(roadmapBeforeAnything, targetPhase) ||
-        hasPhaseTableRow(roadmapBeforeAnything, targetPhase) ||
         parsePhaseCheckboxes(
           extractCurrentMilestone(roadmapBeforeAnything),
         ).some((entry) => comparePhaseNum(entry.num, targetPhase) === 0);
+
+      if (
+        !targetDir &&
+        !namedInRoadmap &&
+        hasPhaseTableRow(roadmapBeforeAnything, targetPhase)
+      ) {
+        error(
+          `Phase ${targetPhase} has no directory, and ROADMAP.md names it only ` +
+            `in a progress table — which is where a shipped milestone keeps ` +
+            `the history of the phases it delivered. Removing it would renumber ` +
+            `the phases still in progress to compensate for a removal that ` +
+            `happened nowhere. Delete the row by hand if it is stale.`,
+        );
+      }
 
       if (!targetDir && !namedInRoadmap) {
         output({
@@ -1452,7 +1518,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const renamedDirs = [];
       const renamedFiles = [];
 
-      if (isDecimal) {
+      if (isLetter) {
+        // Nothing follows a sidecar's number, so nothing is renumbered.
+      } else if (isDecimal) {
         // Decimal removal: renumber sibling decimals (e.g., removing 06.2 → 06.3 becomes 06.2)
         const baseParts = normalized.split('.');
         const baseInt = baseParts[0];
@@ -1595,10 +1663,20 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const roadmapWithheld = [];
       let roadmapWithheldHint = null;
 
-      // Remove the target phase section
+      // Remove the target phase section, which runs to the next heading of its
+      // own level or shallower. Bounded by the next phase header or the end of
+      // the file, removing the last phase in the list deleted everything below
+      // it — the progress table, which the next rewrite then reported as a
+      // target it could not reach rather than one it had destroyed, and any
+      // section after that. A deeper heading belongs to the phase, so the bound
+      // is the header's own level and not simply the next heading.
       const targetEscaped = phaseNumPattern(targetPhase);
+      const headerMatch = roadmapContent
+        .slice(currentMilestoneOffset(roadmapContent))
+        .match(new RegExp(`(#{2,4})\\s*Phase\\s+${targetEscaped}\\s*:`, 'i'));
+      const headerLevel = headerMatch ? headerMatch[1].length : 4;
       const sectionPattern = new RegExp(
-        `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
+        `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{1,${headerLevel}}\\s|$)`,
         'i',
       );
       const section = replaceInCurrentMilestone(
@@ -1649,17 +1727,48 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // same number: the removals only delete. So that is where the consistency
       // of the result is decided, and it is refused outright in the two cases
       // that produce a duplicate, rather than written and reported afterwards.
-      if (!isDecimal) {
-        const removedInt = parseInt(normalized, 10);
+      //
+      // The hint names the record the operator has to reconcile, so it reads
+      // the renumbering that actually happened rather than assuming one: a
+      // removal with nothing above it on disk moves no directory, and a hint
+      // that says otherwise sends the reader to look for damage in the one
+      // record that is intact.
+      const renumberedRecord =
+        renamedDirs.length > 0
+          ? `The phase directories have been renumbered, so ROADMAP.md now ` +
+            `names phases by their old numbers`
+          : `No phase directory needed renumbering, so the numbering on disk ` +
+            `is still the one ROADMAP.md uses`;
+
+      // The document follows whatever the directory renumbering above did, so
+      // each kind of removal renumbers references the same way it renamed
+      // directories: an integer shifts every phase above it and carries their
+      // decimals and letters along, a decimal closes the gap among its own
+      // siblings, and a sidecar letter moves nothing. Skipped for anything but
+      // an integer, a decimal removal renamed its siblings on disk and left the
+      // document naming a different phase by the number the rename had just
+      // freed.
+      // Split the way the directory renaming above splits it, so the two
+      // records read the same identifier as the same phase.
+      const shiftId = isLetter
+        ? null
+        : isDecimal
+          ? decimalSiblingShift(
+              normalized.split('.')[0],
+              parseInt(normalized.split('.')[1], 10),
+            )
+          : integerPhaseShift(parseInt(normalized, 10));
+
+      if (shiftId) {
         const offset = currentMilestoneOffset(roadmapContent);
         const head = roadmapContent.slice(0, offset);
         const tailBefore = roadmapContent.slice(offset);
         // Over the whole current milestone, not the write scope: a phase above a
         // collapsed section is a target the renumbering cannot reach, and read
         // scoped like the rewrite it was reported clean.
-        const namesAbove = namesPhaseAbove(
+        const namesAbove = namesShiftTarget(
           extractCurrentMilestone(roadmapContent),
-          removedInt,
+          shiftId,
         );
 
         // A renumbering compensates for a removal that happened. Applied on top
@@ -1672,12 +1781,11 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
               `Renumbering was withheld: ROADMAP.md still names the removed ` +
               `phase (${roadmapMissed.join(', ')}), and shifting the later ` +
               `phases down on top of that would give two phases the same ` +
-              `number. The phase directories have been renumbered, so ` +
-              `ROADMAP.md now names phases by their old numbers — fix the ` +
-              `unreachable reference and reconcile ROADMAP.md by hand.`;
+              `number. ${renumberedRecord} — fix the unreachable reference ` +
+              `and reconcile the two by hand.`;
           }
         } else {
-          const tail = renumberPhaseReferences(tailBefore, removedInt);
+          const tail = renumberPhaseReferences(tailBefore, shiftId);
           const candidate = head + tail;
           // Only duplicates this rewrite would introduce count. A roadmap that
           // already names a phase twice is not made worse by leaving it alone,
@@ -1693,8 +1801,7 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
               `Renumbering was withheld: applying it would have named phase ` +
               `${introduced.join(', ')} twice in ROADMAP.md, because some ` +
               `reference to it is written in a shape the rewrite cannot reach. ` +
-              `The phase directories have been renumbered, so ROADMAP.md now ` +
-              `names phases by their old numbers — reconcile it by hand.`;
+              `${renumberedRecord} — reconcile the two by hand.`;
           } else {
             roadmapContent = candidate;
             if (tail !== tailBefore) roadmapLanded.push('renumber');

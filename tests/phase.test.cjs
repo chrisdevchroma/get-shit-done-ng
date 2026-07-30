@@ -7202,3 +7202,727 @@ describe('phase remove on an absent phase', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The renumbering rewrites two records at once — the phase directories and
+// ROADMAP.md — and the whole point of it is that they still describe the same
+// project afterwards. Every test here reads both and asserts they agree.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove keeps ROADMAP.md and the phase tree agreeing', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeRoadmap(lines) {
+    fs.writeFileSync(roadmapPath, lines.join('\n'));
+  }
+
+  // `spec` maps a directory name to the plan files inside it.
+  function writePhases(spec) {
+    for (const [dir, files] of Object.entries(spec)) {
+      const full = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(full, { recursive: true });
+      for (const f of files) fs.writeFileSync(path.join(full, f), '# plan\n');
+    }
+  }
+
+  function roadmapLines(pattern) {
+    return fs
+      .readFileSync(roadmapPath, 'utf-8')
+      .split('\n')
+      .filter((l) => pattern.test(l));
+  }
+
+  function phaseDirs() {
+    return fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort();
+  }
+
+  function planFiles() {
+    const base = path.join(tmpDir, '.planning', 'phases');
+    const found = [];
+    for (const dir of fs.readdirSync(base)) {
+      for (const f of fs.readdirSync(path.join(base, dir))) found.push(f);
+    }
+    return found.sort();
+  }
+
+  const PHASE_ID = /^(\d+[A-Za-z]?(?:\.\d+)*)/;
+
+  // Directory names pad the integer part and roadmap prose does not, so the two
+  // records are compared at the padded spelling.
+  function padId(id) {
+    return id.replace(/^\d+/, (n) => n.padStart(2, '0'));
+  }
+
+  function directoryIds() {
+    return phaseDirs().map((d) => PHASE_ID.exec(d)[1]);
+  }
+
+  function headingIds() {
+    return roadmapLines(/^#{2,4} Phase/).map((l) =>
+      padId(/Phase\s+(\d+[A-Za-z]?(?:\.\d+)*)/.exec(l)[1]),
+    );
+  }
+
+  // Phases 8 through 11, so removing the lowest sends 10 down to 9 and 11 down
+  // to 10 — the boundary crossed and the boundary not crossed, in one run.
+  const NINE_TO_TEN = [
+    '# Roadmap',
+    '',
+    '## Roadmap v0.1: Current',
+    '',
+    '- [ ] Phase 8: Eight',
+    '- [ ] Phase 9: Nine',
+    '- [ ] Phase 10: Ten',
+    '- [ ] Phase 11: Eleven',
+    '',
+    '### Phase 9: Nine',
+    'Plans:',
+    '- [ ] 09-01: nine',
+    '',
+    '### Phase 10: Ten',
+    'Plans:',
+    '- [ ] 10-01: ten',
+    '',
+    '### Phase 11: Eleven',
+    'Plans:',
+    '- [ ] 11-01: eleven',
+    '',
+  ];
+
+  const NINE_TO_TEN_DIRS = {
+    '08-eight': [],
+    '09-nine': ['09-01-PLAN.md'],
+    '10-ten': ['10-01-PLAN.md'],
+    '11-eleven': ['11-01-PLAN.md'],
+  };
+
+  test('a plan reference keeps the width the plan file is named at', () => {
+    writeRoadmap(NINE_TO_TEN);
+    writePhases(NINE_TO_TEN_DIRS);
+
+    const result = runGsdTools('phase remove 8 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(planFiles(), [
+      '08-01-PLAN.md',
+      '09-01-PLAN.md',
+      '10-01-PLAN.md',
+    ]);
+    assert.deepStrictEqual(
+      roadmapLines(/^- \[ \] \d/),
+      ['- [ ] 08-01: nine', '- [ ] 09-01: ten', '- [ ] 10-01: eleven'],
+      'a plan reference names a file, and the file is padded to two digits',
+    );
+  });
+
+  test('a phase heading drops the digit the decrement drops', () => {
+    writeRoadmap(NINE_TO_TEN);
+    writePhases(NINE_TO_TEN_DIRS);
+
+    const result = runGsdTools('phase remove 8 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(phaseDirs(), ['08-nine', '09-ten', '10-eleven']);
+    assert.deepStrictEqual(
+      roadmapLines(/^#{2,4} Phase/),
+      ['### Phase 8: Nine', '### Phase 9: Ten', '### Phase 10: Eleven'],
+      'a heading is written at its natural width, so 10 becomes 9 and not 09',
+    );
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] Phase/), [
+      '- [ ] Phase 8: Nine',
+      '- [ ] Phase 9: Ten',
+      '- [ ] Phase 10: Eleven',
+    ]);
+  });
+
+  test('an integer removal carries the decimal and letter phases with it', () => {
+    writeRoadmap([
+      '# Roadmap',
+      '',
+      '## Roadmap v0.1: Current',
+      '',
+      '- [ ] Phase 1: One',
+      '- [ ] Phase 2: Two',
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3.1: Urgent',
+      '- [ ] Phase 3A: Sidecar',
+      '- [ ] Phase 4: Four',
+      '- [ ] Phase 4.2: Later',
+      '',
+      '| Phase | Plans | Status | Completed |',
+      '|-------|-------|--------|-----------|',
+      '| 1. One | 0/0 | Pending | - |',
+      '| 3. Three | 0/0 | Pending | - |',
+      '| 3.1. Urgent | 0/0 | Pending | - |',
+      '| 3A. Sidecar | 0/0 | Pending | - |',
+      '| 4. Four | 0/0 | Pending | - |',
+      '| 4.2. Later | 0/0 | Pending | - |',
+      '',
+      '### Phase 1: One',
+      '',
+      '### Phase 3: Three',
+      '',
+      '### Phase 3.1: Urgent',
+      'Plans:',
+      '- [ ] 03.1-01: urgent',
+      '',
+      '### Phase 3A: Sidecar',
+      'Plans:',
+      '- [ ] 03A-01: sidecar',
+      '',
+      '### Phase 4: Four',
+      '**Depends on:** Phase 3.1',
+      '',
+      '### Phase 4.2: Later',
+      '',
+    ]);
+    writePhases({
+      '01-one': [],
+      '02-two': [],
+      '03-three': [],
+      '03.1-urgent': ['03.1-01-PLAN.md'],
+      '03A-sidecar': ['03A-01-PLAN.md'],
+      '04-four': [],
+      '04.2-later': [],
+    });
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(phaseDirs(), [
+      '01-one',
+      '02-three',
+      '02.1-urgent',
+      '02A-sidecar',
+      '03-four',
+      '03.2-later',
+    ]);
+    assert.deepStrictEqual(
+      headingIds(),
+      directoryIds(),
+      'ROADMAP.md and the phase directories name the same phases',
+    );
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] Phase/), [
+      '- [ ] Phase 1: One',
+      '- [ ] Phase 2: Three',
+      '- [ ] Phase 2.1: Urgent',
+      '- [ ] Phase 2A: Sidecar',
+      '- [ ] Phase 3: Four',
+      '- [ ] Phase 3.2: Later',
+    ]);
+    assert.deepStrictEqual(roadmapLines(/^\| \d/), [
+      '| 1. One | 0/0 | Pending | - |',
+      '| 2. Three | 0/0 | Pending | - |',
+      '| 2.1. Urgent | 0/0 | Pending | - |',
+      '| 2A. Sidecar | 0/0 | Pending | - |',
+      '| 3. Four | 0/0 | Pending | - |',
+      '| 3.2. Later | 0/0 | Pending | - |',
+    ]);
+    assert.deepStrictEqual(planFiles(), [
+      '02.1-01-PLAN.md',
+      '02A-01-PLAN.md',
+    ]);
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] \d/), [
+      '- [ ] 02.1-01: urgent',
+      '- [ ] 02A-01: sidecar',
+    ]);
+    assert.deepStrictEqual(
+      roadmapLines(/^\*\*Depends on:/),
+      ['**Depends on:** Phase 2.1'],
+      'a dependency and the heading it names move together',
+    );
+  });
+
+  test('removing a decimal renumbers its siblings in both records', () => {
+    writeRoadmap([
+      '# Roadmap',
+      '',
+      '## Roadmap v0.1: Current',
+      '',
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3.1: A',
+      '- [ ] Phase 3.2: B',
+      '- [ ] Phase 3.3: C',
+      '- [ ] Phase 4: Four',
+      '',
+      '| Phase | Plans | Status | Completed |',
+      '|-------|-------|--------|-----------|',
+      '| 3. Three | 0/0 | Pending | - |',
+      '| 3.1. A | 0/0 | Pending | - |',
+      '| 3.2. B | 0/0 | Pending | - |',
+      '| 3.3. C | 0/0 | Pending | - |',
+      '| 4. Four | 0/0 | Pending | - |',
+      '',
+      '### Phase 3: Three',
+      '',
+      '### Phase 3.1: A',
+      '',
+      '### Phase 3.2: B',
+      'Plans:',
+      '- [ ] 03.2-01: bee',
+      '',
+      '### Phase 3.3: C',
+      '',
+      '### Phase 4: Four',
+      '**Depends on:** Phase 3.3',
+      '',
+    ]);
+    writePhases({
+      '03-three': [],
+      '03.1-a': [],
+      '03.2-b': ['03.2-01-PLAN.md'],
+      '03.3-c': [],
+      '04-four': [],
+    });
+
+    const result = runGsdTools('phase remove 3.1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(phaseDirs(), [
+      '03-three',
+      '03.1-b',
+      '03.2-c',
+      '04-four',
+    ]);
+    assert.deepStrictEqual(
+      headingIds(),
+      directoryIds(),
+      'ROADMAP.md and the phase directories name the same phases',
+    );
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] Phase/), [
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3.1: B',
+      '- [ ] Phase 3.2: C',
+      '- [ ] Phase 4: Four',
+    ]);
+    assert.deepStrictEqual(roadmapLines(/^\| \d/), [
+      '| 3. Three | 0/0 | Pending | - |',
+      '| 3.1. B | 0/0 | Pending | - |',
+      '| 3.2. C | 0/0 | Pending | - |',
+      '| 4. Four | 0/0 | Pending | - |',
+    ]);
+    assert.deepStrictEqual(planFiles(), ['03.1-01-PLAN.md']);
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] \d/), ['- [ ] 03.1-01: bee']);
+    assert.deepStrictEqual(
+      roadmapLines(/^\*\*Depends on:/),
+      ['**Depends on:** Phase 3.2'],
+      'the integer phase above the siblings is not itself a target',
+    );
+  });
+
+  test('a decimal removal leaves version-like tokens and other bases alone', () => {
+    writeRoadmap([
+      '# Roadmap',
+      '',
+      '## Roadmap v0.1: Current',
+      '',
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3.1: A',
+      '- [ ] Phase 3.2: B',
+      '- [ ] Phase 4.2: Elsewhere',
+      '',
+      '### Phase 3: Three',
+      '',
+      '### Phase 3.1: A',
+      '',
+      '### Phase 3.2: B',
+      '**Goal:** follow ref 3.14-05 under version 1.05-01, shipped 2020-01-01',
+      '',
+      '### Phase 4.2: Elsewhere',
+      '',
+    ]);
+    writePhases({
+      '03-three': [],
+      '03.1-a': [],
+      '03.2-b': [],
+      '04.2-elsewhere': [],
+    });
+
+    const result = runGsdTools('phase remove 3.1 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(phaseDirs(), [
+      '03-three',
+      '03.1-b',
+      '04.2-elsewhere',
+    ]);
+    assert.deepStrictEqual(
+      headingIds(),
+      directoryIds(),
+      'a sibling of another base is not a sibling',
+    );
+    assert.match(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      /follow ref 3\.14-05 under version 1\.05-01, shipped 2020-01-01/,
+      'a version-like token is not a phase reference',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The phase section a removal deletes ends where the next section begins. Ended
+// at the next phase header or the end of the file, removing the last phase in
+// the list deleted everything below it — the progress table the very next
+// rewrite then reported as a target it could not reach, and whatever else the
+// roadmap carried after that.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove deletes one phase section, not the file below it', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 3: Gamma',
+        '',
+        '## Phase Details',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** a',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** b',
+        '',
+        '### Phase 3: Gamma',
+        '**Goal:** g',
+        '',
+        '## Progress',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 1. Alpha | 0/0 | Pending | - |',
+        '| 2. Beta | 0/0 | Pending | - |',
+        '| 3. Gamma | 0/0 | Pending | - |',
+        '',
+        '## Notes',
+        '',
+        'Keep me.',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('removing the highest-numbered phase leaves the sections below it', () => {
+    const result = runGsdTools('phase remove 3 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^#{2,4} /.test(l)),
+      [
+        '## Roadmap v0.1: Current',
+        '## Phase Details',
+        '### Phase 1: Alpha',
+        '### Phase 2: Beta',
+        '## Progress',
+        '## Notes',
+      ],
+      'only the removed phase section goes',
+    );
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^\| \d\./.test(l)),
+      ['| 1. Alpha | 0/0 | Pending | - |', '| 2. Beta | 0/0 | Pending | - |'],
+      'the surviving phases keep their progress rows',
+    );
+    assert.match(roadmap, /^Keep me\.$/m, 'a later section is not a phase');
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'the progress table was reachable, and was reached',
+    );
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A shipped milestone's phases keep their progress rows outside the <details>
+// that collapses the rest of it, so a phase number that belongs to the archive
+// is named in the region every probe reads as current. Accepted on that
+// evidence, the removal deleted a shipped phase's row and shifted the archive
+// and the live phases together, and reported all of it as clean.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove refuses a phase belonging to a shipped milestone', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    for (const dir of ['04-delta', '05-epsilon']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '<details>',
+        '<summary>v0.1 — Legacy (Shipped) — Phases 1-3</summary>',
+        '',
+        '## Roadmap v0.1: Legacy',
+        '',
+        '- [x] **Phase 1: Ancient**',
+        '- [x] **Phase 2: Older**',
+        '- [x] **Phase 3: Oldest**',
+        '',
+        '</details>',
+        '',
+        '## Progress',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 1. Ancient | 1/1 | Complete | 2020-01-01 |',
+        '| 2. Older | 1/1 | Complete | 2020-02-01 |',
+        '| 3. Oldest | 1/1 | Complete | 2020-03-01 |',
+        '| 4. Delta | 0/0 | Pending | - |',
+        '| 5. Epsilon | 0/0 | Pending | - |',
+        '',
+        '## Roadmap v0.2: Current',
+        '',
+        '- [ ] **Phase 4: Delta**',
+        '- [ ] **Phase 5: Epsilon**',
+        '',
+        '### Phase 4: Delta',
+        '**Goal:** d',
+        '',
+        '### Phase 5: Epsilon',
+        '**Goal:** e',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('leaves the shipped row and the live phases exactly as they were', () => {
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+
+    assert.strictEqual(
+      result.success,
+      false,
+      'a shipped phase is not the current milestone’s to renumber',
+    );
+    assert.match(result.stderr, /shipped|archived/i);
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      before,
+      'neither the archived rows nor the live phases may shift',
+    );
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort(),
+      ['04-delta', '05-epsilon'],
+    );
+  });
+
+  test('a phase number nothing names at all is still a reported no-op', () => {
+    const result = runGsdTools('phase remove 9 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).found, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A letter phase is a sidecar hung off an integer, not the integer itself.
+// Parsed with parseInt it read as the integer, and removing one ran the
+// integer renumbering: every phase above it moved down onto a number that was
+// never vacated, leaving two directories parsing as the same phase.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove on a letter phase', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 2: Two',
+        '- [ ] Phase 3: Three',
+        '- [ ] Phase 3A: Sidecar',
+        '- [ ] Phase 3B: Later',
+        '- [ ] Phase 4: Four',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 2. Two | 0/0 | Pending | - |',
+        '| 3. Three | 0/0 | Pending | - |',
+        '| 3A. Sidecar | 0/0 | Pending | - |',
+        '| 3B. Later | 0/0 | Pending | - |',
+        '| 4. Four | 0/0 | Pending | - |',
+        '',
+        '### Phase 3: Three',
+        '### Phase 3A: Sidecar',
+        '### Phase 3B: Later',
+        '### Phase 4: Four',
+        '',
+      ].join('\n'),
+    );
+    for (const [dir, files] of Object.entries({
+      '02-two': [],
+      '03-three': ['03-01-PLAN.md'],
+      '03A-sidecar': ['03A-01-PLAN.md'],
+      '03B-later': ['03B-01-PLAN.md'],
+      '04-four': ['04-01-PLAN.md'],
+    })) {
+      const full = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(full, { recursive: true });
+      for (const f of files) fs.writeFileSync(path.join(full, f), '# plan\n');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('removes the sidecar and leaves every other phase where it was', () => {
+    const result = runGsdTools('phase remove 3A --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort(),
+      ['02-two', '03-three', '03B-later', '04-four'],
+      'no phase above the sidecar moves onto a number nothing vacated',
+    );
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, '.planning', 'phases', '04-four')),
+      ['04-01-PLAN.md'],
+      'and its plans keep their names',
+    );
+    assert.deepStrictEqual(roadmap.split('\n').filter((l) => /^- \[/.test(l)), [
+      '- [ ] Phase 2: Two',
+      '- [ ] Phase 3: Three',
+      '- [ ] Phase 3B: Later',
+      '- [ ] Phase 4: Four',
+    ]);
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^\| \d/.test(l)),
+      [
+        '| 2. Two | 0/0 | Pending | - |',
+        '| 3. Three | 0/0 | Pending | - |',
+        '| 3B. Later | 0/0 | Pending | - |',
+        '| 4. Four | 0/0 | Pending | - |',
+      ],
+    );
+    assert.deepStrictEqual(roadmap.split('\n').filter((l) => /^#{2,4} Phase/.test(l)), [
+      '### Phase 3: Three',
+      '### Phase 3B: Later',
+      '### Phase 4: Four',
+    ]);
+    assert.deepStrictEqual(
+      output.renamed_directories,
+      [],
+      'a sidecar leaves a gap, and a gap is not a renumbering',
+    );
+    assert.deepStrictEqual(output.roadmap_withheld, []);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The hint that comes back with a withheld renumbering names the record the
+// operator has to reconcile. It claimed the phase directories had been
+// renumbered whether or not any had been, which sends the reader to look for
+// damage in the one record that is intact.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the withheld-renumbering hint names what actually moved', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('says nothing was renumbered when no directory needed renumbering', () => {
+    // The removed phase is the highest on disk, so nothing follows it there.
+    // ROADMAP.md names a phase above it whose section the removal cannot
+    // reach, which is what withholds the renumbering.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 3: Cee',
+        '- [ ] Phase 4: Dee',
+        '- [ ] Phase 5: Eee',
+        '',
+        '### Phase 3: Cee',
+        '',
+        '### Phase 4 - Dee',
+        '',
+        '### Phase 5: Eee',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['03-cee', '04-dee']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 4 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.deepStrictEqual(output.renamed_directories, []);
+    assert.deepStrictEqual(output.roadmap_withheld, ['renumber']);
+    assert.doesNotMatch(
+      output.roadmap_withheld_hint,
+      /directories have been renumbered/,
+      'no directory moved, so the hint must not send the reader looking for one',
+    );
+  });
+});
