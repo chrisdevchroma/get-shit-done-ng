@@ -1448,6 +1448,176 @@ function cmdStateAdjustQuickTable(cwd) {
   output(result);
 }
 
+const QUICK_TABLE_HEADER =
+  '| # | Description | Date | Commit | Status | Directory |\n' +
+  '|---|-------------|------|--------|--------|-----------|';
+
+/** One line of text: a newline in a value would end the row it sits in. */
+function quickText(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/\r?\n/g, ' ')
+    .trim();
+}
+
+/** A cell's text, with pipes escaped so none of them closes the cell early. */
+function quickCell(value) {
+  return quickText(value).replace(/\|/g, '\\|');
+}
+
+/**
+ * Fill a row from the table's own header, so a table that predates a column keeps
+ * its shape. A header cell nobody recognises gets an empty value rather than the
+ * next value along, which would silently shift every field one column over.
+ */
+function quickRowFor(headerCells, values) {
+  const byColumn = {
+    '#': values.id,
+    id: values.id,
+    task: values.id,
+    description: values.description,
+    date: values.date,
+    commit: values.commit,
+    status: values.status,
+    directory: values.directory,
+  };
+  const cells = headerCells.map((name) => {
+    const value = byColumn[name.trim().toLowerCase()];
+    return ` ${quickCell(value)} `;
+  });
+  return `|${cells.join('|')}|`;
+}
+
+function quickHeaderCells(headerLine) {
+  return headerLine
+    .split('|')
+    .slice(1, -1)
+    .map((c) => c.trim());
+}
+
+/**
+ * Record a completed quick task in the Quick Tasks Completed table.
+ *
+ * The quick workflow used to do this itself: read STATE.md, then edit it. That is
+ * a read-modify-write outside the lock, and one of those voids the lock for every
+ * command that takes it — a `state add-decision` overlapping it reports success
+ * and loses its entry. The table's shape (whether it carries a Status column) is
+ * decided here rather than by the caller, because the caller cannot read the file
+ * and act on it as one step.
+ *
+ * @param {string} cwd
+ * @param {object} options - id, description, date, commit, dir, status
+ */
+function cmdStateRecordQuickTask(cwd, options) {
+  return withStateLock(cwd, () => {
+    const { state: statePath } = planningPaths(cwd);
+    if (!fs.existsSync(statePath)) {
+      output({ recorded: false, reason: 'STATE.md not found' }, 'false');
+      return;
+    }
+
+    const { id, date, commit, dir, status } = options;
+    let description = null;
+    try {
+      description = readTextArgOrFile(
+        cwd,
+        options.description,
+        options.description_file,
+        'description',
+      );
+    } catch (err) {
+      output({ recorded: false, reason: err.message }, 'false');
+      return;
+    }
+
+    if (!id || !description) {
+      output(
+        { recorded: false, reason: '--id and --description are required' },
+        'false',
+      );
+      return;
+    }
+
+    // Escaping belongs to quickRowFor, which is the only place the values become
+    // cells; escaping here too would put a backslash in the Last Activity line.
+    const dirName = quickText(dir);
+    const values = {
+      id: quickText(id),
+      description: quickText(description),
+      date: quickText(date),
+      commit: quickText(commit),
+      status: quickText(status),
+      directory: dirName ? `[${dirName}](./quick/${dirName}/)` : '',
+    };
+
+    let content = fs.readFileSync(statePath, 'utf-8');
+    const heading = content.match(QUICK_TASKS_HEADING);
+    let section;
+    let row;
+
+    if (!heading) {
+      row = quickRowFor(
+        quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
+        values,
+      );
+      const block = `### Quick Tasks Completed\n\n${QUICK_TABLE_HEADER}\n${row}`;
+      const blockers = content.match(sectionPattern(BLOCKER_HEADINGS, '###?'));
+      if (blockers) {
+        const at = blockers.index + blockers[0].length;
+        content =
+          content.slice(0, at).replace(/\s*$/, '\n\n') +
+          block +
+          content.slice(at).replace(/^\s*/, '\n\n');
+        section = 'created';
+      } else {
+        content = content.replace(/\s*$/, '\n\n') + block + '\n';
+        section = 'appended';
+      }
+    } else {
+      const at = heading.index + heading[0].length;
+      const lines = content.slice(at).split('\n');
+      const headerIdx = findTableHeaderIndex(lines);
+      if (headerIdx === -1) {
+        row = quickRowFor(
+          quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
+          values,
+        );
+        lines.splice(0, 0, '', ...QUICK_TABLE_HEADER.split('\n'), row);
+        section = 'table_created';
+      } else {
+        row = quickRowFor(quickHeaderCells(lines[headerIdx]), values);
+        let end = headerIdx + 1;
+        while (end < lines.length && lines[end].trimStart().startsWith('|')) {
+          end++;
+        }
+        lines.splice(end, 0, row);
+        section = 'existing';
+      }
+      content = content.slice(0, at) + lines.join('\n');
+    }
+
+    const applied = stateReplaceFields(content, [
+      ['Last Activity', values.date || null],
+      [
+        'Last Activity Description',
+        `Completed quick task ${values.id}: ${values.description}`,
+      ],
+    ]);
+    content = applied.content;
+
+    writeStateMd(statePath, content, cwd);
+    output(
+      {
+        recorded: true,
+        id: values.id,
+        section,
+        row,
+        fields_updated: applied.updated,
+      },
+      'true',
+    );
+  });
+}
+
 module.exports = {
   QUICK_TASKS_HEADING,
   findTableHeaderIndex,
@@ -1477,4 +1647,5 @@ module.exports = {
   cmdStateBeginPhase,
   adjustQuickTable,
   cmdStateAdjustQuickTable,
+  cmdStateRecordQuickTask,
 };

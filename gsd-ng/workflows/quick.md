@@ -646,56 +646,39 @@ Store as `$VERIFICATION_STATUS`.
 
 **Step 7: Update STATE.md**
 
-Update STATE.md with quick task completion record.
+Record the quick task in STATE.md's "Quick Tasks Completed" table.
 
-The `init quick` command (Step 1) already detected the table format and migrated it if `--verify` was used. The `table_has_status` field from init JSON determines which row format to use.
+**Never edit STATE.md by hand here.** Parallel executors and other GSD commands
+write the same file under a lock; a read-then-Edit from this workflow overlapping
+one of them discards its entry and reports success. `state record-quick-task` does
+the read, the append and the "Last Activity" update as one locked step, and it
+decides the table's shape itself — create the section if it is missing, match the
+existing header if it is there.
 
-**7a. Check if "Quick Tasks Completed" section exists:**
+```bash
+task_commit=$(git rev-parse --short HEAD)
 
-Read STATE.md and check for `### Quick Tasks Completed` section.
-
-**7b. If section doesn't exist, create it:**
-
-Insert after `### Blockers/Concerns` section:
-
-**If `table_has_status` (from init JSON):**
-```markdown
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Status | Directory |
-|---|-------------|------|--------|--------|-----------|
+node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
+  --id "${quick_id}" \
+  --description "${DESCRIPTION}" \
+  --date "${date}" \
+  --commit "${task_commit}" \
+  --dir "${quick_id}-${slug}" \
+  --status "${VERIFICATION_STATUS}" \
+  --json
 ```
 
-**If NOT `table_has_status`:**
-```markdown
-### Quick Tasks Completed
+`--status` carries `$VERIFICATION_STATUS` when `$VERIFY_MODE`; omit the flag
+otherwise. Omit it too when the table has no Status column — the command drops the
+value rather than shifting the other cells, so passing it is harmless.
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-```
+Check the result:
 
-**7c. Append new row to table:**
-
-Use `date` from init:
-
-**If `table_has_status` (from init JSON):**
-```markdown
-| ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | ${VERIFICATION_STATUS} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
-```
-
-**If NOT `table_has_status`:**
-```markdown
-| ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
-```
-
-**7d. Update "Last activity" line:**
-
-Use `date` from init:
-```
-Last activity: ${date} - Completed quick task ${quick_id}: ${DESCRIPTION}
-```
-
-Use Edit tool to make these changes atomically
+| Output | Meaning | Action |
+|--------|---------|--------|
+| `"recorded": true` | Row appended, Last Activity updated | Continue to step 8 |
+| `"recorded": false` with `"reason": "STATE.md not found"` | No project state to record into | Report it and continue to step 8 — the task itself is done |
+| `"recorded": false`, other reason | The arguments were rejected | Fix the flags and re-run; do not fall back to editing STATE.md |
 
 ---
 
