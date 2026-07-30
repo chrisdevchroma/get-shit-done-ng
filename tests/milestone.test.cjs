@@ -7,7 +7,12 @@ const assert = require('node:assert');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const {
+  runGsdTools,
+  createTempProject,
+  cleanup,
+  waitForReadyFlag,
+} = require('./helpers.cjs');
 const {
   formatMilestoneHeading,
   parseCompletedMilestones,
@@ -1508,11 +1513,7 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     child.stderr.on('data', (d) => (stderr += d));
     const exited = new Promise((r) => child.on('close', r));
 
-    const deadline = Date.now() + 10000;
-    while (!fs.existsSync(readyFlag)) {
-      assert.ok(Date.now() < deadline, 'the child never started');
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await waitForReadyFlag(readyFlag, 'the child');
 
     // A window far wider than the read-and-rewrite the command performs; the
     // lock, not the clock, is what keeps the child out.

@@ -12,7 +12,7 @@ const {
   createTempProject,
   cleanup,
   cleanupSubdir,
-  TOOLS_PATH,
+  waitForReadyFlag,
 } = require('./helpers.cjs');
 
 // Direct-invocation helper for branches unreachable through validateArgs.
@@ -6248,16 +6248,32 @@ describe('phase add and insert milestone scoping', () => {
 //
 // The lock is held by the test process, so the child's wait is guaranteed rather
 // than raced for: it cannot write until the holder lets go, whatever the timing.
+// The child announces itself through a flag file so the window is measured from a
+// process that is loaded and running, and each case also asserts the write lands
+// once the lock is free, so a child that did nothing at all fails too.
 
 describe('ROADMAP.md mutations wait for the lock', () => {
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, command, ...rest] = process.argv.slice(1);
+    const phase = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    if (command === 'add') phase.cmdPhaseAdd(cwd, rest[0]);
+    else if (command === 'insert') phase.cmdPhaseInsert(cwd, rest[0], rest[1]);
+    else if (command === 'remove') phase.cmdPhaseRemove(cwd, rest[0], { force: true });
+    else phase.cmdPhaseComplete(cwd, rest[0]);
+  `;
+
   let tmpDir;
   let roadmapPath;
   let lockPath;
+  let readyFlag;
 
   beforeEach(() => {
     tmpDir = createTempProject();
     roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
     lockPath = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
     fs.writeFileSync(
       roadmapPath,
       [
@@ -6296,10 +6312,26 @@ describe('ROADMAP.md mutations wait for the lock', () => {
   });
 
   const CASES = [
-    { label: 'phase add', args: ['phase', 'add', 'Gamma'] },
-    { label: 'phase insert', args: ['phase', 'insert', '1', 'Urgent'] },
-    { label: 'phase remove', args: ['phase', 'remove', '2', '--force'] },
-    { label: 'phase complete', args: ['phase', 'complete', '1'] },
+    {
+      label: 'phase add',
+      args: ['add', 'Gamma'],
+      landed: (text) => text.includes('### Phase 3: Gamma'),
+    },
+    {
+      label: 'phase insert',
+      args: ['insert', '1', 'Urgent'],
+      landed: (text) => text.includes('### Phase 01.1: Urgent (INSERTED)'),
+    },
+    {
+      label: 'phase remove',
+      args: ['remove', '2'],
+      landed: (text) => !text.includes('Phase 2: Beta'),
+    },
+    {
+      label: 'phase complete',
+      args: ['complete', '1'],
+      landed: (text) => /- \[x\] Phase 1: Alpha/.test(text),
+    },
   ];
 
   for (const c of CASES) {
@@ -6314,14 +6346,19 @@ describe('ROADMAP.md mutations wait for the lock', () => {
         }),
       );
 
-      const child = spawn(process.execPath, [TOOLS_PATH, ...c.args], {
-        cwd: tmpDir,
-        stdio: ['ignore', 'ignore', 'pipe'],
-      });
+      const child = spawn(
+        process.execPath,
+        ['-e', CHILD_SRC, '--', PHASE_LIB, tmpDir, readyFlag, ...c.args],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
       let stderr = '';
       child.stderr.on('data', (d) => (stderr += d));
       const exited = new Promise((r) => child.on('close', r));
 
+      await waitForReadyFlag(readyFlag, `${c.label} child`);
+
+      // A window far wider than the read-and-rewrite the command performs; the
+      // lock, not the clock, is what keeps the child out.
       await new Promise((r) => setTimeout(r, 600));
       assert.strictEqual(
         fs.readFileSync(roadmapPath, 'utf-8'),
@@ -6332,10 +6369,16 @@ describe('ROADMAP.md mutations wait for the lock', () => {
       fs.unlinkSync(lockPath);
       const code = await exited;
       assert.strictEqual(code, 0, `${c.label} should succeed: ${stderr.trim()}`);
+
+      const after = fs.readFileSync(roadmapPath, 'utf-8');
       assert.notStrictEqual(
-        fs.readFileSync(roadmapPath, 'utf-8'),
+        after,
         before,
         `${c.label} should have rewritten ROADMAP.md once the lock was free`,
+      );
+      assert.ok(
+        c.landed(after),
+        `${c.label} should have written its update: ${after}`,
       );
     });
   }
@@ -6466,11 +6509,7 @@ describe('STATE.md mutations wait for the lock', () => {
       child.stderr.on('data', (d) => (stderr += d));
       const exited = new Promise((r) => child.on('close', r));
 
-      const deadline = Date.now() + 10000;
-      while (!fs.existsSync(readyFlag)) {
-        assert.ok(Date.now() < deadline, `${c.label} child never started`);
-        await new Promise((r) => setTimeout(r, 5));
-      }
+      await waitForReadyFlag(readyFlag, `${c.label} child`);
 
       // A window far wider than the read-and-rewrite the command performs; the
       // lock, not the clock, is what keeps the child out.

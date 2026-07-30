@@ -14,6 +14,7 @@ const {
   createTempProject,
   cleanup,
   cleanupSubdir,
+  waitForReadyFlag,
 } = require('./helpers.cjs');
 
 // ─── Helpers for setting up minimal valid projects ────────────────────────────
@@ -3281,11 +3282,7 @@ describe('validate health --repair waits for the STATE.md lock', () => {
     child.stderr.on('data', (d) => (stderr += d));
     const exited = new Promise((r) => child.on('close', r));
 
-    const deadline = Date.now() + 10000;
-    while (!fs.existsSync(readyFlag)) {
-      assert.ok(Date.now() < deadline, 'the child never started');
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await waitForReadyFlag(readyFlag, 'the child');
 
     // A window far wider than the scan and rewrite the repair performs; the
     // lock, not the clock, is what keeps the child out.
