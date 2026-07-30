@@ -2325,11 +2325,17 @@ describe('withFileLock', () => {
   `;
 
   function waitForFlag(flagPath) {
-    return new Promise((resolve) => {
+    const deadline = Date.now() + 10000;
+    return new Promise((resolve, reject) => {
       const timer = setInterval(() => {
         if (fs.existsSync(flagPath)) {
           clearInterval(timer);
           resolve();
+          return;
+        }
+        if (Date.now() >= deadline) {
+          clearInterval(timer);
+          reject(new Error('the child never started'));
         }
       }, 5);
     });
