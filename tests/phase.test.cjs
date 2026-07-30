@@ -8118,3 +8118,86 @@ describe('phase remove rewrites only what is a phase reference', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE.md carries the position as well as the count. Decrementing the count
+// alone left the file describing a position that cannot exist — phase 4 of 3 —
+// while the phase that had been 4 was by then 3.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove renumbers the position in STATE.md', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: One',
+        '- [ ] Phase 2: Two',
+        '- [ ] Phase 3: Three',
+        '- [ ] Phase 4: Four',
+        '',
+        '### Phase 3: Three',
+        '### Phase 4: Four',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-one', '02-two', '03-three', '04-four']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const readState = () =>
+    fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+  test('moves the current phase down with the phase it names', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 4 of 4 (Four)\n**Total Phases:** 4\n',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = readState();
+    assert.ok(
+      state.includes('**Current Phase:** 3 of 3 (Four)'),
+      `the phase named Four is now 3, and 4 of 3 is no position at all (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Total Phases:** 3'),
+      `the count still has to fall (got: ${state})`,
+    );
+  });
+
+  test('decrements a total that nothing follows', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 1 of 5\n**Total Phases**: 5\n',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = readState();
+    assert.ok(
+      state.includes('**Current Phase:** 1 of 4'),
+      `a total at end of line is still a total (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Total Phases**: 4'),
+      `the colon outside the bold markers spells the same field (got: ${state})`,
+    );
+  });
+});

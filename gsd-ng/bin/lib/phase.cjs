@@ -1393,6 +1393,27 @@ function decimalSiblingShift(baseId, removedDecimal) {
 }
 
 /**
+ * Move STATE.md's current position by the same mapping the records moved by.
+ *
+ * The canonical file spells the position and the count as separate fields, one
+ * fact per line. A compound `4 of 4 (Four)` is the form that replaced, and both
+ * of its facts have to move together: the position because the phase it names
+ * has a new number, the count because there is one phase fewer. A count this
+ * carries is the same count `Total Phases` states, so whichever the file
+ * carries is decremented once and only once.
+ */
+function shiftStatePosition(value, shiftId) {
+  const renumbered = value.replace(
+    /^\d+[A-Za-z]?(?:\.\d+)*/,
+    (id) => shiftId(id, 'phase') ?? id,
+  );
+  return renumbered.replace(/(\bof\s+)(\d+)/i, (whole, lead, total) => {
+    const remaining = parseInt(total, 10) - 1;
+    return remaining >= 0 ? `${lead}${remaining}` : whole;
+  });
+}
+
+/**
  * Shift every phase reference `shiftId` claims, leaving the rest alone.
  *
  * One pass over the identifiers, each judged by the text as it was read and
@@ -1897,15 +1918,37 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
                 `${newTotal}${totalMatch[2]}`,
               ) || stateContent;
           }
-          // Update "Phase: X of Y" pattern
-          const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
-          const ofMatch = stateContent.match(ofPattern);
-          if (ofMatch) {
-            const oldTotal = parseInt(ofMatch[2], 10);
-            stateContent = stateContent.replace(
-              ofPattern,
-              `$1${oldTotal - 1}$3`,
-            );
+          // The position moves with the phase it names, by the same mapping the
+          // directories and the document were renumbered by. Decrementing the
+          // count alone left the file describing a position that cannot exist —
+          // phase 4 of 3 — while the phase that had been 4 was by then 3, and
+          // reported the whole thing as a state update that landed.
+          const positionRaw = stateExtractField(stateContent, 'Current Phase');
+          const carriesTotal =
+            positionRaw !== null && /\bof\s+\d+/i.test(positionRaw);
+          if (positionRaw !== null && shiftId) {
+            const position = shiftStatePosition(positionRaw, shiftId);
+            if (position !== positionRaw) {
+              stateContent =
+                stateReplaceField(stateContent, 'Current Phase', position) ||
+                stateContent;
+            }
+          }
+          // A STATE.md written before one fact per line was settled carries the
+          // count on a free-form line of its own instead. Read document-wide,
+          // and so only where the position above did not already carry it: run
+          // over a compound Current Phase this has just rewritten, it would
+          // decrement the same count a second time.
+          if (!carriesTotal) {
+            const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
+            const ofMatch = stateContent.match(ofPattern);
+            if (ofMatch) {
+              const oldTotal = parseInt(ofMatch[2], 10);
+              stateContent = stateContent.replace(
+                ofPattern,
+                `$1${oldTotal - 1}$3`,
+              );
+            }
           }
           writeStateMd(statePath, stateContent, cwd);
         });
