@@ -3281,13 +3281,34 @@ describe('getMilestonePhaseFilter checkbox forms', () => {
 //   1. no module that acquires B may *reach* a module that acquires A,
 //      transitively through requires;
 //   2. no B section may call a function that reaches an A acquisition, however
-//      many hops away that acquisition is.
+//      many hops of calls away that acquisition is.
 //
 // Property 1 excepts a module from itself — phase.cjs takes all three, in that
 // order — which is what property 2 covers.
 //
 // The analysis feeding both is exercised on synthetic sources below so it cannot
 // pass by finding nothing.
+//
+// What property 2 is, exactly, because it reads stronger than it is: the call
+// graph is followed to a fixpoint, the section is not. A section is the lines
+// from its acquisition to the first line indented no further, a call is a name
+// followed by `(`, and a callee resolves only against top-level declarations
+// invoked by their own identifier. A name on the acquisition's own line counts
+// as inside it, which is what covers a section written whole on one line —
+// `validate health --repair` wraps its entire body that way. Not covered:
+//
+//   - object-literal and class methods, which are never chunked at all, so a
+//     lock taken inside one is invisible to both properties; commands.cjs
+//     already dispatches a table of them by computed property;
+//   - a function used as a value rather than called by name — passed as a
+//     callback, aliased through `const f = helper`, or reached by a computed
+//     call like `table[name]()`;
+//   - a column-0 line inside a template literal, which closes a chunk and a
+//     section early, so the rest of the enclosing function goes unchecked.
+//
+// None of those shapes takes a lock today. The guard is worth what it covers: if
+// an acquisition moves into a class method or behind a dispatch table, this
+// stops seeing it and says nothing.
 
 describe('lock ordering', () => {
   const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
@@ -3335,8 +3356,31 @@ describe('lock ordering', () => {
     return chunks.map((c) => ({ ...c, body: c.body.join('\n') }));
   }
 
+  // Called names with the column each was named at, which is what lets one line
+  // be judged as the several nested scopes it can be.
+  function calledNamesAt(text) {
+    return [...text.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => ({
+      name: m[1],
+      at: m.index,
+    }));
+  }
+
   function calledNames(text) {
-    return new Set([...text.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]));
+    return new Set(calledNamesAt(text).map((call) => call.name));
+  }
+
+  // Every acquirer named on `line`, with the column it is named at, in the order
+  // they are named — which is the order they nest in, for the one shape that
+  // nests on a line. A definition is its own declaration, not an acquisition.
+  function acquisitionsOn(line) {
+    const found = [];
+    for (const { lock, dynamic } of LOCK_ORDER) {
+      for (const name of [lock, ...dynamic]) {
+        const at = line.indexOf(`${name}(`);
+        if (at !== -1 && !line.includes(`function ${name}(`)) found.push({ lock, at });
+      }
+    }
+    return found.sort((a, b) => a.at - b.at);
   }
 
   function localRequires(source) {
@@ -3442,6 +3486,14 @@ describe('lock ordering', () => {
     // further than it — and regions nest, so the open ones are a stack and a line
     // is judged against the innermost still open. What is looked for inside is
     // every name in `reaching`, not one literal.
+    //
+    // A line is judged against the acquisitions it makes as well as the region it
+    // is already in, because a section can be the line that opens it: everything
+    // named to the right of an acquirer is inside its section, so
+    // `withStateLock(cwd, () => runHealth(cwd))` puts runHealth under the STATE.md
+    // lock. Judging the line against the enclosing region alone left every
+    // one-line section — the whole of `validate health --repair` among them —
+    // covered by nothing but the formatting that would have split it in two.
     const nestingViolations = [];
     const nestingHosts = new Set(LOCKS.flatMap((lock) => [...holders.get(lock)]));
     for (const host of [...nestingHosts].sort()) {
@@ -3451,24 +3503,37 @@ describe('lock ordering', () => {
         const indent = lines[i].search(/\S/);
         if (indent === -1) continue;
         while (open.length > 0 && indent <= open[open.length - 1].indent) open.pop();
-        const inner = open.length > 0 ? open[open.length - 1].lock : null;
-        if (inner !== null) {
-          const calls = calledNames(lines[i]);
-          for (const outer of outerThan(inner)) {
-            const hit = [...calls].find((call) => reaching.get(outer).has(call));
+        const acquired = acquisitionsOn(lines[i]);
+
+        // The sections this line's calls sit in: the enclosing region covers the
+        // whole line, an acquisition on the line covers what follows it.
+        const sections = [];
+        if (open.length > 0) {
+          sections.push({ lock: open[open.length - 1].lock, from: -1 });
+        }
+        for (const { lock, at } of acquired) sections.push({ lock, from: at });
+
+        const calls = calledNamesAt(lines[i]);
+        let violation = null;
+        for (const { lock, from } of sections) {
+          for (const outer of outerThan(lock)) {
+            const hit = calls.find(
+              (call) => call.at > from && reaching.get(outer).has(call.name),
+            );
             if (hit) {
-              nestingViolations.push(`${host}:${i + 1}: ${hit} reaches ${outer}`);
+              violation = `${host}:${i + 1}: ${hit.name} reaches ${outer}`;
               break;
             }
           }
+          if (violation) break;
         }
-        const opened = LOCK_ORDER.find(({ lock, dynamic }) =>
-          [lock, ...dynamic].some(
-            (name) =>
-              lines[i].includes(`${name}(`) && !lines[i].includes(`function ${name}(`),
-          ),
-        );
-        if (opened) open.push({ indent, lock: opened.lock });
+        if (violation) nestingViolations.push(violation);
+
+        // The innermost of the acquisitions made here governs the lines below it,
+        // and a line that acquires nothing leaves the stack alone.
+        if (acquired.length > 0) {
+          open.push({ indent, lock: acquired[acquired.length - 1].lock });
+        }
       }
     }
 
@@ -3600,6 +3665,46 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(nestingViolations, [
       'phase.cjs:8: takesRoadmap reaches withRoadmapLock',
     ]);
+  });
+
+  test('the analysis flags a section written whole on its line', () => {
+    // A section can be one line, and then it has no line inside it to judge:
+    // `validate health --repair` puts its entire body in the callback on the
+    // line that takes the STATE.md lock. Whether that body is covered was
+    // otherwise a question of where the formatter broke the line.
+    const sources = (call) => ({
+      'core.cjs': ['function withRoadmapLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+      'state.cjs': ['function withStateLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+      'verify.cjs': [
+        "const { withRoadmapLock } = require('./core.cjs');",
+        "const { withStateLock } = require('./state.cjs');",
+        'function runHealth(cwd) {',
+        '  return withRoadmapLock(cwd, () => {});',
+        '}',
+        'function cmdValidateHealth(cwd) {',
+        `  return withStateLock(cwd, () => ${call});`,
+        '}',
+      ].join('\n'),
+    });
+    assert.deepStrictEqual(
+      analyseLockOrdering(sources('runHealth(cwd)')).nestingViolations,
+      ['verify.cjs:7: runHealth reaches withRoadmapLock'],
+      'the callee on the opening line runs inside the lock that line takes',
+    );
+    assert.deepStrictEqual(
+      analyseLockOrdering(sources('withRoadmapLock(cwd, () => {})')).nestingViolations,
+      ['verify.cjs:7: withRoadmapLock reaches withRoadmapLock'],
+      'nesting written on one line is still nesting',
+    );
+    assert.deepStrictEqual(
+      analyseLockOrdering(sources('readState(cwd)')).nestingViolations,
+      [],
+      'a callee that reaches no outer acquisition is not a violation',
+    );
   });
 
   test('the analysis ranks the middle lock against both of the others', () => {
@@ -3763,6 +3868,7 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(closureViolations, []);
     assert.deepStrictEqual(nestingViolations, []);
   });
+
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
