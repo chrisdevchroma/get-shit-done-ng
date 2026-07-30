@@ -2713,9 +2713,12 @@ describe('withFileLock', () => {
     assert.strictEqual(acquired.mode, 'locked');
     const ourIno = fs.statSync(lockPath).ino;
 
+    // No token in the replacement, which is the shape that defeated both the
+    // inode check and a token check that fell back to the inode when the file
+    // on disk carried none.
     fs.writeFileSync(
       lockPath,
-      JSON.stringify({ pid: 999999, host: 'thief', at: 'later', token: 'x' }),
+      JSON.stringify({ pid: 999999, host: 'thief', at: 'later' }),
     );
     assert.strictEqual(
       fs.statSync(lockPath).ino,

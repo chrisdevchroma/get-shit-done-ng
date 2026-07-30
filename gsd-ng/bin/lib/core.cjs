@@ -349,6 +349,7 @@ function tryCreateLock(lockPath) {
   // unlinked and recreated can land on the same inode, so dev+ino alone cannot
   // tell our own lock from a replacement that reused it.
   const token = require('crypto').randomBytes(12).toString('hex');
+  let tokenWritten = false;
   try {
     fs.writeSync(
       fd,
@@ -359,13 +360,18 @@ function tryCreateLock(lockPath) {
         token,
       }),
     );
+    tokenWritten = true;
   } catch {
     // A lock with no readable payload still excludes; it just cannot be
     // liveness-checked, so it falls back to the staleness threshold.
   }
   try {
     const st = fs.fstatSync(fd);
-    identity = { dev: st.dev, ino: st.ino, token };
+    identity = {
+      dev: st.dev,
+      ino: st.ino,
+      token: tokenWritten ? token : null,
+    };
   } catch {
     // Without an identity release falls back to unlinking whatever is there.
   }
@@ -478,12 +484,14 @@ function releaseFileLock(lockPath) {
   return true;
 }
 
-function sameLockFile(a, b) {
-  // The token is decisive when both sides carry one: it is unique per
-  // acquisition, so it distinguishes our lock from a replacement even when the
-  // inode was recycled. dev+ino is the fallback for a payload we could not read.
-  if (a.token && b.token) return a.token === b.token;
-  return a.dev === b.dev && a.ino === b.ino;
+function sameLockFile(present, held) {
+  // When we recorded a token, it is the whole test: the file at the path is ours
+  // only if it still carries that token. A replacement need not carry one at
+  // all, and an inode freed by our unlink can be handed straight back to it, so
+  // dev+ino cannot tell the two apart. Fall back to the inode only when the
+  // payload write failed and we have no token to compare.
+  if (held.token) return present.token === held.token;
+  return present.dev === held.dev && present.ino === held.ino;
 }
 
 function reportLockTakenOver(lockPath) {
