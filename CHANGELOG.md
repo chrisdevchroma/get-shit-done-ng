@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.22] - 2026-07-30
+
 ### Fixed
 
 - A STATE.md writer no longer edits the section *after* the one it was aiming at. Every section match was built from a pattern whose header group ended in `\s*`, which ate the blank line following the heading — so when a section's body was empty the lazy body group could not see the `\n##` that should have terminated it and ran on to the next boundary. Two of the write paths destroyed content rather than misplacing it: `state record-metric` wiped the following section whenever the text it swallowed contained `None yet`, which is what the shipped template carries, and `state resolve-blocker` replaced that section with `None` whenever no bullet survived its filter. Twelve sites now build their pattern from one shared builder whose header group ends at the heading's own newline and whose terminator is `(?=\r?\n#{2}|$)`, with a table-section variant for the quick-task table — its separator class contained `\s` and ate the blank line the same way. The single-site version of this fix shipped in dev.21; the repeated pattern is what let the same defect survive at eleven others.
