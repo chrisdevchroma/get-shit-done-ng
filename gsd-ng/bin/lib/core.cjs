@@ -345,6 +345,10 @@ function tryCreateLock(lockPath) {
     };
   }
   let identity = null;
+  // Identity is carried in the payload as well as the inode: a lock file
+  // unlinked and recreated can land on the same inode, so dev+ino alone cannot
+  // tell our own lock from a replacement that reused it.
+  const token = require('crypto').randomBytes(12).toString('hex');
   try {
     fs.writeSync(
       fd,
@@ -352,6 +356,7 @@ function tryCreateLock(lockPath) {
         pid: process.pid,
         host: require('os').hostname(),
         at: new Date().toISOString(),
+        token,
       }),
     );
   } catch {
@@ -360,7 +365,7 @@ function tryCreateLock(lockPath) {
   }
   try {
     const st = fs.fstatSync(fd);
-    identity = { dev: st.dev, ino: st.ino };
+    identity = { dev: st.dev, ino: st.ino, token };
   } catch {
     // Without an identity release falls back to unlinking whatever is there.
   }
@@ -373,7 +378,8 @@ function tryCreateLock(lockPath) {
 function lockFileIdentity(lockPath) {
   try {
     const st = fs.statSync(lockPath);
-    return { dev: st.dev, ino: st.ino };
+    const holder = readLockHolder(lockPath);
+    return { dev: st.dev, ino: st.ino, token: holder ? holder.token : null };
   } catch {
     return null;
   }
@@ -473,6 +479,10 @@ function releaseFileLock(lockPath) {
 }
 
 function sameLockFile(a, b) {
+  // The token is decisive when both sides carry one: it is unique per
+  // acquisition, so it distinguishes our lock from a replacement even when the
+  // inode was recycled. dev+ino is the fallback for a payload we could not read.
+  if (a.token && b.token) return a.token === b.token;
   return a.dev === b.dev && a.ino === b.ino;
 }
 

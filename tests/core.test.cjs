@@ -2703,6 +2703,44 @@ describe('withFileLock', () => {
     assert.match(chunks.join(''), /lock on STATE\.md was taken over/);
   });
 
+  test('a holder does not unlink a replacement that reused the inode', () => {
+    // CI caught this where a local run could not: the allocator handed the
+    // replacement the inode the original had just freed, so a dev+ino check
+    // read the thief's lock as our own and deleted it. Rewriting in place
+    // reproduces that on any filesystem.
+    const lockPath = lockPathFor(target);
+    const acquired = acquireFileLock(lockPath);
+    assert.strictEqual(acquired.mode, 'locked');
+    const ourIno = fs.statSync(lockPath).ino;
+
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999999, host: 'thief', at: 'later', token: 'x' }),
+    );
+    assert.strictEqual(
+      fs.statSync(lockPath).ino,
+      ourIno,
+      'an in-place rewrite must keep the inode for this test to mean anything',
+    );
+
+    const originalWrite = process.stderr.write;
+    const chunks = [];
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    let removed;
+    try {
+      removed = releaseFileLock(lockPath);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.strictEqual(removed, false);
+    assert.strictEqual(fs.existsSync(lockPath), true);
+    assert.match(chunks.join(''), /lock on STATE\.md was taken over/);
+  });
+
   test('a section outlasting the staleness threshold keeps a second process out', async () => {
     // The window is opened and closed by this test: the child announces that it
     // is inside its section, and only leaves it once the go flag is written,
