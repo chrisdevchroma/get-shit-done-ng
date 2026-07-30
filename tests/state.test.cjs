@@ -2718,6 +2718,49 @@ describe('state record-quick-task', () => {
     );
   });
 
+  test('a STATE.md with no Blockers section gets the section at the end', () => {
+    fs.writeFileSync(statePath, '# Project State\n\n**Last Activity:** none\n');
+    const output = JSON.parse(record().output);
+    assert.strictEqual(output.section, 'appended', 'nowhere else to put it');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.match(content, /### Quick Tasks Completed/);
+    assert.match(content, /\| 260730-8id \|/);
+  });
+
+  test('a section that has lost its table gets one', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED + '\n### Quick Tasks Completed\n\nNo table here yet.\n',
+    );
+    const output = JSON.parse(record().output);
+    assert.strictEqual(output.section, 'table_created', 'should add the table');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.strictEqual(
+      (content.match(/### Quick Tasks Completed/g) || []).length,
+      1,
+      `the existing section is reused, not duplicated: ${content}`,
+    );
+    assert.ok(
+      content.indexOf('| 260730-8id |') < content.indexOf('No table here yet.'),
+      `the table belongs at the top of the section: ${content}`,
+    );
+  });
+
+  test('an unreadable description file is reported, not written', () => {
+    const result = runGsdTools(
+      'state record-quick-task --id 260730-8id --description-file missing.md --json',
+      tmpDir,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.recorded, false, 'should reject the call');
+    assert.ok(
+      !fs.readFileSync(statePath, 'utf-8').includes('260730-8id'),
+      'nothing should have been written',
+    );
+  });
+
   test('a pipe in the description cannot break the row', () => {
     const result = runGsdTools(
       'state record-quick-task --id 260730-8id --description "a | b" --json',
