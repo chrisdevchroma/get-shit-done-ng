@@ -36,6 +36,7 @@ const {
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const {
+  withStateLock,
   writeStateMd,
   stateExtractField,
   stateReplaceField,
@@ -1537,32 +1538,36 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       writeFileAtomic(roadmapPath, roadmapContent);
     }
 
-    // Update STATE.md phase count
+    // Update STATE.md phase count. Locked across the read: the new count is the
+    // count this reads minus one, so a read that loses its window does not just
+    // drop a concurrent writer's entry, it writes a number that was never true.
     const statePath = planningPaths(cwd).state;
     if (fs.existsSync(statePath)) {
-      let stateContent = fs.readFileSync(statePath, 'utf-8');
-      // Update "Total Phases" field. stateReplaceField rewrites the whole value,
-      // so anything trailing the count — "7 phases" — is carried over rather than
-      // dropped.
-      const totalRaw = stateExtractField(stateContent, 'Total Phases');
-      const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
-      if (totalMatch) {
-        const newTotal = parseInt(totalMatch[1], 10) - 1;
-        stateContent =
-          stateReplaceField(
-            stateContent,
-            'Total Phases',
-            `${newTotal}${totalMatch[2]}`,
-          ) || stateContent;
-      }
-      // Update "Phase: X of Y" pattern
-      const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
-      const ofMatch = stateContent.match(ofPattern);
-      if (ofMatch) {
-        const oldTotal = parseInt(ofMatch[2], 10);
-        stateContent = stateContent.replace(ofPattern, `$1${oldTotal - 1}$3`);
-      }
-      writeStateMd(statePath, stateContent, cwd);
+      withStateLock(cwd, () => {
+        let stateContent = fs.readFileSync(statePath, 'utf-8');
+        // Update "Total Phases" field. stateReplaceField rewrites the whole value,
+        // so anything trailing the count — "7 phases" — is carried over rather than
+        // dropped.
+        const totalRaw = stateExtractField(stateContent, 'Total Phases');
+        const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
+        if (totalMatch) {
+          const newTotal = parseInt(totalMatch[1], 10) - 1;
+          stateContent =
+            stateReplaceField(
+              stateContent,
+              'Total Phases',
+              `${newTotal}${totalMatch[2]}`,
+            ) || stateContent;
+        }
+        // Update "Phase: X of Y" pattern
+        const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
+        const ofMatch = stateContent.match(ofPattern);
+        if (ofMatch) {
+          const oldTotal = parseInt(ofMatch[2], 10);
+          stateContent = stateContent.replace(ofPattern, `$1${oldTotal - 1}$3`);
+        }
+        writeStateMd(statePath, stateContent, cwd);
+      });
     }
 
     const result = {
@@ -1843,28 +1848,33 @@ function cmdPhaseComplete(cwd, phaseNum) {
       } catch {}
     }
 
-    // Update STATE.md
+    // Update STATE.md. Locked for the same reason the roadmap write above is:
+    // the position and status written here are computed from a read of the file
+    // being replaced, so an executor's metric or decision landing in that window
+    // is discarded with success reported for both.
     let stateFieldsUpdated = [];
     let stateFieldsMissing = [];
     if (fs.existsSync(statePath)) {
-      const stateContent = fs.readFileSync(statePath, 'utf-8');
-      const applied = stateReplaceFields(stateContent, [
-        ['Current Phase', nextPhaseNum || phaseNum],
-        [
-          'Current Phase Name',
-          nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
-        ],
-        ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
-        ['Current Plan', 'Not started'],
-        ['Last Activity', today],
-        [
-          'Last Activity Description',
-          `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
-        ],
-      ]);
-      stateFieldsUpdated = applied.updated;
-      stateFieldsMissing = applied.missing;
-      writeStateMd(statePath, applied.content, cwd);
+      withStateLock(cwd, () => {
+        const stateContent = fs.readFileSync(statePath, 'utf-8');
+        const applied = stateReplaceFields(stateContent, [
+          ['Current Phase', nextPhaseNum || phaseNum],
+          [
+            'Current Phase Name',
+            nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
+          ],
+          ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
+          ['Current Plan', 'Not started'],
+          ['Last Activity', today],
+          [
+            'Last Activity Description',
+            `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
+          ],
+        ]);
+        stateFieldsUpdated = applied.updated;
+        stateFieldsMissing = applied.missing;
+        writeStateMd(statePath, applied.content, cwd);
+      });
     }
 
     const result = {

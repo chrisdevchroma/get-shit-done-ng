@@ -6302,3 +6302,161 @@ describe('ROADMAP.md mutations wait for the lock', () => {
     });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE.md mutations wait for the lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both of these read STATE.md, derive their new field values from what they read
+// and write the whole file back, so an unserialised one discards anything a
+// locked writer appended between its own read and its write. `phase remove` is
+// the sharper case: its new phase count is the count it read minus one, so a
+// lost read is a wrong number rather than a lost entry.
+//
+// Both hold the ROADMAP.md lock across the STATE.md section. That nesting is one
+// way only — see the lock-ordering guard in tests/core.test.cjs.
+//
+// The lock is held by the test process, so the child's wait is guaranteed rather
+// than raced for, and the child announces itself through a flag file so the
+// window is measured from a process that is loaded and running. Each case also
+// asserts the write lands once the lock is free, so a child that did nothing at
+// all fails too.
+
+describe('STATE.md mutations wait for the lock', () => {
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag, command, arg] = process.argv.slice(1);
+    const phase = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    if (command === 'remove') phase.cmdPhaseRemove(cwd, arg, { force: true });
+    else phase.cmdPhaseComplete(cwd, arg);
+  `;
+
+  let tmpDir;
+  let statePath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    lockPath = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** Goal one',
+        '**Plans:** TBD',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** Goal two',
+        '**Plans:** TBD',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** Alpha',
+        '**Total Phases:** 2 phases',
+        '**Status:** Executing',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2026-01-01',
+        '**Last Activity Description:** Working',
+        '',
+      ].join('\n'),
+    );
+    for (const [num, name] of [
+      ['01', 'alpha'],
+      ['02', 'beta'],
+    ]) {
+      const dir = path.join(tmpDir, '.planning', 'phases', `${num}-${name}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-01-PLAN.md`), '# Plan');
+      fs.writeFileSync(path.join(dir, `${num}-01-SUMMARY.md`), '# Summary');
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const CASES = [
+    {
+      label: 'phase remove',
+      command: 'remove',
+      arg: '2',
+      landed: '**Total Phases:** 1 phases',
+    },
+    {
+      label: 'phase complete',
+      command: 'complete',
+      arg: '1',
+      landed: '**Current Phase:** 02',
+    },
+  ];
+
+  for (const c of CASES) {
+    test(`${c.label} does not rewrite STATE.md while another writer holds it`, async () => {
+      const before = fs.readFileSync(statePath, 'utf-8');
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          host: require('os').hostname(),
+          at: new Date().toISOString(),
+        }),
+      );
+
+      const child = spawn(
+        process.execPath,
+        ['-e', CHILD_SRC, '--', PHASE_LIB, tmpDir, readyFlag, c.command, c.arg],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      let stderr = '';
+      child.stderr.on('data', (d) => (stderr += d));
+      const exited = new Promise((r) => child.on('close', r));
+
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(readyFlag)) {
+        assert.ok(Date.now() < deadline, `${c.label} child never started`);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // A window far wider than the read-and-rewrite the command performs; the
+      // lock, not the clock, is what keeps the child out.
+      await new Promise((r) => setTimeout(r, 600));
+      assert.strictEqual(
+        fs.readFileSync(statePath, 'utf-8'),
+        before,
+        `${c.label} rewrote STATE.md while another writer held the lock`,
+      );
+
+      fs.unlinkSync(lockPath);
+      const code = await exited;
+      assert.strictEqual(code, 0, `${c.label} should succeed: ${stderr.trim()}`);
+
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.notStrictEqual(
+        after,
+        before,
+        `${c.label} should have rewritten STATE.md once the lock was free`,
+      );
+      assert.ok(
+        after.includes(c.landed),
+        `${c.label} should have written its update: ${after}`,
+      );
+    });
+  }
+});

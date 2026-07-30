@@ -26,7 +26,11 @@ const {
   spliceFrontmatter,
   parseMustHavesBlock,
 } = require('./frontmatter.cjs');
-const { writeStateMd, stateApplyFieldsToSection } = require('./state.cjs');
+const {
+  withStateLock,
+  writeStateMd,
+  stateApplyFieldsToSection,
+} = require('./state.cjs');
 const {
   detectWorkspaceType,
   generateMemoriesSection,
@@ -1592,21 +1596,31 @@ function cmdValidateHealth(cwd, options) {
             break;
           }
           case 'regenerateState': {
-            // Create timestamped backup before overwriting
-            if (fs.existsSync(statePath)) {
-              const timestamp = new Date()
-                .toISOString()
-                .replace(/[:.]/g, '-')
-                .slice(0, 19);
-              const backupPath = `${statePath}.bak-${timestamp}`;
-              fs.copyFileSync(statePath, backupPath);
-              repairActions.push({
-                action: 'backupState',
-                success: true,
-                path: backupPath,
-              });
-            }
-            writeStateMd(statePath, buildRepairedState(cwd), cwd);
+            // Locked, though the replacement is built from the phase directories
+            // rather than from STATE.md and so is not a read-modify-write. An
+            // unserialised overwrite can still land inside another writer's read
+            // and write, which restores the file this replaced while this reports
+            // success and leaves a backup of content that is nowhere else. Inside
+            // the section the outcome is one of the two coherent ones: the repair
+            // wins, or the writer appends to the repaired file. The backup is
+            // taken in the same section so it is exactly what was replaced.
+            withStateLock(cwd, () => {
+              // Create timestamped backup before overwriting
+              if (fs.existsSync(statePath)) {
+                const timestamp = new Date()
+                  .toISOString()
+                  .replace(/[:.]/g, '-')
+                  .slice(0, 19);
+                const backupPath = `${statePath}.bak-${timestamp}`;
+                fs.copyFileSync(statePath, backupPath);
+                repairActions.push({
+                  action: 'backupState',
+                  success: true,
+                  path: backupPath,
+                });
+              }
+              writeStateMd(statePath, buildRepairedState(cwd), cwd);
+            });
             repairActions.push({
               action: repair,
               success: true,

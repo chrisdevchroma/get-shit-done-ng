@@ -402,6 +402,9 @@ function withFileLock(filePath, fn, opts = {}) {
  *
  * The section must span the read, so callers wrap their whole body rather than
  * the write; planningPaths is called inside to keep the one lock path per project.
+ *
+ * Ordering: this is the outer lock. A command that mutates ROADMAP.md and
+ * STATE.md takes this one first and withStateLock inside it, never the reverse.
  */
 function withRoadmapLock(cwd, fn) {
   return withFileLock(planningPaths(cwd).roadmap, fn);

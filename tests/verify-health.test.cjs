@@ -3201,3 +3201,114 @@ describe('validate health — Memories section boundaries', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// regenerateState waits for the STATE.md lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The repair builds its replacement from the phase directories rather than from
+// STATE.md, so it is not a read-modify-write — but it still has to be inside the
+// section. A locked writer that read STATE.md before the repair, and writes back
+// after it, restores the file the repair replaced while the repair reports
+// success and leaves a backup of content that is no longer anywhere. Ordering the
+// repair against the whole of that read-and-write is what makes the outcome one
+// of the two coherent ones: the repair wins, or the writer appends to the
+// repaired file.
+//
+// Of the commands that write STATE.md this one is the least serial: it is run by
+// hand, and typically run because something already looks wrong.
+
+describe('validate health --repair waits for the STATE.md lock', () => {
+  const { spawn } = require('child_process');
+  const VERIFY_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'verify.cjs',
+  );
+
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag] = process.argv.slice(1);
+    const verify = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    verify.cmdValidateHealth(cwd, { repair: true });
+  `;
+
+  let tmpDir;
+  let statePath;
+  let lockPath;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    lockPath = path.join(tmpDir, '.planning', '.STATE.md.gsd-lock');
+    readyFlag = path.join(tmpDir, 'child-ready');
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalRoadmap(tmpDir, ['1']);
+    writeValidConfigJson(tmpDir);
+    // A STATE.md naming a phase that does not exist is what triggers the repair.
+    fs.writeFileSync(statePath, '# Session State\n\nPhase 99 is current.\n');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), {
+      recursive: true,
+    });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('does not overwrite STATE.md while another writer holds it', async () => {
+    const before = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['-e', CHILD_SRC, '--', VERIFY_LIB, tmpDir, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const exited = new Promise((r) => child.on('close', r));
+
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(readyFlag)) {
+      assert.ok(Date.now() < deadline, 'the child never started');
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // A window far wider than the scan and rewrite the repair performs; the
+    // lock, not the clock, is what keeps the child out.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf-8'),
+      before,
+      'STATE.md was overwritten while another writer held the lock',
+    );
+
+    fs.unlinkSync(lockPath);
+    const code = await exited;
+    assert.strictEqual(code, 0, `the repair should succeed: ${stderr.trim()}`);
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.notStrictEqual(
+      after,
+      before,
+      'STATE.md should have been regenerated once the lock was free',
+    );
+    assert.ok(
+      after.includes('STATE.md regenerated'),
+      `the regenerated file should say so: ${after}`,
+    );
+  });
+});
