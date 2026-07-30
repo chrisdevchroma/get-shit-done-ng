@@ -7202,3 +7202,128 @@ describe('phase remove on an absent phase', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The renumbering rewrites two records at once — the phase directories and
+// ROADMAP.md — and the whole point of it is that they still describe the same
+// project afterwards. Every test here reads both and asserts they agree.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove keeps ROADMAP.md and the phase tree agreeing', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeRoadmap(lines) {
+    fs.writeFileSync(roadmapPath, lines.join('\n'));
+  }
+
+  // `spec` maps a directory name to the plan files inside it.
+  function writePhases(spec) {
+    for (const [dir, files] of Object.entries(spec)) {
+      const full = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(full, { recursive: true });
+      for (const f of files) fs.writeFileSync(path.join(full, f), '# plan\n');
+    }
+  }
+
+  function roadmapLines(pattern) {
+    return fs
+      .readFileSync(roadmapPath, 'utf-8')
+      .split('\n')
+      .filter((l) => pattern.test(l));
+  }
+
+  function phaseDirs() {
+    return fs.readdirSync(path.join(tmpDir, '.planning', 'phases')).sort();
+  }
+
+  function planFiles() {
+    const base = path.join(tmpDir, '.planning', 'phases');
+    const found = [];
+    for (const dir of fs.readdirSync(base)) {
+      for (const f of fs.readdirSync(path.join(base, dir))) found.push(f);
+    }
+    return found.sort();
+  }
+
+  // Phases 8 through 11, so removing the lowest sends 10 down to 9 and 11 down
+  // to 10 — the boundary crossed and the boundary not crossed, in one run.
+  const NINE_TO_TEN = [
+    '# Roadmap',
+    '',
+    '## Roadmap v0.1: Current',
+    '',
+    '- [ ] Phase 8: Eight',
+    '- [ ] Phase 9: Nine',
+    '- [ ] Phase 10: Ten',
+    '- [ ] Phase 11: Eleven',
+    '',
+    '### Phase 9: Nine',
+    'Plans:',
+    '- [ ] 09-01: nine',
+    '',
+    '### Phase 10: Ten',
+    'Plans:',
+    '- [ ] 10-01: ten',
+    '',
+    '### Phase 11: Eleven',
+    'Plans:',
+    '- [ ] 11-01: eleven',
+    '',
+  ];
+
+  const NINE_TO_TEN_DIRS = {
+    '08-eight': [],
+    '09-nine': ['09-01-PLAN.md'],
+    '10-ten': ['10-01-PLAN.md'],
+    '11-eleven': ['11-01-PLAN.md'],
+  };
+
+  test('a plan reference keeps the width the plan file is named at', () => {
+    writeRoadmap(NINE_TO_TEN);
+    writePhases(NINE_TO_TEN_DIRS);
+
+    const result = runGsdTools('phase remove 8 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(planFiles(), [
+      '08-01-PLAN.md',
+      '09-01-PLAN.md',
+      '10-01-PLAN.md',
+    ]);
+    assert.deepStrictEqual(
+      roadmapLines(/^- \[ \] \d/),
+      ['- [ ] 08-01: nine', '- [ ] 09-01: ten', '- [ ] 10-01: eleven'],
+      'a plan reference names a file, and the file is padded to two digits',
+    );
+  });
+
+  test('a phase heading drops the digit the decrement drops', () => {
+    writeRoadmap(NINE_TO_TEN);
+    writePhases(NINE_TO_TEN_DIRS);
+
+    const result = runGsdTools('phase remove 8 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assert.deepStrictEqual(phaseDirs(), ['08-nine', '09-ten', '10-eleven']);
+    assert.deepStrictEqual(
+      roadmapLines(/^#{2,4} Phase/),
+      ['### Phase 8: Nine', '### Phase 9: Ten', '### Phase 10: Eleven'],
+      'a heading is written at its natural width, so 10 becomes 9 and not 09',
+    );
+    assert.deepStrictEqual(roadmapLines(/^- \[ \] Phase/), [
+      '- [ ] Phase 8: Nine',
+      '- [ ] Phase 9: Ten',
+      '- [ ] Phase 10: Eleven',
+    ]);
+  });
+});

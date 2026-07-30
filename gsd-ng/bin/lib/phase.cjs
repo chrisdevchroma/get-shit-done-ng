@@ -1299,38 +1299,47 @@ const RENUMBER_CONTEXT_CHARS = 64;
  * its phase numbers to two digits goes on doing so and one that writes them bare
  * is not padded against its will. Reaching only the bare spelling left every
  * padded reference pointing at whichever phase now holds its old number.
+ *
+ * Which of those two the reference is depends on where it was read. A plan
+ * reference is the name of a file on disk, and those are padded to two digits
+ * whatever the number needs, so it pads to the width it was found at even when
+ * the decrement would shorten it. A heading is prose and is written at its
+ * natural width, so the same decrement unpads it. Padding both the same way
+ * gets one of them wrong: keyed on a leading zero alone, a plan reference
+ * shortened across the ten boundary named a file that does not exist.
  */
 function renumberPhaseReferences(text, removedInt) {
-  const shift = (written) => {
+  const shift = (written, kind) => {
     const num = parseInt(written, 10);
     if (!Number.isFinite(num) || num <= removedInt) return null;
-    const next = String(num - 1);
-    return written.startsWith('0') ? next.padStart(written.length, '0') : next;
+    const pad = kind === 'plan' || written.startsWith('0') ? written.length : 0;
+    return String(num - 1).padStart(pad, '0');
   };
 
-  const isPhaseReference = (written, before, after) => {
+  const referenceKind = (written, before, after) => {
     // A section heading, and the bare `Phase N:` / `Phase N ` that covers
     // checkbox items, dependency lines and prose alike.
-    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after)) return true;
-    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return true;
+    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after))
+      return 'phase';
+    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return 'phase';
     // A progress-table row: `| N. Name`.
-    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return true;
+    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return 'phase';
     // A dependency whose number ends the line, which the shapes above miss.
     if (
       /Depends on:\*\*\s*Phase\s+$/i.test(before) &&
       !/^[A-Za-z0-9_]/.test(after)
     ) {
-      return true;
+      return 'phase';
     }
     // A plan reference, `18-01`. A preceding digit, dot or hyphen disqualifies
     // it, or the rewrite walks into dates and version-like tokens: 2020-01-01,
     // `ref 3.14-05`, `version 1.05-01`. The trailing side stays open to a hyphen
     // so that 18-01-PLAN.md is still a plan reference.
-    return (
+    const plan =
       written.length === 2 &&
       !/[\d.-]$/.test(before) &&
-      /^-\d{2}(?!\d)/.test(after)
-    );
+      /^-\d{2}(?!\d)/.test(after);
+    return plan ? 'plan' : null;
   };
 
   return text.replace(/\d+/g, (written, index) => {
@@ -1340,8 +1349,9 @@ function renumberPhaseReferences(text, removedInt) {
     );
     const end = index + written.length;
     const after = text.slice(end, end + RENUMBER_CONTEXT_CHARS);
-    if (!isPhaseReference(written, before, after)) return written;
-    const next = shift(written);
+    const kind = referenceKind(written, before, after);
+    if (kind === null) return written;
+    const next = shift(written, kind);
     return next === null ? written : next;
   });
 }
