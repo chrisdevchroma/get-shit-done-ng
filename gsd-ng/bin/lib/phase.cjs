@@ -1237,6 +1237,71 @@ function namesPhaseAbove(slice, removedInt) {
   return numbers.some((n) => Number.isFinite(n) && n > removedInt);
 }
 
+// How much text either side of a number can decide whether it is a phase
+// reference. The longest shape below — a bolded dependency label and the word
+// Phase — is under thirty characters, so this is generous rather than a limit.
+const RENUMBER_CONTEXT_CHARS = 64;
+
+/**
+ * Shift every reference to a phase above `removedInt` down by one.
+ *
+ * One pass over the digit runs, each judged by the text as it was read and
+ * rewritten at most once. Rewriting in a pass per source number, walking down
+ * from the highest, re-read its own output: a reference lowered to N by the pass
+ * for N+1 was lowered again by the pass for N, and again by the pass below that,
+ * so every phase above the removed one collapsed onto the removed one's number.
+ *
+ * Zero-padding is preserved at the width it was found, so a roadmap that pads
+ * its phase numbers to two digits goes on doing so and one that writes them bare
+ * is not padded against its will. Reaching only the bare spelling left every
+ * padded reference pointing at whichever phase now holds its old number.
+ */
+function renumberPhaseReferences(text, removedInt) {
+  const shift = (written) => {
+    const num = parseInt(written, 10);
+    if (!Number.isFinite(num) || num <= removedInt) return null;
+    const next = String(num - 1);
+    return written.startsWith('0') ? next.padStart(written.length, '0') : next;
+  };
+
+  const isPhaseReference = (written, before, after) => {
+    // A section heading, and the bare `Phase N:` / `Phase N ` that covers
+    // checkbox items, dependency lines and prose alike.
+    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after)) return true;
+    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return true;
+    // A progress-table row: `| N. Name`.
+    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return true;
+    // A dependency whose number ends the line, which the shapes above miss.
+    if (
+      /Depends on:\*\*\s*Phase\s+$/i.test(before) &&
+      !/^[A-Za-z0-9_]/.test(after)
+    ) {
+      return true;
+    }
+    // A plan reference, `18-01`. A preceding digit, dot or hyphen disqualifies
+    // it, or the rewrite walks into dates and version-like tokens: 2020-01-01,
+    // `ref 3.14-05`, `version 1.05-01`. The trailing side stays open to a hyphen
+    // so that 18-01-PLAN.md is still a plan reference.
+    return (
+      written.length === 2 &&
+      !/[\d.-]$/.test(before) &&
+      /^-\d{2}(?!\d)/.test(after)
+    );
+  };
+
+  return text.replace(/\d+/g, (written, index) => {
+    const before = text.slice(
+      Math.max(0, index - RENUMBER_CONTEXT_CHARS),
+      index,
+    );
+    const end = index + written.length;
+    const after = text.slice(end, end + RENUMBER_CONTEXT_CHARS);
+    if (!isPhaseReference(written, before, after)) return written;
+    const next = shift(written);
+    return next === null ? written : next;
+  });
+}
+
 // Unlike phase-close, a re-run is not a repair here: the renumbering shifts what
 // every later phase is called, so the second run's target number names a
 // different phase than the first run's did. Saying so is the whole point of
@@ -1499,58 +1564,15 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       else if (hasPhaseTableRow(roadmapBefore, targetPhase))
         roadmapMissed.push('progress-table');
 
-      // Renumber references in ROADMAP for subsequent phases. The loop runs over the
-      // current milestone slice only — run over the whole document it renumbered
+      // Renumber references in ROADMAP for subsequent phases. Applied to the
+      // current milestone slice only — over the whole document it renumbered
       // archived milestone sections and mangled the dates in their progress tables.
       if (!isDecimal) {
         const removedInt = parseInt(normalized, 10);
         const offset = currentMilestoneOffset(roadmapContent);
         const head = roadmapContent.slice(0, offset);
         const tailBefore = roadmapContent.slice(offset);
-        let tail = tailBefore;
-
-        // Collect all integer phases > removedInt
-        const maxPhase = 99; // reasonable upper bound
-        for (let oldNum = maxPhase; oldNum > removedInt; oldNum--) {
-          const newNum = oldNum - 1;
-          const oldStr = String(oldNum);
-          const newStr = String(newNum);
-          const oldPad = oldStr.padStart(2, '0');
-          const newPad = newStr.padStart(2, '0');
-
-          // Phase headings: ## Phase N: or ### Phase N: — renumber old to new
-          tail = tail.replace(
-            new RegExp(`(#{2,4}\\s*Phase\\s+)${oldStr}(\\s*:)`, 'gi'),
-            `$1${newStr}$2`,
-          );
-
-          // Checkbox items: - [ ] Phase N: — renumber old to new
-          tail = tail.replace(
-            new RegExp(`(Phase\\s+)${oldStr}([:\\s])`, 'g'),
-            `$1${newStr}$2`,
-          );
-
-          // Plan references: 18-01 → 17-01. A leading digit or hyphen disqualifies
-          // the match, or the renumbering walks into dates: 2020-01-01 became
-          // 2002-01-01, one iteration of the loop at a time. The trailing side stays
-          // open to a hyphen so that 18-01-PLAN.md is still a plan reference.
-          tail = tail.replace(
-            new RegExp(`(?<![\\d-])${oldPad}-(\\d{2})(?!\\d)`, 'g'),
-            `${newPad}-$1`,
-          );
-
-          // Table rows: | 18. → | 17.
-          tail = tail.replace(
-            new RegExp(`(\\|\\s*)${oldStr}\\.\\s`, 'g'),
-            `$1${newStr}. `,
-          );
-
-          // Depends on references
-          tail = tail.replace(
-            new RegExp(`(Depends on:\\*\\*\\s*Phase\\s+)${oldStr}\\b`, 'gi'),
-            `$1${newStr}`,
-          );
-        }
+        const tail = renumberPhaseReferences(tailBefore, removedInt);
 
         roadmapContent = head + tail;
         if (tail !== tailBefore) roadmapLanded.push('renumber');
