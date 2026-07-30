@@ -2324,6 +2324,23 @@ describe('withFileLock', () => {
     process.exit(0);
   `;
 
+  // Holds the lock inside its critical section until the go flag appears, so the
+  // window a second process is tested against is one this test opens and closes.
+  // The wait is bounded so a go flag that never arrives fails the parent's
+  // assertions rather than hanging the run.
+  const HOLD_UNTIL_SRC = `
+    const fs = require('fs');
+    const [lib, target, readyFlag, goFlag] = process.argv.slice(1);
+    const { withFileLock } = require(lib);
+    withFileLock(target, () => {
+      fs.writeFileSync(readyFlag, String(process.pid));
+      const deadline = Date.now() + 20000;
+      while (!fs.existsSync(goFlag) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }, { pollMs: 5 });
+  `;
+
   function waitForFlag(flagPath) {
     const deadline = Date.now() + 10000;
     return new Promise((resolve, reject) => {
@@ -2496,7 +2513,8 @@ describe('withFileLock', () => {
 
   test('a lock older than the staleness threshold is stolen', () => {
     const lockPath = lockPathFor(target);
-    // Payload pid is alive, so staleness is the only thing that can release it.
+    // Payload pid is alive, so staleness is the only thing that can release it —
+    // the live-holder threshold, lowered here to the same value as the other one.
     fs.writeFileSync(
       lockPath,
       JSON.stringify({
@@ -2512,6 +2530,7 @@ describe('withFileLock', () => {
       budgetMs: 500,
       pollMs: 10,
       staleMs: 1000,
+      liveStaleMs: 1000,
     });
     assert.strictEqual(ran, 'ran');
     assert.strictEqual(fs.existsSync(lockPath), false);
@@ -2584,6 +2603,152 @@ describe('withFileLock', () => {
       staleMs: 1000,
     });
     assert.strictEqual(ran, 'ran');
+  });
+
+  test('a live holder on this host is not stolen from by age', () => {
+    // The staleness threshold backstops the cases where liveness cannot be
+    // established. When the payload names a running process on this host it can,
+    // so age is not evidence of abandonment: stealing on it put two processes
+    // inside the section at once and left each one unlinking the other's lock.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const recently = new Date(Date.now() - 30 * 1000);
+    fs.utimesSync(lockPath, recently, recently);
+
+    let caught;
+    try {
+      withFileLock(target, () => 'never', {
+        budgetMs: 200,
+        pollMs: 10,
+        staleMs: 1000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'expected a lock timeout rather than a steal');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(fs.existsSync(lockPath), true);
+  });
+
+  test('a live holder is reclaimed once its lock outlives any plausible section', () => {
+    // The pid in an abandoned lock can be recycled onto an unrelated live
+    // process, which would otherwise make the lock immortal. The live-holder
+    // backstop is far above any real section but still finite.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
+  test('a holder does not unlink a lock it no longer owns', () => {
+    // Release used to unlink whatever lock file was at the path, so a holder
+    // that had been stolen from deleted the thief's lock and left the section
+    // unguarded for a third process.
+    const lockPath = lockPathFor(target);
+    const acquired = acquireFileLock(lockPath);
+    assert.strictEqual(acquired.mode, 'locked');
+
+    fs.unlinkSync(lockPath);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999999, host: 'thief', at: 'later' }),
+    );
+    const thiefIno = fs.statSync(lockPath).ino;
+
+    const originalWrite = process.stderr.write;
+    const chunks = [];
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    let removed;
+    try {
+      removed = releaseFileLock(lockPath);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.strictEqual(removed, false);
+    assert.strictEqual(fs.existsSync(lockPath), true);
+    assert.strictEqual(fs.statSync(lockPath).ino, thiefIno);
+    assert.match(chunks.join(''), /lock on STATE\.md was taken over/);
+  });
+
+  test('a section outlasting the staleness threshold keeps a second process out', async () => {
+    // The window is opened and closed by this test: the child announces that it
+    // is inside its section, and only leaves it once the go flag is written,
+    // which happens after the second acquire has already returned.
+    const readyFlag = path.join(tmpDir, 'ready');
+    const goFlag = path.join(tmpDir, 'go');
+    const lockPath = lockPathFor(target);
+
+    const child = spawn(
+      process.execPath,
+      ['-e', HOLD_UNTIL_SRC, '--', CORE_LIB, target, readyFlag, goFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+
+    await waitForFlag(readyFlag);
+    const heldIno = fs.statSync(lockPath).ino;
+
+    let caught;
+    try {
+      withFileLock(target, () => 'entered', {
+        budgetMs: 600,
+        pollMs: 10,
+        staleMs: 200,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const inoDuringHold = fs.existsSync(lockPath)
+      ? fs.statSync(lockPath).ino
+      : null;
+
+    fs.writeFileSync(goFlag, '');
+    const code = await new Promise((r) => child.on('close', r));
+
+    assert.ok(
+      caught,
+      'the second process entered a section the child was still inside',
+    );
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(
+      inoDuringHold,
+      heldIno,
+      "the holder's lock file was replaced while it was inside its section",
+    );
+    assert.strictEqual(code, 0, `child exited ${code}: ${stderr}`);
+    assert.strictEqual(
+      fs.existsSync(lockPath),
+      false,
+      'the holder should remove its own lock on the way out',
+    );
   });
 
   test('a foreign-host lock dated in the future is reclaimed at once', () => {
