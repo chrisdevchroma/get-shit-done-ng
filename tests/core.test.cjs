@@ -2586,6 +2586,84 @@ describe('withFileLock', () => {
     assert.strictEqual(ran, 'ran');
   });
 
+  test('a foreign-host lock dated in the future is reclaimed at once', () => {
+    // Clock skew between hosts sharing a .planning/ is what the host check
+    // exists for, and it puts an mtime ahead of this host's clock. A negative
+    // age can never exceed the threshold, so judging that lock by age alone
+    // wedged every write on the file for as long as the file was there.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 999999,
+        host: 'some-other-host',
+        at: new Date().toISOString(),
+      }),
+    );
+    const ahead = new Date(Date.now() + 2 * 60 * 1000);
+    fs.utimesSync(lockPath, ahead, ahead);
+
+    const startedAt = Date.now();
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+    assert.ok(
+      elapsed < 1000,
+      `reclaiming a future-dated lock must not cost a wait (took ${elapsed}ms)`,
+    );
+  });
+
+  test('a lock a fraction ahead of the clock is still waited for', () => {
+    // mtimeMs is sub-millisecond and Date.now() is truncated to whole
+    // milliseconds, so a lock written this instant reads as a fraction of a
+    // millisecond ahead of the clock nearly every time. Without slack, treating
+    // an mtime in the future as stale makes every lock whose holder cannot be
+    // liveness-checked stealable the moment it appears. 200ms stands in for that
+    // fraction and for any small clock adjustment.
+    const lockPath = lockPathFor(target);
+    fs.writeFileSync(lockPath, '');
+    const slightlyAhead = new Date(Date.now() + 200);
+    fs.utimesSync(lockPath, slightlyAhead, slightlyAhead);
+
+    let caught;
+    try {
+      withFileLock(target, () => 'entered', {
+        budgetMs: 100,
+        pollMs: 10,
+        staleMs: 60000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught, 'a lock barely ahead of the clock must not be stolen');
+    assert.strictEqual(caught.code, 'GSD_LOCK_TIMEOUT');
+    assert.strictEqual(fs.existsSync(lockPath), true);
+  });
+
+  test('a directory left at the lock path is cleared rather than waited out', () => {
+    // unlinkSync cannot remove a directory, and the steal swallows the failure,
+    // so junk at the lock path failed every write on the file indefinitely.
+    const lockPath = lockPathFor(target);
+    fs.mkdirSync(lockPath);
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockPath, longAgo, longAgo);
+
+    const ran = withFileLock(target, () => 'ran', {
+      budgetMs: 2000,
+      pollMs: 10,
+      staleMs: 1000,
+    });
+    assert.strictEqual(ran, 'ran');
+    assert.strictEqual(fs.existsSync(lockPath), false);
+  });
+
   test('a lock that cannot be created runs the body unserialised', () => {
     // Read-only tree, no permission, missing directory: refusing to write would
     // be worse than the lost update the lock exists to prevent.

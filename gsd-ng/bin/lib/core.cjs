@@ -236,6 +236,49 @@ function lockAgeMs(lockPath) {
   }
 }
 
+// mtimeMs carries sub-millisecond precision and Date.now() is truncated to whole
+// milliseconds, so a lock created moments ago almost always reads as a fraction
+// of a millisecond ahead of the clock. A second of slack keeps that, and any
+// small clock adjustment, from being read as a timestamp from the future.
+const LOCK_FUTURE_TOLERANCE_MS = 1000;
+
+/**
+ * True when `ageMs` puts the lock past the point of being worth waiting for.
+ *
+ * An age well below zero counts: the mtime is ahead of this host's clock, which
+ * no process on this host can have produced, and skew between hosts sharing a
+ * `.planning/` is exactly the case the host check hands to the age. Judged by
+ * `ageMs > staleMs` alone, such a lock is never stale and never stolen, so every
+ * write on the file burns the whole budget and fails for as long as it is there.
+ */
+function lockAgeIsStale(ageMs, staleMs) {
+  if (ageMs === null) return false;
+  return ageMs < -LOCK_FUTURE_TOLERANCE_MS || ageMs > staleMs;
+}
+
+/**
+ * Remove a lock judged stale. Returns false when it is still there afterwards.
+ *
+ * A directory at the lock path — junk, a botched cleanup — cannot be unlinked,
+ * and swallowing that failure wedges the file as thoroughly as an unreclaimable
+ * lock does. The name is GSD's own and holds a single JSON file at most, so
+ * clearing it recursively removes nothing anyone else put there.
+ */
+function removeStaleLock(lockPath) {
+  try {
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (err) {
+    if (err.code !== 'EISDIR' && err.code !== 'EPERM') return false;
+  }
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create the lock, or report why not.
  *
@@ -316,10 +359,8 @@ function acquireFileLock(lockPath, opts = {}) {
 
     const holder = readLockHolder(lockPath);
     const ageMs = lockAgeMs(lockPath);
-    if (lockHolderIsDead(holder) || (ageMs !== null && ageMs > staleMs)) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {}
+    if (lockHolderIsDead(holder) || lockAgeIsStale(ageMs, staleMs)) {
+      removeStaleLock(lockPath);
     }
     if (Date.now() >= deadline) return { mode: 'timeout', holder, ageMs };
     sleepSync(pollMs);
