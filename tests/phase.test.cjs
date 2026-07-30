@@ -6110,6 +6110,7 @@ describe('phase remove milestone scoping', () => {
         '',
         '### Phase 3: Gamma',
         '### Phase 4: Delta',
+        '**Depends on:** Phase 3, Phase 5',
         '### Phase 5: Epsilon',
         '',
       ].join('\n'),
@@ -6146,6 +6147,11 @@ describe('phase remove milestone scoping', () => {
       roadmap.split('\n').filter((l) => /^#{2,4} Phase/.test(l)),
       ['### Phase 2: Gamma', '### Phase 3: Delta', '### Phase 4: Epsilon'],
       'each surviving phase moves down one place, not down to the gap',
+    );
+    assert.deepStrictEqual(
+      roadmap.split('\n').filter((l) => /^\*\*Depends on:/.test(l)),
+      ['**Depends on:** Phase 2, Phase 4'],
+      'a dependency list follows too, including the entry a comma ends',
     );
   });
 
@@ -6835,6 +6841,220 @@ describe('a partway failure reports what already landed', () => {
       result.stderr,
       /not a repair/,
       'a re-run would renumber again, and the message must say so',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A removal never leaves two phases sharing a number
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The renumbering is the only rewrite that can create a duplicate — removal only
+// deletes — so the invariant is enforced at that one step. It is withheld when
+// the removal it compensates for did not fully land, and withheld again if the
+// result would name a phase twice, which happens when a reference is written in
+// a shape no rewrite can reach.
+
+describe('phase remove keeps the roadmap internally consistent', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    for (const dir of ['03-cee', '04-dee', '05-eee']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Every phase number a heading names, in document order. The invariant is
+  // asserted over this list, so a duplicate is a failure rather than something
+  // the test has to know how to look for.
+  function headingNumbers() {
+    return fs
+      .readFileSync(roadmapPath, 'utf-8')
+      .split('\n')
+      .filter((l) => /^#{2,4}\s*Phase\s/.test(l))
+      .map((l) => /Phase\s+(\d+)/.exec(l)[1]);
+  }
+
+  test('withholds the renumbering when the section removal could not reach its target', () => {
+    // The target's heading separates its name with a dash, which the section
+    // removal cannot match. Shifting the later phases down on top of it gave the
+    // milestone two headings numbered alike.
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 3: Cee',
+        '- [ ] Phase 4: Dee',
+        '- [ ] Phase 5: Eee',
+        '',
+        '### Phase 3: Cee',
+        '**Goal:** c',
+        '',
+        '### Phase 4 - Dee',
+        '**Goal:** d',
+        '',
+        '### Phase 5: Eee',
+        '**Goal:** e',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools('phase remove 4 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const numbers = headingNumbers();
+    assert.deepStrictEqual(
+      numbers,
+      [...new Set(numbers)],
+      `two phases share a number: ${numbers.join(', ')}`,
+    );
+    assert.deepStrictEqual(output.roadmap_missed_targets, ['phase-section']);
+    assert.deepStrictEqual(
+      output.roadmap_withheld,
+      ['renumber'],
+      'a rewrite refused on purpose is not one that could not reach its target',
+    );
+    assert.match(output.roadmap_withheld_hint, /same number/);
+  });
+
+  test('withholds a renumbering that would name one phase twice', () => {
+    // Here the removal lands everywhere, so nothing is missed — but a later
+    // phase's heading is written in a shape no rewrite reaches, and the phase
+    // above it shifts down onto that number. Nothing reported this: every target
+    // landed and the duplicate was written.
+    fs.writeFileSync(
+      roadmapPath,
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 3: Cee',
+        '- [ ] Phase 4: Dee',
+        '- [ ] Phase 5: Eee',
+        '',
+        '| Phase | Plans | Status | Completed |',
+        '|-------|-------|--------|-----------|',
+        '| 3. Cee | 0/0 | Pending | - |',
+        '| 4. Dee | 0/0 | Pending | - |',
+        '| 5. Eee | 0/0 | Pending | - |',
+        '',
+        '### Phase 3: Cee',
+        '**Goal:** c',
+        '',
+        '### Phase 4—Dee',
+        '**Goal:** d',
+        '',
+        '### Phase 5: Eee',
+        '**Goal:** e',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools('phase remove 3 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const numbers = headingNumbers();
+    assert.deepStrictEqual(
+      numbers,
+      [...new Set(numbers)],
+      `two phases share a number: ${numbers.join(', ')}`,
+    );
+    assert.deepStrictEqual(output.roadmap_landed, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+    ]);
+    assert.deepStrictEqual(output.roadmap_withheld, ['renumber']);
+    assert.match(output.roadmap_withheld_hint, /twice/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Removing a phase that does not exist changes nothing
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove on an absent phase', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '',
+        '### Phase 1: Alpha',
+        '**Goal:** a',
+        '',
+        '### Phase 2: Beta',
+        '**Goal:** b',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 01\n**Total Phases:** 2 phases\n',
+    );
+    for (const dir of ['01-alpha', '02-beta']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('is a no-op that says so rather than a phase count that was never true', () => {
+    const roadmapBefore = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+    const stateBefore = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+
+    const result = runGsdTools('phase remove 9 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.found, false);
+    assert.strictEqual(output.state_updated, false);
+    assert.strictEqual(output.roadmap_updated, false);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'),
+      stateBefore,
+      'the phase count must not be decremented for a phase that was never counted',
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      roadmapBefore,
+    );
+    assert.deepStrictEqual(
+      fs
+        .readdirSync(path.join(tmpDir, '.planning', 'phases'))
+        .sort(),
+      ['01-alpha', '02-beta'],
     );
   });
 });

@@ -1237,6 +1237,41 @@ function namesPhaseAbove(slice, removedInt) {
   return numbers.some((n) => Number.isFinite(n) && n > removedInt);
 }
 
+/**
+ * Phase identifiers a roadmap's live milestones name more than once.
+ *
+ * Headings and checkbox items are counted in separate namespaces: one phase
+ * legitimately has both, but not two headings or two checkboxes. Identifiers are
+ * compared unpadded, so a padded spelling and a bare one of the same number are
+ * one phase named twice — which is the point, since a partial renumbering
+ * produces exactly that.
+ *
+ * @returns {string[]} the duplicated identifiers, unpadded and sorted
+ */
+function duplicatePhaseIds(content) {
+  const milestone = extractCurrentMilestone(content);
+  const headings = [];
+  const headingPattern = /^#{2,4}\s*Phase\s+(\d+[A-Za-z]?(?:\.\d+)*)/gim;
+  let m;
+  while ((m = headingPattern.exec(milestone)) !== null) headings.push(m[1]);
+
+  const duplicates = new Set();
+  for (const group of [
+    headings,
+    parsePhaseCheckboxes(milestone).map((entry) => entry.num),
+  ]) {
+    const seen = new Set();
+    for (const raw of group) {
+      const id = String(raw)
+        .replace(/^0+(?=\d)/, '')
+        .toUpperCase();
+      if (seen.has(id)) duplicates.add(id);
+      seen.add(id);
+    }
+  }
+  return [...duplicates].sort();
+}
+
 // How much text either side of a number can decide whether it is a phase
 // reference. The longest shape below — a bolded dependency label and the word
 // Phase — is under thirty characters, so this is generous rather than a limit.
@@ -1336,6 +1371,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // Normalize the target
       const normalized = normalizePhaseName(targetPhase);
       const isDecimal = targetPhase.includes('.');
+      // Read before anything is deleted, so the existence check below sees the
+      // document as it stood.
+      const roadmapBeforeAnything = fs.readFileSync(roadmapPath, 'utf-8');
 
       // Find and validate target directory
       let targetDir = null;
@@ -1349,6 +1387,34 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
           (d) => d.startsWith(normalized + '-') || d === normalized,
         );
       } catch {}
+
+      // A phase with no directory that the current milestone names nowhere does
+      // not exist, and removing it is nothing. Falling through decremented the
+      // phase count for a phase that was never counted — a number that was never
+      // true — and reported the write as an update.
+      const namedInRoadmap =
+        hasPhaseHeader(roadmapBeforeAnything, targetPhase) ||
+        hasPhaseTableRow(roadmapBeforeAnything, targetPhase) ||
+        parsePhaseCheckboxes(
+          extractCurrentMilestone(roadmapBeforeAnything),
+        ).some((entry) => comparePhaseNum(entry.num, targetPhase) === 0);
+
+      if (!targetDir && !namedInRoadmap) {
+        output({
+          removed: null,
+          found: false,
+          directory_deleted: null,
+          renamed_directories: [],
+          renamed_files: [],
+          roadmap_updated: false,
+          roadmap_landed: [],
+          roadmap_missed_targets: [],
+          roadmap_withheld: [],
+          roadmap_withheld_hint: null,
+          state_updated: false,
+        });
+        return;
+      }
 
       // Check for executed work (SUMMARY.md files)
       if (targetDir && !force) {
@@ -1517,6 +1583,8 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       const roadmapBefore = roadmapContent;
       const roadmapLanded = [];
       const roadmapMissed = [];
+      const roadmapWithheld = [];
+      let roadmapWithheldHint = null;
 
       // Remove the target phase section
       const targetEscaped = phaseNumPattern(targetPhase);
@@ -1567,17 +1635,57 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
       // Renumber references in ROADMAP for subsequent phases. Applied to the
       // current milestone slice only — over the whole document it renumbered
       // archived milestone sections and mangled the dates in their progress tables.
+      //
+      // The renumbering is the only rewrite here that can give two phases the
+      // same number: the removals only delete. So that is where the consistency
+      // of the result is decided, and it is refused outright in the two cases
+      // that produce a duplicate, rather than written and reported afterwards.
       if (!isDecimal) {
         const removedInt = parseInt(normalized, 10);
         const offset = currentMilestoneOffset(roadmapContent);
         const head = roadmapContent.slice(0, offset);
         const tailBefore = roadmapContent.slice(offset);
-        const tail = renumberPhaseReferences(tailBefore, removedInt);
+        const namesAbove = namesPhaseAbove(tailBefore, removedInt);
 
-        roadmapContent = head + tail;
-        if (tail !== tailBefore) roadmapLanded.push('renumber');
-        else if (namesPhaseAbove(tailBefore, removedInt))
-          roadmapMissed.push('renumber');
+        // A renumbering compensates for a removal that happened. Applied on top
+        // of one that did not, it shifts the next phase onto the number the
+        // document still uses for the phase being removed.
+        if (roadmapMissed.length > 0) {
+          if (namesAbove) {
+            roadmapWithheld.push('renumber');
+            roadmapWithheldHint =
+              `Renumbering was withheld: ROADMAP.md still names the removed ` +
+              `phase (${roadmapMissed.join(', ')}), and shifting the later ` +
+              `phases down on top of that would give two phases the same ` +
+              `number. The phase directories have been renumbered, so ` +
+              `ROADMAP.md now names phases by their old numbers — fix the ` +
+              `unreachable reference and reconcile ROADMAP.md by hand.`;
+          }
+        } else {
+          const tail = renumberPhaseReferences(tailBefore, removedInt);
+          const candidate = head + tail;
+          // Only duplicates this rewrite would introduce count. A roadmap that
+          // already names a phase twice is not made worse by leaving it alone,
+          // and refusing to renumber it forever is not a fix.
+          const before = duplicatePhaseIds(roadmapContent);
+          const introduced = duplicatePhaseIds(candidate).filter(
+            (id) => !before.includes(id),
+          );
+
+          if (introduced.length > 0) {
+            roadmapWithheld.push('renumber');
+            roadmapWithheldHint =
+              `Renumbering was withheld: applying it would have named phase ` +
+              `${introduced.join(', ')} twice in ROADMAP.md, because some ` +
+              `reference to it is written in a shape the rewrite cannot reach. ` +
+              `The phase directories have been renumbered, so ROADMAP.md now ` +
+              `names phases by their old numbers — reconcile it by hand.`;
+          } else {
+            roadmapContent = candidate;
+            if (tail !== tailBefore) roadmapLanded.push('renumber');
+            else if (namesAbove) roadmapMissed.push('renumber');
+          }
+        }
       }
 
       if (roadmapLanded.length > 0) {
@@ -1622,12 +1730,15 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
 
       const result = {
         removed: targetPhase,
+        found: true,
         directory_deleted: targetDir || null,
         renamed_directories: renamedDirs,
         renamed_files: renamedFiles,
         roadmap_updated: roadmapLanded.length > 0,
         roadmap_landed: roadmapLanded,
         roadmap_missed_targets: roadmapMissed,
+        roadmap_withheld: roadmapWithheld,
+        roadmap_withheld_hint: roadmapWithheldHint,
         state_updated: fs.existsSync(statePath),
       };
 

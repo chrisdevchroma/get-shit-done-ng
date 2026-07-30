@@ -596,16 +596,11 @@ function withRoadmapLock(cwd, fn) {
  * @returns {Error} the same error, annotated
  */
 function notePartialWrites(err, applied, remedy) {
-  if (!err || !Array.isArray(applied) || applied.length === 0) return err;
+  if (!(err instanceof Error) || applied.length === 0) return err;
   err.partialWrites = applied;
-  const base = typeof err.message === 'string' ? err.message : String(err);
-  try {
-    err.message =
-      `${base}\n\nAlready applied before this failure: ${applied.join('; ')}. ` +
-      `${remedy}`;
-  } catch {
-    // A frozen error keeps its own message; the structured field still carries it.
-  }
+  err.message =
+    `${err.message}\n\nAlready applied before this failure: ` +
+    `${applied.join('; ')}. ${remedy}`;
   return err;
 }
 
