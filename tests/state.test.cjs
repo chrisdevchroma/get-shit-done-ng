@@ -2718,6 +2718,57 @@ describe('state record-quick-task', () => {
     );
   });
 
+  test('names every value the table had no column for', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '| 260101-a1b | Fix typo |',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.strictEqual(output.recorded, true, 'the row is still recorded');
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'status', 'directory'],
+      'every value without a column must be named',
+    );
+  });
+
+  test('a value that was never given is not reported as dropped', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record().output);
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'directory'],
+      'no --status was passed, so nothing was dropped for it',
+    );
+  });
+
+  test('reports nothing dropped when the table carries every column', () => {
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.deepStrictEqual(output.dropped, [], 'every value found a column');
+  });
+
   test('a STATE.md with no Blockers section gets the section at the end', () => {
     fs.writeFileSync(statePath, '# Project State\n\n**Last Activity:** none\n');
     const output = JSON.parse(record().output);
@@ -2813,6 +2864,65 @@ describe('state record-quick-task', () => {
     assert.ok(
       !/Edit tool/i.test(step7),
       `step 7 must not tell the model to edit STATE.md: ${step7}`,
+    );
+  });
+});
+
+// The workflow is copied, not read around: a model that finds `--status` in the
+// block passes it whatever the prose below the block says.
+describe('quick.md step 7 instructions', () => {
+  const workflow = fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-ng', 'workflows', 'quick.md'),
+    'utf-8',
+  );
+  const step7 = workflow.slice(
+    workflow.indexOf('**Step 7: Update STATE.md**'),
+    workflow.indexOf('**Step 8:'),
+  );
+  const recordBlocks = [...step7.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((b) => b.includes('record-quick-task'));
+
+  test('the command block itself decides whether --status is passed', () => {
+    assert.strictEqual(
+      recordBlocks.length,
+      2,
+      `one block per branch, so neither has to be edited: ${step7}`,
+    );
+    assert.deepStrictEqual(
+      recordBlocks.map((b) => b.includes('--status')),
+      [true, false],
+      'the verify branch passes --status and the other one omits it',
+    );
+  });
+
+  test('the result table covers the call that prints no JSON', () => {
+    const table = step7.slice(step7.indexOf('| Output |'));
+    assert.match(
+      table,
+      /No JSON.*\n/i,
+      `a non-zero exit with no JSON needs its own row: ${table}`,
+    );
+    assert.match(
+      table,
+      /"dropped"/,
+      `the dropped list needs its own row: ${table}`,
+    );
+  });
+
+  test('the completion checklist repeats step 7 caveat about Status', () => {
+    const criteria = workflow.slice(
+      workflow.indexOf('<success_criteria>'),
+      workflow.indexOf('</success_criteria>'),
+    );
+    const row = criteria
+      .split('\n')
+      .find((l) => l.includes('quick task row'));
+    assert.ok(row, `the checklist should still cover the row: ${criteria}`);
+    assert.match(
+      row,
+      /dropped/,
+      'the checklist must not promise a Status column the table may not have',
     );
   });
 });

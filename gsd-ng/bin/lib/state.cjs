@@ -1464,27 +1464,46 @@ function quickCell(value) {
   return quickText(value).replace(/\|/g, '\\|');
 }
 
+const QUICK_FIELD_FOR_COLUMN = {
+  '#': 'id',
+  id: 'id',
+  task: 'id',
+  description: 'description',
+  date: 'date',
+  commit: 'commit',
+  status: 'status',
+  directory: 'directory',
+};
+
+const QUICK_FIELD_ORDER = [
+  'id',
+  'description',
+  'date',
+  'commit',
+  'status',
+  'directory',
+];
+
 /**
  * Fill a row from the table's own header, so a table that predates a column keeps
  * its shape. A header cell nobody recognises gets an empty value rather than the
  * next value along, which would silently shift every field one column over.
+ *
+ * A value whose column is absent has nowhere to go, so it is returned in `dropped`
+ * rather than only being missing from the row: the caller reports success either
+ * way, and a caller that cannot see the loss cannot mention it.
  */
 function quickRowFor(headerCells, values) {
-  const byColumn = {
-    '#': values.id,
-    id: values.id,
-    task: values.id,
-    description: values.description,
-    date: values.date,
-    commit: values.commit,
-    status: values.status,
-    directory: values.directory,
-  };
+  const columns = new Set();
   const cells = headerCells.map((name) => {
-    const value = byColumn[name.trim().toLowerCase()];
-    return ` ${quickCell(value)} `;
+    const field = QUICK_FIELD_FOR_COLUMN[name.trim().toLowerCase()];
+    if (field) columns.add(field);
+    return ` ${quickCell(field ? values[field] : '')} `;
   });
-  return `|${cells.join('|')}|`;
+  const dropped = QUICK_FIELD_ORDER.filter(
+    (field) => quickText(values[field]) !== '' && !columns.has(field),
+  );
+  return { row: `|${cells.join('|')}|`, dropped };
 }
 
 function quickHeaderCells(headerLine) {
@@ -1553,12 +1572,13 @@ function cmdStateRecordQuickTask(cwd, options) {
     const heading = content.match(QUICK_TASKS_HEADING);
     let section;
     let row;
+    let dropped;
 
     if (!heading) {
-      row = quickRowFor(
+      ({ row, dropped } = quickRowFor(
         quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
         values,
-      );
+      ));
       const block = `### Quick Tasks Completed\n\n${QUICK_TABLE_HEADER}\n${row}`;
       const blockers = content.match(sectionPattern(BLOCKER_HEADINGS, '###?'));
       if (blockers) {
@@ -1577,14 +1597,17 @@ function cmdStateRecordQuickTask(cwd, options) {
       const lines = content.slice(at).split('\n');
       const headerIdx = findTableHeaderIndex(lines);
       if (headerIdx === -1) {
-        row = quickRowFor(
+        ({ row, dropped } = quickRowFor(
           quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
           values,
-        );
+        ));
         lines.splice(0, 0, '', ...QUICK_TABLE_HEADER.split('\n'), row);
         section = 'table_created';
       } else {
-        row = quickRowFor(quickHeaderCells(lines[headerIdx]), values);
+        ({ row, dropped } = quickRowFor(
+          quickHeaderCells(lines[headerIdx]),
+          values,
+        ));
         let end = headerIdx + 1;
         while (end < lines.length && lines[end].trimStart().startsWith('|')) {
           end++;
@@ -1611,6 +1634,7 @@ function cmdStateRecordQuickTask(cwd, options) {
         id: values.id,
         section,
         row,
+        dropped,
         fields_updated: applied.updated,
       },
       'true',
