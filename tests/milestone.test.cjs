@@ -12,6 +12,8 @@ const {
   createTempProject,
   cleanup,
   waitForReadyFlag,
+  trackExit,
+  waitForExit,
 } = require('./helpers.cjs');
 const {
   formatMilestoneHeading,
@@ -1511,7 +1513,7 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     );
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d));
-    const exited = new Promise((r) => child.on('close', r));
+    trackExit(child);
 
     await waitForReadyFlag(readyFlag, 'the child');
 
@@ -1525,7 +1527,7 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     );
 
     fs.unlinkSync(lockPath);
-    const code = await exited;
+    const code = await waitForExit(child, 'milestone complete');
     assert.strictEqual(code, 0, `the command should succeed: ${stderr.trim()}`);
 
     const after = fs.readFileSync(statePath, 'utf-8');
@@ -1726,7 +1728,7 @@ describe('milestone complete waits for the ROADMAP.md lock', () => {
     );
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d));
-    const exited = new Promise((r) => child.on('close', r));
+    trackExit(child);
 
     await waitForReadyFlag(readyFlag, 'the child');
 
@@ -1745,7 +1747,7 @@ describe('milestone complete waits for the ROADMAP.md lock', () => {
     );
     fs.unlinkSync(roadmapLock);
 
-    const code = await exited;
+    const code = await waitForExit(child, 'milestone complete');
     assert.strictEqual(code, 0, `the command should succeed: ${stderr.trim()}`);
     assert.strictEqual(
       fs.readFileSync(archived, 'utf-8'),
