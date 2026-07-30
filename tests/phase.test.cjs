@@ -2501,6 +2501,85 @@ Plans: TBD
       'a run that changed nothing must not rewrite the file',
     );
   });
+
+  // The rewrites reach only the text after the last </details>, so a live
+  // milestone written above a collapsed one is out of scope for all of them.
+  // Probes scoped the same way saw nothing either and reported the file clean —
+  // the scope mismatch is the failure the reporting exists for.
+  test('names every target a live milestone above the archive puts out of reach', () => {
+    const before = `# Roadmap
+
+- [ ] **Phase 1: Foundation** - set up
+
+### Phase 1: Foundation
+**Goal**: Set up
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 1. Foundation | 0/1 | Planned |  |
+
+<details>
+<summary>v0.9 - SHIPPED 2020-01-01</summary>
+
+### Phase 0: Prehistory
+**Plans**: 1/1 plans complete
+
+</details>
+`;
+    const output = completePhase1(before);
+    assert.strictEqual(
+      output.roadmap_updated,
+      false,
+      'nothing was rewritten — every target sits above the collapsed section',
+    );
+    assert.deepStrictEqual(output.roadmap_missed_targets, [
+      'phase-checkbox',
+      'progress-table',
+      'plans-line',
+    ]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'and the file is left as it was',
+    );
+  });
+
+  // The other side of the scope: an archived milestone is unreachable by
+  // design, so its content is not a missed target. Probing the whole document
+  // rather than the current milestone would report this one.
+  test('a target that exists only in an archived milestone is not reported', () => {
+    const output = completePhase1(`# Roadmap
+
+<details>
+<summary>v0.9 - SHIPPED 2020-01-01</summary>
+
+### Phase 1: Foundation
+**Plans**: 1/1 plans complete
+
+</details>
+
+- [ ] **Phase 1: Foundation** - set up
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 1. Foundation | 0/1 | Planned |  |
+`);
+    assert.strictEqual(
+      output.roadmap_updated,
+      true,
+      'the reachable targets landed',
+    );
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'the archived Plans line is out of scope by design, not missed',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5868,10 +5947,10 @@ describe('phase remove milestone scoping', () => {
     '',
   ];
 
-  function writeMilestoneRoadmap() {
+  function writeMilestoneRoadmap(sections = [ARCHIVED, CURRENT]) {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      ['# Roadmap', ''].concat(ARCHIVED, CURRENT).join('\n'),
+      ['# Roadmap', ''].concat(...sections).join('\n'),
     );
     for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
       fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
@@ -6050,6 +6129,64 @@ describe('phase remove milestone scoping', () => {
       ['renumber'],
       'the padded Phase 03 is a renumbering target the rewrite cannot reach, ' +
         'and saying so is the point of the check',
+    );
+  });
+
+  // With the live milestone written above the collapsed one, every rewrite is
+  // out of scope. Probes scoped to the rewrites' own region reported nothing.
+  test('names every target when the live milestone sits above the archive', () => {
+    writeMilestoneRoadmap([CURRENT, ARCHIVED]);
+    const before = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      'utf-8',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.roadmap_updated, false);
+    assert.deepStrictEqual(output.roadmap_landed, []);
+    assert.deepStrictEqual(output.roadmap_missed_targets, [
+      'phase-section',
+      'phase-checkbox',
+      'progress-table',
+      'renumber',
+    ]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'a roadmap nothing matched in is left alone',
+    );
+  });
+
+  // Archived phases are never renumbered — that is asserted above — so one
+  // above the removed number is not a renumbering target either. A probe
+  // reading the whole document instead of the current milestone reports this
+  // as a miss on every removal from a project with a shipped milestone.
+  test('an archived phase above the removed one is not a renumbering target', () => {
+    writeMilestoneRoadmap([
+      [
+        '<details>',
+        '<summary>v0.1 — Legacy (Shipped)</summary>',
+        '',
+        '- [x] **Phase 3: Oldest**',
+        '',
+        '</details>',
+        '',
+      ],
+      ['- [ ] **Phase 1: Alpha**', '- [ ] **Phase 2: Beta**', ''],
+    ]);
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.deepStrictEqual(output.roadmap_landed, ['phase-checkbox']);
+    assert.deepStrictEqual(
+      output.roadmap_missed_targets,
+      [],
+      'nothing in the current milestone needed renumbering',
     );
   });
 });

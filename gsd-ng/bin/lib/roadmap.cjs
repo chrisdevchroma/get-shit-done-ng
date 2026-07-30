@@ -469,7 +469,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum) {
       );
       roadmapContent = checkbox.content;
       if (checkbox.changed) landed.push('phase-checkbox');
-      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
+      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum, '[ ]'))
         missed.push('phase-checkbox');
     }
 

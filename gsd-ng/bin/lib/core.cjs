@@ -1232,6 +1232,12 @@ function getArchivedPhaseDirs(cwd) {
  * Extract the current (active) milestone content from ROADMAP.md.
  * Strips shipped milestone sections wrapped in <details> blocks.
  * Returns the remaining content which is the active milestone.
+ *
+ * This is the authoritative answer to what the current milestone *is*: anything
+ * a <details> block does not enclose. `currentMilestoneOffset` below answers a
+ * narrower question — where a rewrite may write — and the two disagree about
+ * content above the first <details>. That is deliberate, and the reason the
+ * rewrite probes read this function rather than the write scope.
  */
 function extractCurrentMilestone(content) {
   return content.replace(/<details>[\s\S]*?<\/details>/gi, '');
@@ -1256,6 +1262,10 @@ function replaceInCurrentMilestone(content, pattern, replacement) {
   return { content: before + after.replace(pattern, replacement), changed };
 }
 
+// Where a rewrite may write: the text after the last </details>, so a splice
+// cannot land inside an archived milestone and byte offsets stay valid. A
+// contiguous tail, which is narrower than the current milestone whenever live
+// content sits above a collapsed section.
 function currentMilestoneOffset(content) {
   const lastDetailsClose = content.lastIndexOf('</details>');
   return lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
@@ -1271,12 +1281,19 @@ function currentMilestoneSlice(content) {
 // decide whether a rewrite that matched nothing is worth reporting. A roadmap
 // with no progress table has not missed one; a roadmap whose table row is
 // written in a shape the rewrite cannot reach has.
+//
+// They read the whole current milestone — `extractCurrentMilestone`, not the
+// write scope. Scoped like the rewrites they could only ever find a shape
+// mismatch inside the scope, never a scope mismatch, and a roadmap whose live
+// milestone sits above a collapsed one put every target out of reach and was
+// reported clean. Archived content stays excluded: it is unreachable by design,
+// so naming it would report a miss on work no rewrite is allowed to do.
 
 function hasPhaseTableRow(content, phaseNum) {
   return new RegExp(
     String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
     'im',
-  ).test(currentMilestoneSlice(content));
+  ).test(extractCurrentMilestone(content));
 }
 
 // A header naming the phase, without requiring the colon the section rewrites
@@ -1286,11 +1303,11 @@ function hasPhaseHeader(content, phaseNum) {
   return new RegExp(
     String.raw`^#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])`,
     'im',
-  ).test(currentMilestoneSlice(content));
+  ).test(extractCurrentMilestone(content));
 }
 
 function hasPhasePlansLine(content, phaseNum) {
-  const section = currentMilestoneSlice(content).match(
+  const section = extractCurrentMilestone(content).match(
     new RegExp(
       String.raw`#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])(?:(?!\n#{2,4}\s*Phase\s)[\s\S])*`,
       'i',
@@ -1299,18 +1316,22 @@ function hasPhasePlansLine(content, phaseNum) {
   return section ? /^\s*\*{0,2}Plans\*{0,2}\s*:/im.test(section[0]) : false;
 }
 
-// True when there is nothing to report: either the phase has no checkbox at
-// all, or it has one in the supported form and a tick that matched nothing
-// only means the box was already ticked. False when some checkbox line names
-// the phase in a shape the rewrite cannot reach.
-function isPhaseCheckboxSatisfied(content, phaseNum) {
-  const slice = currentMilestoneSlice(content);
+// True when there is nothing to report. `boxState` is the state the rewrite
+// searched for, and must be the one it used: a checkbox its own pattern can
+// match is a target it failed to reach, while one in the other state — a box
+// already ticked, for a rewrite that ticks — is what a no-op means. Reading a
+// wider region than the rewrite is what forces the distinction; scoped the same
+// way, an unticked supported-form box could not survive the rewrite at all.
+function isPhaseCheckboxSatisfied(content, phaseNum, boxState = '[ x]') {
+  const region = extractCurrentMilestone(content);
   const loose = new RegExp(
     String.raw`-\s*\[[ x]\][^\n]*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])[:\s]`,
     'i',
   );
-  if (!loose.test(slice)) return true;
-  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(slice);
+  if (!loose.test(region)) return true;
+  if (new RegExp(phaseCheckboxPattern(phaseNum, boxState), 'i').test(region))
+    return false;
+  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(region);
 }
 
 // ─── Roadmap & model utilities ────────────────────────────────────────────────
