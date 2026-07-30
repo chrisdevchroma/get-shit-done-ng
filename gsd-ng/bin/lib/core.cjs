@@ -159,21 +159,33 @@ function writeFileAtomic(filePath, content, encoding = 'utf-8') {
 // ─── File locks ──────────────────────────────────────────────────────────────
 
 // A dead holder is stolen from on sight, so this threshold only backstops the
-// cases where liveness cannot be established: a reused pid, a payload that never
-// got written, a lock from another host. Critical sections are a read, a regex
-// pass and a rename — about a millisecond — so 15s is four orders of magnitude
-// of headroom rather than a guess at how long the work takes.
+// cases where liveness cannot be established: a payload that never got written,
+// a lock from another host. Critical sections are a read, a regex pass and a
+// rename — about a millisecond — so 15s is four orders of magnitude of headroom
+// rather than a guess at how long the work takes.
 const LOCK_STALE_MS = 15 * 1000;
 
-// Longer than LOCK_STALE_MS on purpose. A budget shorter than the staleness
-// threshold lets a caller give up while waiting for a lock it was seconds away
-// from being entitled to steal, which fails a write that should have proceeded.
+// The same backstop for a holder that can be shown to be running here. Age is
+// not evidence against a process that answers signal 0: stealing on it puts two
+// processes inside the section, which is the lost update the lock exists to
+// stop. What is left for this threshold is a pid recycled onto an unrelated live
+// process after its holder was hard-killed, which would otherwise make the lock
+// immortal — so it is far above any real section, and finite.
+const LOCK_LIVE_HOLDER_STALE_MS = 5 * 60 * 1000;
+
+// Longer than LOCK_STALE_MS and shorter than LOCK_LIVE_HOLDER_STALE_MS, both on
+// purpose. Above the first, so a caller never gives up while waiting for a lock
+// it was seconds away from being entitled to steal — nothing can vouch for that
+// holder, and failing a write the next call would have made is worse than the
+// wait. Below the second, so a holder that is demonstrably still working
+// produces a loud timeout in the waiter rather than a silent steal.
 const LOCK_ACQUIRE_BUDGET_MS = 20 * 1000;
 
 const LOCK_POLL_MS = 20;
 
-// Depth per lock path, not a boolean: one process calling two locked functions
-// would otherwise wait out its whole budget against itself.
+// Per lock path: the reentrancy depth, and the identity of the file this process
+// created. Depth rather than a boolean because one process calling two locked
+// functions would otherwise wait out its whole budget against itself.
 const heldLocks = new Map();
 let lockExitHookInstalled = false;
 
@@ -189,15 +201,40 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// Drop every lock this process holds, whatever depth it is at: the process is
+// on its way out, so nothing is left to unwind to.
+function releaseAllHeldLocks() {
+  for (const [lockPath, held] of [...heldLocks.entries()]) {
+    held.depth = 1;
+    releaseFileLock(lockPath);
+  }
+}
+
+// Ctrl-C is the ordinary way a command ends early, and `exit` does not run for
+// signal termination — the lock outlived the process and the next command waited
+// out the staleness threshold behind a holder that was already gone.
+const LOCK_RELEASE_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
 function installLockExitHook() {
   if (lockExitHookInstalled) return;
   lockExitHookInstalled = true;
-  process.on('exit', () => {
-    for (const lockPath of [...heldLocks.keys()]) {
-      heldLocks.set(lockPath, 1);
-      releaseFileLock(lockPath);
-    }
-  });
+  process.on('exit', releaseAllHeldLocks);
+  for (const signal of LOCK_RELEASE_SIGNALS) {
+    const handler = () => {
+      releaseAllHeldLocks();
+      // Listening for a signal suppresses the default termination, so hand the
+      // signal back: with this listener gone the process dies by it and reports
+      // the status it would have without the lock. A host that installed its own
+      // listener keeps it, and decides for itself.
+      process.removeListener(signal, handler);
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(1);
+      }
+    };
+    process.on(signal, handler);
+  }
 }
 
 function readLockHolder(lockPath) {
@@ -210,21 +247,25 @@ function readLockHolder(lockPath) {
 }
 
 /**
- * True when the recorded holder is a process on this host that no longer exists.
+ * What can be established about the recorded holder: 'dead', 'live', 'unknown'.
  *
  * Signal 0 is an existence check on POSIX and on Windows. EPERM means the
  * process is alive under another user, which is not dead. A pid from a different
- * host says nothing, so it falls through to the staleness threshold.
+ * host, or a payload that was never written, says nothing either way and is
+ * 'unknown' — that is what the staleness threshold is for.
+ *
+ * @returns {'dead'|'live'|'unknown'}
  */
-function lockHolderIsDead(holder) {
-  if (!holder || typeof holder.pid !== 'number') return false;
-  if (holder.pid === process.pid) return false;
-  if (holder.host && holder.host !== require('os').hostname()) return false;
+function lockHolderState(holder) {
+  if (!holder || typeof holder.pid !== 'number') return 'unknown';
+  if (holder.host && holder.host !== require('os').hostname()) return 'unknown';
+  if (holder.pid === process.pid) return 'live';
   try {
     process.kill(holder.pid, 0);
-    return false;
+    return 'live';
   } catch (err) {
-    return err.code === 'ESRCH';
+    if (err.code === 'ESRCH') return 'dead';
+    return err.code === 'EPERM' ? 'live' : 'unknown';
   }
 }
 
@@ -236,6 +277,49 @@ function lockAgeMs(lockPath) {
   }
 }
 
+// mtimeMs carries sub-millisecond precision and Date.now() is truncated to whole
+// milliseconds, so a lock created moments ago almost always reads as a fraction
+// of a millisecond ahead of the clock. A second of slack keeps that, and any
+// small clock adjustment, from being read as a timestamp from the future.
+const LOCK_FUTURE_TOLERANCE_MS = 1000;
+
+/**
+ * True when `ageMs` puts the lock past the point of being worth waiting for.
+ *
+ * An age well below zero counts: the mtime is ahead of this host's clock, which
+ * no process on this host can have produced, and skew between hosts sharing a
+ * `.planning/` is exactly the case the host check hands to the age. Judged by
+ * `ageMs > staleMs` alone, such a lock is never stale and never stolen, so every
+ * write on the file burns the whole budget and fails for as long as it is there.
+ */
+function lockAgeIsStale(ageMs, staleMs) {
+  if (ageMs === null) return false;
+  return ageMs < -LOCK_FUTURE_TOLERANCE_MS || ageMs > staleMs;
+}
+
+/**
+ * Remove a lock judged stale. Returns false when it is still there afterwards.
+ *
+ * A directory at the lock path — junk, a botched cleanup — cannot be unlinked,
+ * and swallowing that failure wedges the file as thoroughly as an unreclaimable
+ * lock does. The name is GSD's own and holds a single JSON file at most, so
+ * clearing it recursively removes nothing anyone else put there.
+ */
+function removeStaleLock(lockPath) {
+  try {
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (err) {
+    if (err.code !== 'EISDIR' && err.code !== 'EPERM') return false;
+  }
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create the lock, or report why not.
  *
@@ -244,15 +328,23 @@ function lockAgeMs(lockPath) {
  * put the holder metadata but the file itself. The descriptor is closed before
  * returning so a later unlink cannot be refused on Windows.
  *
- * @returns {'acquired'|'taken'|'unavailable'}
+ * The identity comes from the open descriptor, so it is the file this call
+ * created and not whatever is at the path by the time anyone looks again. That
+ * is what lets release tell its own lock from a replacement.
+ *
+ * @returns {{outcome: 'acquired'|'taken'|'unavailable', identity: ?object}}
  */
 function tryCreateLock(lockPath) {
   let fd;
   try {
     fd = fs.openSync(lockPath, 'wx');
   } catch (err) {
-    return err.code === 'EEXIST' ? 'taken' : 'unavailable';
+    return {
+      outcome: err.code === 'EEXIST' ? 'taken' : 'unavailable',
+      identity: null,
+    };
   }
+  let identity = null;
   try {
     fs.writeSync(
       fd,
@@ -265,12 +357,26 @@ function tryCreateLock(lockPath) {
   } catch {
     // A lock with no readable payload still excludes; it just cannot be
     // liveness-checked, so it falls back to the staleness threshold.
-  } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {}
   }
-  return 'acquired';
+  try {
+    const st = fs.fstatSync(fd);
+    identity = { dev: st.dev, ino: st.ino };
+  } catch {
+    // Without an identity release falls back to unlinking whatever is there.
+  }
+  try {
+    fs.closeSync(fd);
+  } catch {}
+  return { outcome: 'acquired', identity };
+}
+
+function lockFileIdentity(lockPath) {
+  try {
+    const st = fs.statSync(lockPath);
+    return { dev: st.dev, ino: st.ino };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -281,12 +387,19 @@ function tryCreateLock(lockPath) {
  * - `unlocked` — the lock file could not be created at all (read-only tree,
  *   missing directory, no permission). The caller runs unserialised, which is
  *   what it did before locking existed, rather than refusing to write.
- * - `timeout` — a live holder younger than the staleness threshold held on for
- *   the whole budget. The caller fails loudly instead of clobbering it.
+ * - `timeout` — the holder held on for the whole budget without becoming
+ *   reclaimable. The caller fails loudly instead of clobbering it.
+ *
+ * A lock is reclaimed when its holder is a process that has gone, or when its
+ * age passes the threshold for what is known about that holder: `staleMs` when
+ * nothing can be established, `liveStaleMs` when signal 0 says it is running
+ * here. Age is not evidence against a running process, so a section that
+ * outlasts `staleMs` keeps its exclusivity.
  *
  * @param {string} lockPath
  * @param {object} [opts]
  * @param {number} [opts.staleMs]
+ * @param {number} [opts.liveStaleMs] - never below staleMs
  * @param {number} [opts.budgetMs]
  * @param {number} [opts.pollMs]
  * @returns {{mode: string, holder?: object, ageMs?: number}}
@@ -297,29 +410,33 @@ function acquireFileLock(lockPath, opts = {}) {
     budgetMs = LOCK_ACQUIRE_BUDGET_MS,
     pollMs = LOCK_POLL_MS,
   } = opts;
+  const liveStaleMs =
+    opts.liveStaleMs === undefined
+      ? Math.max(staleMs, LOCK_LIVE_HOLDER_STALE_MS)
+      : opts.liveStaleMs;
 
-  const depth = heldLocks.get(lockPath);
-  if (depth) {
-    heldLocks.set(lockPath, depth + 1);
+  const held = heldLocks.get(lockPath);
+  if (held) {
+    held.depth += 1;
     return { mode: 'reentrant' };
   }
 
   const deadline = Date.now() + budgetMs;
   for (;;) {
-    const outcome = tryCreateLock(lockPath);
+    const { outcome, identity } = tryCreateLock(lockPath);
     if (outcome === 'acquired') {
       installLockExitHook();
-      heldLocks.set(lockPath, 1);
+      heldLocks.set(lockPath, { depth: 1, identity });
       return { mode: 'locked' };
     }
     if (outcome === 'unavailable') return { mode: 'unlocked' };
 
     const holder = readLockHolder(lockPath);
     const ageMs = lockAgeMs(lockPath);
-    if (lockHolderIsDead(holder) || (ageMs !== null && ageMs > staleMs)) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {}
+    const state = lockHolderState(holder);
+    const limit = state === 'live' ? liveStaleMs : staleMs;
+    if (state === 'dead' || lockAgeIsStale(ageMs, limit)) {
+      removeStaleLock(lockPath);
     }
     if (Date.now() >= deadline) return { mode: 'timeout', holder, ageMs };
     sleepSync(pollMs);
@@ -328,19 +445,48 @@ function acquireFileLock(lockPath, opts = {}) {
 
 /**
  * Drop one level of the lock. Returns true when the lock file was removed.
+ *
+ * The file is only removed when it is still the one this process created. A
+ * holder whose lock was reclaimed under it would otherwise delete the
+ * reclaimer's lock and leave the section open to a third process, so a
+ * replacement is left alone and reported: the write that just happened ran
+ * alongside someone else's, which the caller cannot see any other way.
  */
 function releaseFileLock(lockPath) {
-  const depth = heldLocks.get(lockPath);
-  if (!depth) return false;
-  if (depth > 1) {
-    heldLocks.set(lockPath, depth - 1);
+  const held = heldLocks.get(lockPath);
+  if (!held) return false;
+  if (held.depth > 1) {
+    held.depth -= 1;
     return false;
   }
   heldLocks.delete(lockPath);
+
+  const present = lockFileIdentity(lockPath);
+  if (held.identity && present && !sameLockFile(present, held.identity)) {
+    reportLockTakenOver(lockPath);
+    return false;
+  }
   try {
     fs.unlinkSync(lockPath);
   } catch {}
   return true;
+}
+
+function sameLockFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function reportLockTakenOver(lockPath) {
+  const holder = readLockHolder(lockPath);
+  const who = holder
+    ? `pid ${holder.pid} on ${holder.host || 'unknown host'}`
+    : 'an unidentified process';
+  const guarded = path.basename(lockPath).replace(/^\.|\.gsd-lock$/g, '');
+  process.stderr.write(
+    `Warning: the lock on ${guarded} was taken over by ${who} while this process ` +
+      `still held it, so the change just written may have raced with that process. ` +
+      `Check ${guarded} before relying on it.\n`,
+  );
 }
 
 /**
@@ -803,6 +949,9 @@ function phaseCheckboxPattern(phaseNum, boxState = '[ x]') {
 // The bare-or-bold prefix is phaseCheckboxPattern's — a reader that takes only
 // the bold form reports a bare-form roadmap as having no phases at all, which
 // is how `phase complete` came to call a milestone finished with a phase left.
+// Leading whitespace is allowed for the same reason: the rewriters' pattern is
+// not anchored, so they tick an entry nested under its milestone heading, and a
+// reader that cannot see one disagrees with them about which phases exist.
 function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
   const num =
     phaseNum == null
@@ -810,21 +959,44 @@ function phaseCheckboxLinePattern(phaseNum = null, opts = {}) {
       : phaseNumPattern(phaseNum) +
         String.raw`[A-Z]?` +
         (opts.withDecimals ? String.raw`(?:\.\d+)*` : '');
-  return String.raw`^[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
+  return String.raw`^[ \t]*[-*]\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(${num})(?![\dA-Za-z.])\s*:?\s*([^\n]*)$`;
 }
 
-// The name as written after the colon, minus the bold markers and the
-// `(completed DATE)` suffix `phase complete` appends. Null when nothing is left:
-// a checkbox may carry only a number.
+// What the roadmap appends after the name and is not part of it: the plan count
+// the templates carry, and the completion or insertion marker. A parenthetical
+// that says none of those is part of the name — `Auth (JWT)`.
+const PHASE_CHECKBOX_META_SUFFIX =
+  /\s*\((?:(?:completed|inserted)\b[^)]*|[^)]*\bplans?\b[^)]*)\)\s*$/i;
+
+// A description follows the name after a spaced dash, as it does after the bold
+// markers in `**Phase N: Name** - description`.
+const PHASE_CHECKBOX_DESCRIPTION = /\s+(?:[—–]|-{1,2})\s+[^\n]*$/;
+
+// The name as written after the colon, minus the bold markers, any description
+// after it and the roadmap's own trailing metadata. Null when nothing is left: a
+// checkbox may carry only a number.
 function phaseCheckboxName(rest) {
   // A bold entry closes its markers at the end of the name; anything after them
-  // is a trailing description, not part of it.
+  // is a trailing description, not part of it. The bare form has no closing
+  // delimiter, so it ends at the description separator instead — without one,
+  // `Phase N: Audit (1 plan) — completed DATE` named the phase after the whole
+  // line, and that name reaches slugified fields.
   const raw = String(rest).replace(/^\s*\*\*\s*/, '');
   const bolded = raw.match(/^([^*\n]*?)\s*\*\*/);
-  const name = (bolded ? bolded[1] : raw)
-    .replace(/\*\*/g, '')
-    .replace(/\s*\((?:completed|inserted)\b[^)]*\)\s*$/i, '')
-    .trim();
+  const body = bolded
+    ? bolded[1]
+    : raw
+        .replace(/^(?:[—–]|-{1,2})\s+/, '')
+        .replace(PHASE_CHECKBOX_DESCRIPTION, '');
+
+  let name = body.replace(/\*\*/g, '').trim();
+  // Repeated because both markers can be there at once: `phase complete`
+  // appends its own to a line the template already gave a plan count.
+  for (;;) {
+    const stripped = name.replace(PHASE_CHECKBOX_META_SUFFIX, '').trim();
+    if (stripped === name) break;
+    name = stripped;
+  }
   return name || null;
 }
 
