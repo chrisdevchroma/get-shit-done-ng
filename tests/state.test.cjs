@@ -2718,6 +2718,57 @@ describe('state record-quick-task', () => {
     );
   });
 
+  test('names every value the table had no column for', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '| 260101-a1b | Fix typo |',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.strictEqual(output.recorded, true, 'the row is still recorded');
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'status', 'directory'],
+      'every value without a column must be named',
+    );
+  });
+
+  test('a value that was never given is not reported as dropped', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record().output);
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'directory'],
+      'no --status was passed, so nothing was dropped for it',
+    );
+  });
+
+  test('reports nothing dropped when the table carries every column', () => {
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.deepStrictEqual(output.dropped, [], 'every value found a column');
+  });
+
   test('a STATE.md with no Blockers section gets the section at the end', () => {
     fs.writeFileSync(statePath, '# Project State\n\n**Last Activity:** none\n');
     const output = JSON.parse(record().output);
