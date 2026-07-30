@@ -3309,6 +3309,14 @@ describe('getMilestonePhaseFilter checkbox forms', () => {
 // None of those shapes takes a lock today. The guard is worth what it covers: if
 // an acquisition moves into a class method or behind a dispatch table, this
 // stops seeing it and says nothing.
+//
+// The three wrappers are also not the only way to take these lock files.
+// withFileLock locks whatever path it is handed, so
+// `withFileLock(planningPaths(cwd).roadmap, fn)` takes the ROADMAP.md lock while
+// registering as no holder and opening no section. Charging it to a lock is not
+// open — all three wrappers call it, so each would then reach every lock — so
+// what stands in for that is the last test here, pinning the modules allowed to
+// use it directly.
 
 describe('lock ordering', () => {
   const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
@@ -3570,6 +3578,14 @@ describe('lock ordering', () => {
       'utf-8',
     );
     return sources;
+  }
+
+  // The modules that name `identifier` at all — imported, aliased or called.
+  function modulesNaming(sources, identifier) {
+    const named = new RegExp(`\\b${identifier}\\b`);
+    return Object.keys(sources)
+      .filter((module) => named.test(sources[module]))
+      .sort();
   }
 
   test('no inner-lock holder can reach an outer-lock holder', () => {
@@ -3934,6 +3950,40 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(nestingViolations, []);
   });
 
+  test('only the lock wrappers themselves reach for withFileLock', () => {
+    // withFileLock locks whichever path it is handed, so
+    // `withFileLock(planningPaths(cwd).roadmap, fn)` takes the ROADMAP.md lock
+    // while everything above sees no holder, no reacher and no section — the
+    // acquisition would be invisible to both properties. Charging it to a lock
+    // is not open: all three wrappers are built on it, so each would then reach
+    // every lock and every section would report itself. What holds instead is
+    // that nothing else reaches for it. core.cjs defines it and builds
+    // withRoadmapLock and withRequirementsLock on it, state.cjs builds
+    // withStateLock, and frontmatter.cjs pairs it with lockedPlanningDoc, which
+    // the analysis does follow. core.cjs exports it and two of those three
+    // import it already, so a fourth module needs no new import to acquire a
+    // lock nothing here would notice — either route it through a wrapper, or
+    // teach the analysis the acquisition before adding it to this list.
+    assert.deepStrictEqual(
+      modulesNaming(shippedSources(), 'withFileLock'),
+      ['core.cjs', 'frontmatter.cjs', 'state.cjs'],
+      'a module outside the lock wrappers takes a file lock the ordering ' +
+        'analysis cannot see',
+    );
+    // And the check is one that can fail: a fourth user is picked up.
+    assert.deepStrictEqual(
+      modulesNaming(
+        {
+          'core.cjs': 'function withFileLock(filePath, fn) {\n  return fn();\n}',
+          'phase.cjs': "const { withFileLock } = require('./core.cjs');",
+          'roadmap.cjs': "const { withRoadmapLock } = require('./core.cjs');",
+        },
+        'withFileLock',
+      ),
+      ['core.cjs', 'phase.cjs'],
+      'the module that imports it is named and the one that does not is not',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
