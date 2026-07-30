@@ -3764,3 +3764,60 @@ describe('lock ordering', () => {
     assert.deepStrictEqual(nestingViolations, []);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// notePartialWrites
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Locks make each write to a planning file exclusive; they do not make a set of
+// writes to several files atomic. A command that fails between two of them has
+// applied half its change, and the operator's next move depends on knowing that
+// — so the annotation's presence, and its absence, both have to be reliable.
+
+describe('notePartialWrites', () => {
+  const { notePartialWrites } = require('../gsd-ng/bin/lib/core.cjs');
+
+  test('names what landed and the remedy, and keeps the original message', () => {
+    const err = new Error('Timed out waiting for a lock on STATE.md');
+    const returned = notePartialWrites(
+      err,
+      ['ROADMAP.md (phase-checkbox)', 'REQUIREMENTS.md'],
+      'Re-run it.',
+    );
+
+    assert.strictEqual(returned, err, 'the same error travels on');
+    assert.match(err.message, /^Timed out waiting for a lock on STATE\.md/);
+    assert.match(
+      err.message,
+      /Already applied before this failure: ROADMAP\.md \(phase-checkbox\); REQUIREMENTS\.md\. Re-run it\./,
+    );
+    assert.deepStrictEqual(err.partialWrites, [
+      'ROADMAP.md (phase-checkbox)',
+      'REQUIREMENTS.md',
+    ]);
+  });
+
+  test('leaves a failure that wrote nothing exactly as it was', () => {
+    const err = new Error('Timed out waiting for a lock on ROADMAP.md');
+    const returned = notePartialWrites(err, [], 'Re-run it.');
+
+    assert.strictEqual(
+      returned.message,
+      'Timed out waiting for a lock on ROADMAP.md',
+      'an unannotated message is how a no-op failure is told apart from a partial one',
+    );
+    assert.strictEqual(err.partialWrites, undefined);
+  });
+
+  test('passes a thrown non-error through untouched', () => {
+    const thrown = 'not an error';
+    assert.strictEqual(
+      notePartialWrites(thrown, ['ROADMAP.md'], 'Re-run it.'),
+      thrown,
+    );
+    assert.strictEqual(
+      notePartialWrites(undefined, ['ROADMAP.md'], 'x'),
+      undefined,
+    );
+  });
+});

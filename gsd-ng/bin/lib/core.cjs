@@ -624,6 +624,36 @@ function lockedPlanningDoc(cwd, filePath) {
   return null;
 }
 
+/**
+ * Record on a failing error what the command had already written.
+ *
+ * A command that mutates several planning files writes them one at a time.
+ * Locks give each write exclusivity, not the set of them atomicity, so anything
+ * thrown partway — a lock timeout on the next file, a disk error, a bug — leaves
+ * some files updated and the rest untouched. The error alone cannot be read
+ * either way, and the operator's next move depends entirely on which it was: a
+ * failure that wrote nothing is a retry, a failure that wrote half needs to be
+ * reconciled first.
+ *
+ * `applied` is empty for the no-op case and the error comes back untouched, so
+ * the annotation's presence is itself the distinction. `remedy` is the caller's
+ * because idempotence is not a property of this function's callers in general —
+ * one command can be safely re-run and another cannot.
+ *
+ * @param {Error} err - the error on its way out
+ * @param {string[]} applied - what landed, most significant first
+ * @param {string} remedy - one sentence on what to do about it
+ * @returns {Error} the same error, annotated
+ */
+function notePartialWrites(err, applied, remedy) {
+  if (!(err instanceof Error) || applied.length === 0) return err;
+  err.partialWrites = applied;
+  err.message =
+    `${err.message}\n\nAlready applied before this failure: ` +
+    `${applied.join('; ')}. ${remedy}`;
+  return err;
+}
+
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -1736,6 +1766,7 @@ module.exports = {
   withRoadmapLock,
   withRequirementsLock,
   lockedPlanningDoc,
+  notePartialWrites,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,
