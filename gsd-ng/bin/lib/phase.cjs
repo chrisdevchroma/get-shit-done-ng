@@ -1290,26 +1290,88 @@ const RENUMBER_CONTEXT_CHARS = 64;
 const PHASE_ID_TOKEN = /\d+[A-Za-z]?(?:\.\d+)*/g;
 const PHASE_ID_PARTS = /^(\d+)([A-Za-z]?(?:\.\d+)*)$/;
 
+// One notion of where a run of digits begins and ends a token of prose, shared
+// by both spellings of a reference below. Each used to carry its own, and the
+// two disagreed in opposite directions.
+//
+// OPENS_TOKEN is the left edge. Asked as "the character before is not a digit,
+// dot or hyphen", it admitted a URL path segment, a Windows path, an ISO week's
+// W, a shell variable and a bracketed token — everything whose delimiter is
+// none of those three. Asked positively, only whitespace, a backtick, an
+// opening bracket or the start of the text begins a token. A square bracket is
+// deliberately not among them: it opens a link label, not prose.
+//
+// CONTINUES_TOKEN is the right edge. Asked as "a colon or a space follows", it
+// missed every reference a comma, a semicolon, a bracket, an apostrophe or a
+// full stop ended, leaving those at the number the phase had before the run.
+// Asked negatively, anything that is not a word character continues nothing. A
+// hyphen is excluded with the word characters: `Phases 10-12` is a range whose
+// end a decrement of the start cannot reach, so rewriting the start alone is
+// worse than leaving the pair.
+const OPENS_TOKEN = /(?:^|[\s`(])$/;
+const CONTINUES_TOKEN = /^[\w-]/;
+
+// A hyphenated pair is a plan reference within a phase, `18-01`, unless the word
+// in front of it makes it a span of phases. The milestone index the roadmap
+// template writes is exactly that shape once the numbers reach two digits.
+const PHASE_SPAN_WORD = /(?:^|[^A-Za-z])phases?\s+$/i;
+
+/**
+ * The spans of `text` inside fenced code blocks.
+ *
+ * A fence quotes; it does not refer. Renumbering inside one rewrites a document
+ * that is being shown, not one that names the phases this project has. An
+ * unclosed fence runs to the end of the text, which is CommonMark's reading and
+ * the conservative one here.
+ */
+function fencedCodeRanges(text) {
+  const fence = /^ {0,3}(`{3,}|~{3,})/;
+  const ranges = [];
+  let open = null;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const marker = fence.exec(line);
+    if (open === null) {
+      if (marker) {
+        open = { char: marker[1][0], length: marker[1].length, start: offset };
+      }
+    } else if (
+      marker &&
+      marker[1][0] === open.char &&
+      marker[1].length >= open.length
+    ) {
+      ranges.push([open.start, offset + line.length]);
+      open = null;
+    }
+    offset += line.length + 1;
+  }
+  if (open !== null) ranges.push([open.start, text.length]);
+  return ranges;
+}
+
 // Zero-padding is preserved at the width it was found, so a roadmap that pads
 // its phase numbers to two digits goes on doing so and one that writes them bare
 // is not padded against its will. Reaching only the bare spelling left every
 // padded reference pointing at whichever phase now holds its old number.
 //
 // Which of those two a reference is depends on where it was read. A plan
-// reference is the name of a file on disk, and those are padded to two digits
-// whatever the number needs, so it pads to the width it was found at even when
-// the decrement would shorten it. A heading is prose and is written at its
-// natural width, so the same decrement unpads it. Padding both the same way gets
-// one of them wrong: keyed on a leading zero alone, a plan reference shortened
-// across the ten boundary named a file that does not exist.
+// reference is the name of a file on disk, and the directory rename pads those
+// to two digits and no further, so it is padded to two whatever width it was
+// written at — which for a two-digit reference is the width it was found at,
+// and for a three-digit one is the width the rename just gave it. A heading is
+// prose and is written at its natural width, so the same decrement unpads it.
+// Padding both the same way gets one of them wrong: keyed on a leading zero
+// alone, a plan reference shortened across the ten boundary named a file that
+// does not exist.
 function integerPhaseShift(removedInt) {
   return (written, kind) => {
     const parts = PHASE_ID_PARTS.exec(written);
     if (!parts) return null;
     const num = parseInt(parts[1], 10);
     if (!Number.isFinite(num) || num <= removedInt) return null;
-    const pad =
-      kind === 'plan' || parts[1].startsWith('0') ? parts[1].length : 0;
+    let pad = 0;
+    if (kind === 'plan') pad = 2;
+    else if (parts[1].startsWith('0')) pad = parts[1].length;
     return String(num - 1).padStart(pad, '0') + parts[2];
   };
 }
@@ -1341,35 +1403,34 @@ function decimalSiblingShift(baseId, removedDecimal) {
  */
 function renumberPhaseReferences(text, shiftId) {
   const referenceKind = (written, before, after) => {
-    // A section heading, and the bare `Phase N:` / `Phase N ` that covers
-    // checkbox items, dependency lines and prose alike.
-    if (/#{2,4}\s*Phase\s+$/i.test(before) && /^\s*:/.test(after))
+    // The word Phase and the number it introduces: section headings, checkbox
+    // items, dependency lines and prose alike, whatever ends them.
+    if (/Phase\s+$/i.test(before) && !CONTINUES_TOKEN.test(after))
       return 'phase';
-    if (/Phase\s+$/.test(before) && /^[:\s]/.test(after)) return 'phase';
     // A progress-table row: `| N. Name`.
     if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return 'phase';
-    // A dependency whose identifier ends the line, which the shapes above miss.
-    if (
-      /Depends on:\*\*\s*Phase\s+$/i.test(before) &&
-      !/^[A-Za-z0-9_]/.test(after)
-    ) {
-      return 'phase';
-    }
-    // A plan reference, `18-01`. A preceding digit, dot or hyphen disqualifies
-    // it, or the rewrite walks into dates and version-like tokens: 2020-01-01,
-    // `ref 3.14-05`, `version 1.05-01`. A decimal one is admitted only where a
-    // version number cannot follow: the directories number their decimals from
-    // one and never pad them, so a padded fraction is somebody else's token.
-    // The trailing side stays open to a hyphen so that 18-01-PLAN.md is still a
-    // plan reference.
+    // A plan reference, `18-01`, which is the name of a file on disk. Two or
+    // three digits, since a project may reach three-figure phase numbers and a
+    // fourth is a year: `2020-01` is a date wherever it is written. A decimal
+    // one is admitted only where a version number cannot follow — the
+    // directories number their decimals from one and never pad them, so a
+    // padded fraction is somebody else's token — which is what keeps
+    // `3.14-05` and `1.05-01` out. The trailing side stays open to a hyphen so
+    // that 18-01-PLAN.md is still a plan reference, but not to a hyphen another
+    // number follows, which is the rest of a date.
     const plan =
-      /^\d{2}(?:[A-Za-z]|\.[1-9]\d*)?$/.test(written) &&
-      !/[\d.-]$/.test(before) &&
-      /^-\d{2}(?!\d)/.test(after);
+      /^\d{2,3}(?:[A-Za-z]|\.[1-9]\d*)?$/.test(written) &&
+      OPENS_TOKEN.test(before) &&
+      !PHASE_SPAN_WORD.test(before) &&
+      /^-\d{2}(?!\d)(?!-\d)/.test(after);
     return plan ? 'plan' : null;
   };
 
+  const fenced = fencedCodeRanges(text);
+
   return text.replace(PHASE_ID_TOKEN, (written, index) => {
+    if (fenced.some(([start, stop]) => index >= start && index < stop))
+      return written;
     const before = text.slice(
       Math.max(0, index - RENUMBER_CONTEXT_CHARS),
       index,
