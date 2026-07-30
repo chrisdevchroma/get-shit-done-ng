@@ -2868,6 +2868,65 @@ describe('state record-quick-task', () => {
   });
 });
 
+// The workflow is copied, not read around: a model that finds `--status` in the
+// block passes it whatever the prose below the block says.
+describe('quick.md step 7 instructions', () => {
+  const workflow = fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-ng', 'workflows', 'quick.md'),
+    'utf-8',
+  );
+  const step7 = workflow.slice(
+    workflow.indexOf('**Step 7: Update STATE.md**'),
+    workflow.indexOf('**Step 8:'),
+  );
+  const recordBlocks = [...step7.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((b) => b.includes('record-quick-task'));
+
+  test('the command block itself decides whether --status is passed', () => {
+    assert.strictEqual(
+      recordBlocks.length,
+      2,
+      `one block per branch, so neither has to be edited: ${step7}`,
+    );
+    assert.deepStrictEqual(
+      recordBlocks.map((b) => b.includes('--status')),
+      [true, false],
+      'the verify branch passes --status and the other one omits it',
+    );
+  });
+
+  test('the result table covers the call that prints no JSON', () => {
+    const table = step7.slice(step7.indexOf('| Output |'));
+    assert.match(
+      table,
+      /No JSON.*\n/i,
+      `a non-zero exit with no JSON needs its own row: ${table}`,
+    );
+    assert.match(
+      table,
+      /"dropped"/,
+      `the dropped list needs its own row: ${table}`,
+    );
+  });
+
+  test('the completion checklist repeats step 7 caveat about Status', () => {
+    const criteria = workflow.slice(
+      workflow.indexOf('<success_criteria>'),
+      workflow.indexOf('</success_criteria>'),
+    );
+    const row = criteria
+      .split('\n')
+      .find((l) => l.includes('quick task row'));
+    assert.ok(row, `the checklist should still cover the row: ${criteria}`);
+    assert.match(
+      row,
+      /dropped/,
+      'the checklist must not promise a Status column the table may not have',
+    );
+  });
+});
+
 describe('state adjust-quick-table command', () => {
   let tmpDir;
 

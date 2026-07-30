@@ -657,7 +657,11 @@ existing header if it is there.
 
 ```bash
 task_commit=$(git rev-parse --short HEAD)
+```
 
+**If `$VERIFY_MODE`** — `$VERIFICATION_STATUS` holds the verifier's outcome:
+
+```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
   --id "${quick_id}" \
   --description "${DESCRIPTION}" \
@@ -668,17 +672,30 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
   --json
 ```
 
-`--status` carries `$VERIFICATION_STATUS` when `$VERIFY_MODE`; omit the flag
-otherwise. Omit it too when the table has no Status column — the command drops the
-value rather than shifting the other cells, so passing it is harmless.
+**If NOT `$VERIFY_MODE`** — no verification ran, so there is no status to record:
+
+```bash
+node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
+  --id "${quick_id}" \
+  --description "${DESCRIPTION}" \
+  --date "${date}" \
+  --commit "${task_commit}" \
+  --dir "${quick_id}-${slug}" \
+  --json
+```
+
+The row matches the table's existing header. A value the table has no column for
+is left out rather than shifting the other cells, and `dropped` names it.
 
 Check the result:
 
 | Output | Meaning | Action |
 |--------|---------|--------|
-| `"recorded": true` | Row appended, Last Activity updated | Continue to step 8 |
+| `"recorded": true`, `"dropped": []` | Row appended, Last Activity updated | Continue to step 8 |
+| `"recorded": true`, `"dropped"` non-empty | The table has no column for those values, so they are not in the row (`directory` is what `--dir` carries) | Tell the user which values were dropped, then continue to step 8 — the row itself is correct for this table |
 | `"recorded": false` with `"reason": "STATE.md not found"` | No project state to record into | Report it and continue to step 8 — the task itself is done |
 | `"recorded": false`, other reason | The arguments were rejected | Fix the flags and re-run; do not fall back to editing STATE.md |
+| No JSON at all — exit 1 with `Error:` on stderr | The flags were rejected before the command ran; a description starting with `--` is read as a flag | Write the description to a file and pass `--description-file <path>` instead; do not fall back to editing STATE.md |
 
 ---
 
@@ -902,7 +919,7 @@ Note: `todo complete` triggers inline issue-sync automatically — no additional
 - [ ] (--verify) Plan checker validates plan, revision loop capped at 2
 - [ ] `${quick_id}-SUMMARY.md` created by executor
 - [ ] (--verify) `${quick_id}-VERIFICATION.md` created by verifier
-- [ ] STATE.md updated with quick task row (Status column when --verify)
+- [ ] STATE.md updated with quick task row via `state record-quick-task` (Status filled when --verify and the table has that column; whatever the table had no column for is named in `dropped` and reported)
 - [ ] Artifacts committed
 - [ ] (--todo-file) Origin todo tracked and closure offered at completion
 - [ ] (--todo-file) Closure gated on lightweight verification
