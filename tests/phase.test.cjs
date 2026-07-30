@@ -7319,6 +7319,11 @@ describe('phase remove keeps the roadmap internally consistent', () => {
     // phase's heading is written in a shape no rewrite reaches, and the phase
     // above it shifts down onto that number. Nothing reported this: every target
     // landed and the duplicate was written.
+    //
+    // The unreachable shape is a hyphen run straight onto the number. A hyphen
+    // is the one piece of punctuation the renumbering will not follow, because
+    // `Phases 10-12` wears the same shape and a decrement of the start alone
+    // does not reach the end of a span.
     fs.writeFileSync(
       roadmapPath,
       [
@@ -7339,7 +7344,7 @@ describe('phase remove keeps the roadmap internally consistent', () => {
         '### Phase 3: Cee',
         '**Goal:** c',
         '',
-        '### Phase 4—Dee',
+        '### Phase 4-Dee',
         '**Goal:** d',
         '',
         '### Phase 5: Eee',
@@ -8163,6 +8168,276 @@ describe('the withheld-renumbering hint names what actually moved', () => {
       output.roadmap_withheld_hint,
       /directories have been renumbered/,
       'no directory moved, so the hint must not send the reader looking for one',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What counts as a phase reference. The two spellings disagreed: the plan half
+// asked only that a single preceding character not be a digit, dot or hyphen,
+// which let a path segment, an ISO week, a shell variable and a milestone
+// index's own phase range through; the phase half asked that a colon or a space
+// follow, which skipped every reference a comma or a full stop ended.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove rewrites only what is a phase reference', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Each case is one line of the roadmap, written as `token: <before>` and read
+  // back as `token: <after>`. The pairs that spell the same thing twice are the
+  // tokens a renumbering has no business touching.
+  const TOKEN_CASES = [
+    ['https://blog.example.com/2024/10-01-release'],
+    ['https://example.com/2019/03-01/notes'],
+    ['2024-W03-05'],
+    ['C:\\logs\\03-01.txt'],
+    ['$03-05'],
+    ['[03-01]'],
+    ['>=03-01'],
+    ['"phases 03-05"'],
+    ['2020-01-01'],
+    ['2021-03-04'],
+    ['v1.05-01'],
+    ['3.14-05'],
+    ['#12'],
+    ['14:05'],
+    ['200ms'],
+    ['95%'],
+    ['04/05'],
+    ['03\u201305'],
+    ['100-01-PLAN.md', '99-01-PLAN.md'],
+    ['005-01-PLAN.md', '04-01-PLAN.md'],
+  ];
+
+  function writeTokenRoadmap() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 3: Gamma',
+        '',
+        '- 🚧 **v1.2 Hardening** - Phases 10-12',
+        '',
+        '### Phase 3: Gamma',
+        '**Goal:** tokens',
+        '',
+        ...TOKEN_CASES.map(([written]) => `token: ${written}`),
+        '',
+        '- [ ] 18-01-PLAN.md',
+        '',
+        '```',
+        'Phase 3 stays put in here',
+        'and so does 18-01-PLAN.md',
+        '```',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  }
+
+  test('leaves every token that is not a phase reference alone', () => {
+    writeTokenRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.ok(
+      output.roadmap_landed.includes('renumber'),
+      `the renumbering has to run for this to prove anything: ${JSON.stringify(output)}`,
+    );
+
+    const lines = fs
+      .readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8')
+      .split('\n');
+
+    assert.deepStrictEqual(
+      lines.filter((l) => l.startsWith('token: ')),
+      TOKEN_CASES.map(([written, after]) => `token: ${after ?? written}`),
+    );
+    assert.ok(
+      lines.includes('- [ ] 17-01-PLAN.md'),
+      'a plan reference still renumbers, which is what the guard must not cost',
+    );
+  });
+
+  test('leaves a milestone index and a fenced block alone', () => {
+    writeTokenRoadmap();
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const lines = fs
+      .readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8')
+      .split('\n');
+
+    assert.ok(
+      lines.includes('- 🚧 **v1.2 Hardening** - Phases 10-12'),
+      'a range of phases is not a plan reference, and rewriting its start ' +
+        'alone leaves the milestone spanning a phase it does not own',
+    );
+    assert.ok(
+      lines.includes('Phase 3 stays put in here'),
+      'a fenced block is a quotation, not a reference',
+    );
+    assert.ok(
+      lines.includes('and so does 18-01-PLAN.md'),
+      'a fenced plan reference is a quotation too',
+    );
+  });
+
+  test('follows a reference that punctuation ends', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: Alpha',
+        '- [ ] Phase 2: Beta',
+        '- [ ] Phase 3: Gamma',
+        '- [ ] Phase 4: Delta',
+        '',
+        '### Phase 3: Gamma',
+        'after Phase 3 lands we start Phase 4.',
+        '**Depends on:** Phase 4, then Phase 4; then Phase 4 (Phase 4) and',
+        "Phase 4's owner",
+        '',
+        '### Phase 4—Delta',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-alpha', '02-beta', '03-gamma', '04-delta']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const lines = fs
+      .readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8')
+      .split('\n');
+
+    assert.ok(
+      lines.includes('after Phase 2 lands we start Phase 3.'),
+      'a full stop ends a sentence, not a phase identifier — and one ' +
+        'reference of a pair rewritten is a section depending on itself',
+    );
+    assert.ok(
+      lines.includes(
+        '**Depends on:** Phase 3, then Phase 3; then Phase 3 (Phase 3) and',
+      ),
+      'a comma, a semicolon and a bracket all end a reference',
+    );
+    assert.ok(
+      lines.includes("Phase 3's owner"),
+      'so does a possessive apostrophe',
+    );
+    assert.ok(
+      lines.includes('### Phase 3—Delta'),
+      'a heading a dash runs onto is still that phase’s heading',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE.md carries the position as well as the count. Decrementing the count
+// alone left the file describing a position that cannot exist — phase 4 of 3 —
+// while the phase that had been 4 was by then 3.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase remove renumbers the position in STATE.md', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Roadmap v0.1: Current',
+        '',
+        '- [ ] Phase 1: One',
+        '- [ ] Phase 2: Two',
+        '- [ ] Phase 3: Three',
+        '- [ ] Phase 4: Four',
+        '',
+        '### Phase 3: Three',
+        '### Phase 4: Four',
+        '',
+      ].join('\n'),
+    );
+    for (const dir of ['01-one', '02-two', '03-three', '04-four']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), {
+        recursive: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const readState = () =>
+    fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+  test('moves the current phase down with the phase it names', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 4 of 4 (Four)\n**Total Phases:** 4\n',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = readState();
+    assert.ok(
+      state.includes('**Current Phase:** 3 of 3 (Four)'),
+      `the phase named Four is now 3, and 4 of 3 is no position at all (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Total Phases:** 3'),
+      `the count still has to fall (got: ${state})`,
+    );
+  });
+
+  test('decrements a total that nothing follows', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Current Phase:** 1 of 5\n**Total Phases**: 5\n',
+    );
+
+    const result = runGsdTools('phase remove 2 --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = readState();
+    assert.ok(
+      state.includes('**Current Phase:** 1 of 4'),
+      `a total at end of line is still a total (got: ${state})`,
+    );
+    assert.ok(
+      state.includes('**Total Phases**: 4'),
+      `the colon outside the bold markers spells the same field (got: ${state})`,
     );
   });
 });

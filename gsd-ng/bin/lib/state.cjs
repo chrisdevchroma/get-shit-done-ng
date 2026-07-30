@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  boldLabel,
   loadConfig,
   resolveTargetBranch,
   findPhaseInternal,
@@ -310,8 +311,10 @@ function cmdStateUpdate(cwd, field, value) {
 function stateExtractField(content, fieldName) {
   const body = stripFrontmatter(content);
   const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Try **Field:** bold format first
-  const boldPattern = new RegExp(`\\*\\*${escaped}:\\*\\*\\s*(.+)`, 'i');
+  // Try **Field:** bold format first. Through boldLabel, so the colon may sit
+  // on either side of the markers: written one way and read the other, a field
+  // is invisible to every reader while looking perfectly present in the file.
+  const boldPattern = new RegExp(`${boldLabel(fieldName)}\\s*(.+)`, 'i');
   const boldMatch = body.match(boldPattern);
   if (boldMatch) return boldMatch[1].trim();
   // Fall back to plain Field: format
@@ -327,8 +330,10 @@ function stateReplaceField(content, fieldName, newValue) {
     ? content.slice(frontmatterMatch[0].length)
     : content;
   const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Try **Field:** bold format first, then plain Field: format
-  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*\\s*)(.*)`, 'i');
+  // Try **Field:** bold format first, then plain Field: format. Both colon
+  // placements, and the same ones the read above accepts — a writer that
+  // reaches fewer spellings than the reader silently drops the update.
+  const boldPattern = new RegExp(`(${boldLabel(fieldName)}\\s*)(.*)`, 'i');
   if (boldPattern.test(body)) {
     return (
       frontmatter +
