@@ -381,3 +381,114 @@ describe('lint: no direct target_branch read off a config object (use resolveTar
     assert.ok(flags("if (config.target_branch === 'main') {"));
   });
 });
+
+// ── Rule 9: a doc that invokes a command reporting missed rewrite targets ─────
+//    must name the field
+//
+// `phase complete`, `phase remove` and `roadmap update-plan-progress` each
+// report the ROADMAP.md rewrites that had a target and could not reach it. The
+// report is worth nothing unless the caller reads it: the field was added with
+// only remove-phase.md updated, so a miss under execute-phase.md — the workflow
+// that runs phase completion for every project — was invisible to the operator.
+
+describe('lint: docs invoking a missed-target command surface the field', () => {
+  // Commands whose JSON result carries a missed-target list.
+  const REPORTING = ['phase complete', 'phase remove', 'roadmap update-plan-progress'];
+
+  // Field names by command: `roadmap update-plan-progress` reports
+  // `missed_targets`, the phase commands `roadmap_missed_targets`. Naming
+  // either satisfies the rule — the substring is shared.
+  const FIELD = 'missed_targets';
+
+  function docSources(dir, acc = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) docSources(full, acc);
+      else if (entry.name.endsWith('.md')) acc.push(full);
+    }
+    return acc;
+  }
+
+  // Invocations, not mentions: prose about "phase complete" is not a call site.
+  // Keyed on the dispatcher path so a fenced `node …/gsd-tools.cjs phase
+  // complete "${X}"` is found however the result is captured.
+  function invocationsIn(src) {
+    const found = [];
+    src.split('\n').forEach((line, i) => {
+      for (const cmd of REPORTING) {
+        if (new RegExp('gsd-tools\\.cjs"?\\s+' + cmd + '(?:\\s|$)').test(line)) {
+          found.push({ line: i + 1, cmd });
+        }
+      }
+    });
+    return found;
+  }
+
+  // Docs that invoke a reporting command without naming the field.
+  function unsurfaced(docs) {
+    const violations = [];
+    for (const { name, src } of docs) {
+      if (src.includes(FIELD)) continue;
+      for (const hit of invocationsIn(src)) {
+        violations.push(`${name}:${hit.line}: ${hit.cmd}`);
+      }
+    }
+    return violations;
+  }
+
+  test('every invocation site documents the missed-target field', () => {
+    const ROOT = path.join(__dirname, '..');
+    const docs = [];
+    for (const dir of ['agents', 'commands', 'gsd-ng']) {
+      for (const file of docSources(path.join(ROOT, dir))) {
+        docs.push({
+          name: path.relative(ROOT, file),
+          src: fs.readFileSync(file, 'utf-8'),
+        });
+      }
+    }
+    // Anti-vacuity: the walk must actually find the call sites, or the
+    // assertion below passes because it examined nothing.
+    const invoking = docs.filter(d => invocationsIn(d.src).length > 0);
+    assert.ok(invoking.length >= 5,
+      `expected the doc walk to find the known invocation sites, found ${invoking.length}`
+    );
+
+    assert.deepStrictEqual(unsurfaced(docs), [],
+      `A doc invokes a command that reports missed rewrite targets without naming ${FIELD}:\n${unsurfaced(docs).join('\n')}`
+    );
+  });
+
+  test('detector flags an invocation whose doc never names the field', () => {
+    const invocation = 'RESULT=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" phase complete "${X}")';
+    assert.deepStrictEqual(
+      unsurfaced([{ name: 'silent.md', src: `# Doc\n\n${invocation}\n\nExtract: next_phase.\n` }]),
+      ['silent.md:3: phase complete']
+    );
+    assert.deepStrictEqual(
+      unsurfaced([{ name: 'loud.md', src: `# Doc\n\n${invocation}\n\nExtract: roadmap_missed_targets.\n` }]),
+      []
+    );
+    // Prose is not an invocation.
+    assert.deepStrictEqual(
+      unsurfaced([{ name: 'prose.md', src: '# Doc\n\nBasic updates are handled by `phase complete`.\n' }]),
+      []
+    );
+    // Every reporting command is covered, and the plan-progress field name too.
+    assert.deepStrictEqual(
+      unsurfaced([{ name: 'p.md', src: 'node gsd-tools.cjs roadmap update-plan-progress "${P}"\n' }]),
+      ['p.md:1: roadmap update-plan-progress']
+    );
+    assert.deepStrictEqual(
+      unsurfaced([{
+        name: 'p.md',
+        src: 'node gsd-tools.cjs roadmap update-plan-progress "${P}"\nReport missed_targets.\n',
+      }]),
+      []
+    );
+    assert.deepStrictEqual(
+      unsurfaced([{ name: 'r.md', src: 'node gsd-tools.cjs phase remove "${P}"\n' }]),
+      ['r.md:1: phase remove']
+    );
+  });
+});

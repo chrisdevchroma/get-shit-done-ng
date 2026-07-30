@@ -3264,105 +3264,317 @@ describe('getMilestonePhaseFilter checkbox forms', () => {
 // reach a roadmap-lock acquisition. These assertions are that direction, so a
 // change that adds the reverse edge fails here rather than deadlocking a user's
 // project.
+//
+// The analysis is a call graph over the shipped sources, not a text match. Its
+// predecessor searched one file for a literal `withRoadmapLock(` indented under
+// a `withStateLock(`, and checked state.cjs's *direct* requires: a roadmap
+// acquisition one helper call away was invisible to it, in any file, and so was
+// a require edge added through frontmatter.cjs or security.cjs. Both of those
+// are the change the guard exists to catch.
+//
+// Two properties, and the analysis feeding them is exercised on synthetic
+// sources below so it cannot pass by finding nothing:
+//
+//   1. no module that acquires the STATE.md lock may *reach* a module that
+//      acquires the ROADMAP.md lock, transitively through requires;
+//   2. no state-lock section may call a function that reaches a ROADMAP.md
+//      acquisition, however many hops away that acquisition is.
+//
+// Property 1 excepts a module from itself — phase.cjs takes both, in that order
+// — which is what property 2 covers.
 
 describe('lock ordering', () => {
-  const LIB_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib');
-  const read = (name) => fs.readFileSync(path.join(LIB_DIR, name), 'utf-8');
+  const BIN_DIR = path.join(__dirname, '..', 'gsd-ng', 'bin');
+  const LIB_DIR = path.join(BIN_DIR, 'lib');
+  const STATE_LOCK = 'withStateLock';
+  const ROADMAP_LOCK = 'withRoadmapLock';
 
-  test('the STATE.md section cannot reach a ROADMAP.md acquisition', () => {
-    const source = read('state.cjs');
-    assert.ok(
-      !source.includes('withRoadmapLock'),
-      'state.cjs must not acquire the ROADMAP.md lock — the order is roadmap outer, state inner',
-    );
-    const requires = [...source.matchAll(/require\('([^']+)'\)/g)].map(
-      (m) => m[1],
-    );
-    assert.deepStrictEqual(
-      requires.filter((r) => r === './roadmap.cjs' || r === './phase.cjs'),
-      [],
-      'state.cjs must not depend on the modules that take the ROADMAP.md lock',
-    );
-  });
-
-  test('no helper in core.cjs takes the ROADMAP.md lock', () => {
-    // A roadmap acquisition inside a shared helper would be reachable from the
-    // STATE.md section without state.cjs naming the lock at all.
-    const offenders = read('core.cjs')
-      .split('\n')
-      .map((line, i) => ({ line, number: i + 1 }))
-      .filter(
-        ({ line }) =>
-          line.includes('withRoadmapLock(') &&
-          !line.includes('function withRoadmapLock('),
-      );
-    assert.deepStrictEqual(
-      offenders.map((o) => o.number),
-      [],
-      `core.cjs calls withRoadmapLock at line(s) ${offenders
-        .map((o) => o.number)
-        .join(', ')} — a shared helper that locks the roadmap can be reached from inside the STATE.md lock`,
-    );
-  });
-
-  /**
-   * Line numbers where a ROADMAP.md acquisition sits inside a STATE.md one.
-   *
-   * Indentation stands in for block nesting: a state acquisition opens a region
-   * that ends at the first later line indented no further than it.
-   */
-  function findReverseNesting(source) {
+  // Top-level declarations, by name and body. Prettier keeps every shipped
+  // source's top-level declaration at column 0 and everything inside it
+  // indented, so a chunk runs from its declaration to the next column-0 line
+  // that is not a closing bracket — no brace matching, which regex literals
+  // like `#{2,4}` would defeat.
+  function topLevelFunctions(source) {
+    const declaration =
+      /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function)/;
     const lines = source.split('\n');
-    const found = [];
-    let stateIndent = null;
+    const chunks = [];
+    let current = null;
     for (let i = 0; i < lines.length; i++) {
-      const indent = lines[i].search(/\S/);
-      if (indent === -1) continue;
-      if (stateIndent !== null && indent <= stateIndent) stateIndent = null;
-      if (lines[i].includes('withStateLock(')) {
-        stateIndent = indent;
+      const match = lines[i].match(declaration);
+      if (match) {
+        if (current) chunks.push(current);
+        current = { name: match[1] || match[2], line: i + 1, body: [] };
         continue;
       }
-      if (stateIndent !== null && lines[i].includes('withRoadmapLock(')) {
-        found.push(i + 1);
+      if (!current) continue;
+      if (/^\S/.test(lines[i]) && !/^[)}\];]/.test(lines[i])) {
+        chunks.push(current);
+        current = null;
+        continue;
       }
+      current.body.push(lines[i]);
     }
-    return found;
+    if (current) chunks.push(current);
+    return chunks.map((c) => ({ ...c, body: c.body.join('\n') }));
   }
 
-  test('findReverseNesting flags a roadmap acquisition inside a state one', () => {
-    const offending = [
-      'function bad(cwd) {',
-      '  return withStateLock(cwd, () => {',
-      '    withRoadmapLock(cwd, () => {});',
-      '  });',
-      '}',
-    ].join('\n');
-    assert.deepStrictEqual(findReverseNesting(offending), [3]);
+  function calledNames(text) {
+    return new Set([...text.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]));
+  }
+
+  function localRequires(source) {
+    return [...source.matchAll(/require\('\.\/([\w.-]+\.cjs)'\)/g)].map(
+      (m) => m[1],
+    );
+  }
+
+  /**
+   * Lock analysis over a `{ moduleName: source }` map.
+   *
+   * `reaching` is the fixpoint of function names whose call may end in a
+   * ROADMAP.md acquisition. `lockers` are the modules holding such a function,
+   * excluding the lock's own definition. `hosts` are the modules that acquire
+   * the STATE.md lock.
+   */
+  function analyseLockOrdering(sources) {
+    const names = Object.keys(sources);
+    const functions = [];
+    for (const name of names) {
+      for (const fn of topLevelFunctions(sources[name])) {
+        functions.push({ module: name, ...fn, calls: calledNames(fn.body) });
+      }
+    }
+
+    const reaching = new Set([ROADMAP_LOCK]);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const fn of functions) {
+        if (reaching.has(fn.name)) continue;
+        for (const call of fn.calls) {
+          if (reaching.has(call)) {
+            reaching.add(fn.name);
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // A function whose own name is the lock is its definition, not a caller.
+    const acquires = (fn, lock, set) =>
+      fn.name !== lock && [...fn.calls].some((call) => set.has(call));
+    const lockers = new Set(
+      functions
+        .filter((fn) => acquires(fn, ROADMAP_LOCK, reaching))
+        .map((fn) => fn.module),
+    );
+    const hosts = new Set(
+      functions
+        .filter((fn) => acquires(fn, STATE_LOCK, new Set([STATE_LOCK])))
+        .map((fn) => fn.module),
+    );
+
+    // Property 1: a host's transitive requires hold no other locker.
+    const closureViolations = [];
+    for (const host of hosts) {
+      const parent = new Map([[host, null]]);
+      const queue = [host];
+      while (queue.length > 0) {
+        const module = queue.shift();
+        for (const dep of localRequires(sources[module] || '')) {
+          if (parent.has(dep) || !(dep in sources)) continue;
+          parent.set(dep, module);
+          queue.push(dep);
+        }
+      }
+      for (const module of parent.keys()) {
+        if (module === host || !lockers.has(module)) continue;
+        const chain = [];
+        for (let at = module; at !== null; at = parent.get(at)) chain.unshift(at);
+        closureViolations.push(chain.join(' -> '));
+      }
+    }
+
+    // Property 2: no state-lock section calls a function that reaches an
+    // acquisition. Indentation stands in for block nesting — a state
+    // acquisition opens a region that ends at the first later line indented no
+    // further than it — but what is looked for inside is every name in
+    // `reaching`, not one literal.
+    const nestingViolations = [];
+    for (const host of hosts) {
+      const lines = sources[host].split('\n');
+      let stateIndent = null;
+      for (let i = 0; i < lines.length; i++) {
+        const indent = lines[i].search(/\S/);
+        if (indent === -1) continue;
+        if (stateIndent !== null && indent <= stateIndent) stateIndent = null;
+        if (lines[i].includes(`${STATE_LOCK}(`)) {
+          stateIndent = indent;
+          continue;
+        }
+        if (stateIndent === null) continue;
+        for (const call of calledNames(lines[i])) {
+          if (reaching.has(call)) {
+            nestingViolations.push(`${host}:${i + 1}: ${call}`);
+            break;
+          }
+        }
+      }
+    }
+
+    return { reaching, lockers, hosts, closureViolations, nestingViolations };
+  }
+
+  // Every shipped source that can hold a lock call site, keyed the way its
+  // requires name it. The dispatcher is included because it calls the commands
+  // that take the roadmap lock, so the reaching set is the real one.
+  function shippedSources() {
+    const sources = {};
+    for (const name of fs.readdirSync(LIB_DIR)) {
+      if (name.endsWith('.cjs')) {
+        sources[name] = fs.readFileSync(path.join(LIB_DIR, name), 'utf-8');
+      }
+    }
+    sources['gsd-tools.cjs'] = fs.readFileSync(
+      path.join(BIN_DIR, 'gsd-tools.cjs'),
+      'utf-8',
+    );
+    return sources;
+  }
+
+  test('no STATE.md lock holder can reach a ROADMAP.md lock holder', () => {
+    const { closureViolations } = analyseLockOrdering(shippedSources());
+    assert.deepStrictEqual(
+      closureViolations,
+      [],
+      'a module that takes the STATE.md lock requires its way to one that takes ' +
+        'the ROADMAP.md lock — the order is roadmap outer, state inner, and this ' +
+        'edge makes the reverse reachable:\n' +
+        closureViolations.join('\n'),
+    );
   });
 
-  test('findReverseNesting accepts the supported order', () => {
-    const fine = [
-      'function good(cwd) {',
-      '  return withRoadmapLock(cwd, () => {',
-      '    withStateLock(cwd, () => {});',
-      '  });',
-      '}',
-      'function alsoGood(cwd) {',
-      '  withStateLock(cwd, () => {});',
-      '  withRoadmapLock(cwd, () => {});',
-      '}',
-    ].join('\n');
-    assert.deepStrictEqual(findReverseNesting(fine), []);
+  test('no STATE.md section calls its way to a ROADMAP.md acquisition', () => {
+    const { nestingViolations } = analyseLockOrdering(shippedSources());
+    assert.deepStrictEqual(
+      nestingViolations,
+      [],
+      'a STATE.md lock section reaches a ROADMAP.md acquisition:\n' +
+        nestingViolations.join('\n'),
+    );
   });
 
-  test('the modules that take both locks take them in one order', () => {
-    for (const name of ['phase.cjs', 'roadmap.cjs', 'milestone.cjs']) {
-      assert.deepStrictEqual(
-        findReverseNesting(read(name)),
-        [],
-        `${name} takes the ROADMAP.md lock inside the STATE.md lock — the order is roadmap outer, state inner`,
+  // Both assertions above are satisfied by an analysis that finds nothing at
+  // all. This is what says it found the real thing.
+  test('the analysis sees every lock holder in the shipped sources', () => {
+    const { hosts, lockers, reaching } = analyseLockOrdering(shippedSources());
+    assert.deepStrictEqual(
+      [...hosts].sort(),
+      ['milestone.cjs', 'phase.cjs', 'state.cjs', 'verify.cjs'],
+      'the modules that acquire the STATE.md lock',
+    );
+    assert.deepStrictEqual(
+      [...lockers].sort(),
+      ['gsd-tools.cjs', 'phase.cjs', 'roadmap.cjs'],
+      'the modules that acquire the ROADMAP.md lock',
+    );
+    for (const command of [
+      'cmdPhaseAdd',
+      'cmdPhaseComplete',
+      'cmdPhaseInsert',
+      'cmdPhaseRemove',
+      'cmdRoadmapUpdatePlanProgress',
+    ]) {
+      assert.ok(
+        reaching.has(command),
+        `${command} takes the ROADMAP.md lock and the analysis must know it`,
       );
     }
+  });
+
+  test('the analysis flags an acquisition reached through a helper', () => {
+    // The shape the indentation match could not see: the section calls a
+    // helper, and the helper takes the lock.
+    const { nestingViolations } = analyseLockOrdering({
+      'state.cjs': ['function withStateLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+      'phase.cjs': [
+        "const { withRoadmapLock } = require('./core.cjs');",
+        "const { withStateLock } = require('./state.cjs');",
+        'function takesRoadmap(cwd) {',
+        '  return withRoadmapLock(cwd, () => {});',
+        '}',
+        'function bad(cwd) {',
+        '  return withStateLock(cwd, () => {',
+        '    takesRoadmap(cwd);',
+        '  });',
+        '}',
+      ].join('\n'),
+      'core.cjs': ['function withRoadmapLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+    });
+    assert.deepStrictEqual(nestingViolations, ['phase.cjs:8: takesRoadmap']);
+  });
+
+  test('the analysis flags a require edge added two modules away', () => {
+    // The shape the direct-require check could not see: state.cjs reaches the
+    // roadmap lock through frontmatter.cjs.
+    const { closureViolations, nestingViolations } = analyseLockOrdering({
+      'state.cjs': [
+        "const { helper } = require('./frontmatter.cjs');",
+        'function withStateLock(cwd, fn) {',
+        '  return fn();',
+        '}',
+        'function cmdState(cwd) {',
+        '  return withStateLock(cwd, () => {',
+        '    helper(cwd);',
+        '  });',
+        '}',
+      ].join('\n'),
+      'frontmatter.cjs': [
+        "const { withRoadmapLock } = require('./roadmap.cjs');",
+        'function helper(cwd) {',
+        '  return withRoadmapLock(cwd, () => {});',
+        '}',
+      ].join('\n'),
+      'roadmap.cjs': [
+        'function withRoadmapLock(cwd, fn) {',
+        '  return fn();',
+        '}',
+      ].join('\n'),
+    });
+    assert.deepStrictEqual(closureViolations, [
+      'state.cjs -> frontmatter.cjs',
+    ]);
+    assert.deepStrictEqual(nestingViolations, ['state.cjs:7: helper']);
+  });
+
+  test('the analysis accepts the supported order', () => {
+    const { closureViolations, nestingViolations } = analyseLockOrdering({
+      'state.cjs': ['function withStateLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+      'core.cjs': ['function withRoadmapLock(cwd, fn) {', '  return fn();', '}'].join(
+        '\n',
+      ),
+      'phase.cjs': [
+        "const { withRoadmapLock } = require('./core.cjs');",
+        "const { withStateLock } = require('./state.cjs');",
+        'function good(cwd) {',
+        '  return withRoadmapLock(cwd, () => {',
+        '    withStateLock(cwd, () => {});',
+        '  });',
+        '}',
+        'function alsoGood(cwd) {',
+        '  withStateLock(cwd, () => {});',
+        '  withRoadmapLock(cwd, () => {});',
+        '}',
+      ].join('\n'),
+    });
+    assert.deepStrictEqual(closureViolations, []);
+    assert.deepStrictEqual(nestingViolations, []);
   });
 });

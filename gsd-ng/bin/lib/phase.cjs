@@ -1220,17 +1220,20 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
   });
 }
 
-// True when a milestone slice still names an integer phase above `removedInt`,
-// by header or by checkbox. That is what the renumbering exists to rewrite, so a
-// renumbering that changed nothing while one is present has missed its target.
-function namesPhaseAbove(slice, removedInt) {
+// True when the current milestone still names an integer phase above
+// `removedInt`, by header or by checkbox. That is what the renumbering exists to
+// rewrite, so a renumbering that changed nothing while one is present has missed
+// its target. Called with the whole current milestone rather than the write
+// scope, for the reason the other probes are: a phase above a collapsed section
+// is a target the renumbering cannot reach, not one it has no business reaching.
+function namesPhaseAbove(region, removedInt) {
   const headerPattern = /^#{2,4}\s*Phase\s+(\d+)/gim;
   const numbers = [];
   let m;
-  while ((m = headerPattern.exec(slice)) !== null) {
+  while ((m = headerPattern.exec(region)) !== null) {
     numbers.push(parseInt(m[1], 10));
   }
-  for (const entry of parsePhaseCheckboxes(slice)) {
+  for (const entry of parsePhaseCheckboxes(region)) {
     numbers.push(parseInt(entry.num, 10));
   }
   return numbers.some((n) => Number.isFinite(n) && n > removedInt);
@@ -1530,7 +1533,9 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
 
       roadmapContent = head + tail;
       if (tail !== tailBefore) roadmapLanded.push('renumber');
-      else if (namesPhaseAbove(tailBefore, removedInt))
+      else if (
+        namesPhaseAbove(extractCurrentMilestone(roadmapContent), removedInt)
+      )
         roadmapMissed.push('renumber');
     }
 
@@ -1635,7 +1640,7 @@ function cmdPhaseComplete(cwd, phaseNum) {
       );
       roadmapContent = checkbox.content;
       if (checkbox.changed) roadmapLanded.push('phase-checkbox');
-      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
+      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum, '[ ]'))
         roadmapMissed.push('phase-checkbox');
 
       // Progress table: update Status to Complete, add date (handles 4 or 5 column tables)
