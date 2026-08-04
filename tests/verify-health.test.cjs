@@ -1213,6 +1213,52 @@ describe('validate health — memory checks (W010-W014)', () => {
     );
   });
 
+  test('W011 stays quiet when CLAUDE.md is marked hand-maintained', () => {
+    writeMemoryFile(tmpDir, 'reference_read_on_demand.md', 'Read on demand');
+    // A curated hoist: the memory exists and is deliberately not listed.
+    writeCLAUDEmd(
+      tmpDir,
+      '<!-- gsd:manual -->\n# Project\n\n## Memories\n\nOnly what every subagent must read is hoisted here.\n',
+    );
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.warnings.some((w) => w.code === 'W011'),
+      `Marker should suppress W011: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('syncCLAUDEmdMemories refuses to overwrite a hand-maintained CLAUDE.md', () => {
+    writeMemoryFile(tmpDir, 'feedback_curated.md', 'Curated entry');
+    const curated =
+      '<!-- gsd:manual -->\n# Project\n\n## Memories\n\nA curated hoist, not a mirror.\n';
+    writeCLAUDEmd(tmpDir, curated);
+
+    const result = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const syncAction =
+      output.repairs_performed &&
+      output.repairs_performed.find((r) => r.action === 'syncCLAUDEmdMemories');
+    if (syncAction) {
+      assert.strictEqual(
+        syncAction.success,
+        false,
+        'a marked file must not report a successful regeneration',
+      );
+    }
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8'),
+      curated,
+      'CLAUDE.md must be byte-identical after a repair run',
+    );
+  });
+
   // ─── W013: MEMORY.md drift ─────────────────────────────────────────────────
 
   test('W013 fires when MEMORY.md is out of sync with .claude/memory/ contents', () => {
@@ -1272,6 +1318,62 @@ describe('validate health — memory checks (W010-W014)', () => {
     assert.ok(
       memoryMdContent.includes('feedback_b.md'),
       'MEMORY.md should contain the memory file reference after repair',
+    );
+  });
+
+  test('W013 stays quiet when MEMORY.md is marked hand-maintained', () => {
+    writeMemoryFile(tmpDir, 'feedback_c.md', 'Feedback entry C');
+    const memDir = path.join(tmpDir, '.claude', 'memory');
+    // A section the generator cannot express — the case this marker exists for.
+    fs.writeFileSync(
+      path.join(memDir, 'MEMORY.md'),
+      '<!-- gsd:manual -->\n# Memory Index\n\n## Shared\n\n[shared/MEMORY.md](shared/MEMORY.md) — rules from the shared submodule.\n',
+    );
+    writeCLAUDEmd(
+      tmpDir,
+      '# Project\n\n## Memories\n\n- [.claude/memory/feedback_c.md](.claude/memory/feedback_c.md) — Feedback entry C\n',
+    );
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.warnings.some((w) => w.code === 'W013'),
+      `Marker should suppress W013: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('syncMemoryMd refuses to overwrite a hand-maintained MEMORY.md', () => {
+    writeMemoryFile(tmpDir, 'feedback_d.md', 'Feedback entry D');
+    const memDir = path.join(tmpDir, '.claude', 'memory');
+    const curated =
+      '<!-- gsd:manual -->\n# Memory Index\n\n## Shared\n\n[shared/MEMORY.md](shared/MEMORY.md) — the pointer a regeneration would drop.\n';
+    fs.writeFileSync(path.join(memDir, 'MEMORY.md'), curated);
+    writeCLAUDEmd(
+      tmpDir,
+      '# Project\n\n## Memories\n\n- [.claude/memory/feedback_d.md](.claude/memory/feedback_d.md) — Feedback entry D\n',
+    );
+
+    const result = runGsdTools('validate health --repair', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const syncAction =
+      output.repairs_performed &&
+      output.repairs_performed.find((r) => r.action === 'syncMemoryMd');
+    if (syncAction) {
+      assert.strictEqual(
+        syncAction.success,
+        false,
+        'a marked file must not report a successful regeneration',
+      );
+    }
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(memDir, 'MEMORY.md'), 'utf-8'),
+      curated,
+      'the Shared section must survive a repair run byte-for-byte',
     );
   });
 

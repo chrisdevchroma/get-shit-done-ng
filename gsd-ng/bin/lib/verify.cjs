@@ -58,6 +58,38 @@ const MEMORIES_SECTION = new RegExp(
   'i',
 );
 
+// Opt-out marker for the two generated memory indexes.
+//
+// Both generators describe a flat, type-grouped listing of `.claude/memory/`
+// top-level files. A project may legitimately maintain either index by hand:
+// a curated CLAUDE.md hoist that carries only what every subagent must read,
+// or a MEMORY.md with sections the generator cannot express — a link to a
+// shared submodule under `.claude/memory/shared/` being the case that prompted
+// this. For those, the drift the checks measure is the intended state, and
+// running the repair silently replaces the curated file with the generated one.
+//
+// A file carrying this marker is authored, not generated: W011/W013 stay quiet
+// and the matching repair refuses to write rather than overwriting the author.
+const MANUAL_INDEX_MARKER = '<!-- gsd:manual -->';
+
+/**
+ * Whether a file opts out of index generation via MANUAL_INDEX_MARKER.
+ *
+ * A missing or unreadable file is not opted out — the caller's own existence
+ * checks decide what that means, and treating an unreadable file as manual
+ * would suppress the very warning that surfaces it.
+ *
+ * @param {string} filePath - Absolute path to the file to inspect
+ * @returns {boolean} True when the file exists and carries the marker
+ */
+function isManuallyMaintained(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf-8').includes(MANUAL_INDEX_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 function cmdVerifySummary(cwd, summaryPath, checkFileCount) {
   if (!summaryPath) {
     error('summary-path required');
@@ -1254,10 +1286,11 @@ function runHealth(cwd, options) {
       .filter((f) => f.endsWith('.md') && f !== 'MEMORY.md');
 
     // Check 10: Orphaned memory files not referenced in CLAUDE.md
+    const rulesAreManual = claudeContent.includes(MANUAL_INDEX_MARKER);
     const orphaned = memFiles.filter(
       (f) => !claudeContent.includes(`.claude/memory/${f}`),
     );
-    if (orphaned.length > 0) {
+    if (orphaned.length > 0 && !rulesAreManual) {
       addIssue(
         'warning',
         'W011',
@@ -1298,6 +1331,7 @@ function runHealth(cwd, options) {
       const expectedMemoryMd = generateMemoryMd(cwd);
       if (
         expectedMemoryMd &&
+        !currentMemoryMd.includes(MANUAL_INDEX_MARKER) &&
         currentMemoryMd.trim() !== expectedMemoryMd.trim()
       ) {
         addIssue(
@@ -1697,6 +1731,15 @@ function runHealth(cwd, options) {
             const syncRulesFile = (RUNTIMES[syncRuntime] || RUNTIMES.claude)
               .PROJECT_RULES_FILE;
             const syncRulesPath = path.join(cwd, syncRulesFile);
+            if (isManuallyMaintained(syncRulesPath)) {
+              repairActions.push({
+                action: repair,
+                success: false,
+                path: syncRulesFile,
+                note: `${syncRulesFile} is marked ${MANUAL_INDEX_MARKER} — its Memories section is curated by hand, so regenerating it would discard that curation. Edit it directly, or drop the marker to opt back in.`,
+              });
+              break;
+            }
             if (fs.existsSync(syncRulesPath)) {
               let content = fs.readFileSync(syncRulesPath, 'utf-8');
               const newSection = generateMemoriesSection(cwd);
@@ -1721,6 +1764,15 @@ function runHealth(cwd, options) {
           case 'syncMemoryMd': {
             const memDir = path.join(cwd, '.claude', 'memory');
             const memMdPath = path.join(memDir, 'MEMORY.md');
+            if (isManuallyMaintained(memMdPath)) {
+              repairActions.push({
+                action: repair,
+                success: false,
+                path: '.claude/memory/MEMORY.md',
+                note: `MEMORY.md is marked ${MANUAL_INDEX_MARKER} — it is authored, not generated, and the generator cannot express sections it may carry (a link to .claude/memory/shared/, for one). Edit it directly, or drop the marker to opt back in.`,
+              });
+              break;
+            }
             const newContent = generateMemoryMd(cwd);
             if (newContent) {
               fs.writeFileSync(memMdPath, newContent, 'utf-8');
