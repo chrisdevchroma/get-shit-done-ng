@@ -32,6 +32,8 @@ const {
   error,
   planningPaths,
   withRoadmapLock,
+  withRequirementsLock,
+  notePartialWrites,
   writeFileAtomic,
 } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
@@ -440,102 +442,107 @@ function closePhaseRequirements(cwd, reqIds, phaseNum) {
   };
   const reqPath = planningPaths(cwd).requirements;
   if (reqIds.length === 0 || !fs.existsSync(reqPath)) return result;
+  // The read and the rewrite are one section: the file is written back from the
+  // read, so a mark another writer made in between is dropped. Inside the
+  // ROADMAP.md lock that phase complete already holds, which is the supported
+  // order — roadmap, requirements, state.
+  return withRequirementsLock(cwd, () => {
+    const originalContent = fs.readFileSync(reqPath, 'utf-8');
+    const lines = originalContent.split('\n');
+    const { rows, tableFound: hasTable } = parseTraceabilityRows(lines);
 
-  const originalContent = fs.readFileSync(reqPath, 'utf-8');
-  const lines = originalContent.split('\n');
-  const { rows, tableFound: hasTable } = parseTraceabilityRows(lines);
+    const rowsById = new Map();
+    for (const row of rows) {
+      const key = row.id.toLowerCase();
+      if (!rowsById.has(key)) rowsById.set(key, []);
+      rowsById.get(key).push(row);
+    }
 
-  const rowsById = new Map();
-  for (const row of rows) {
-    const key = row.id.toLowerCase();
-    if (!rowsById.has(key)) rowsById.set(key, []);
-    rowsById.get(key).push(row);
-  }
+    const rowsToClose = [];
+    const idsToCheck = [];
 
-  const rowsToClose = [];
-  const idsToCheck = [];
+    for (const reqId of reqIds) {
+      const idRows = rowsById.get(reqId.toLowerCase()) || [];
 
-  for (const reqId of reqIds) {
-    const idRows = rowsById.get(reqId.toLowerCase()) || [];
+      if (idRows.length === 0) {
+        result.closed.push(reqId);
+        idsToCheck.push(reqId);
+        // Only meaningful as a discrepancy when there is a table to be absent
+        // from — a project without one has nothing to be inconsistent with.
+        if (hasTable) result.unmapped.push(reqId);
+        continue;
+      }
 
-    if (idRows.length === 0) {
+      const ours = idRows.filter((r) => phaseCellNamesPhase(r.phase, phaseNum));
+      if (ours.length === 0) {
+        result.otherPhase.push({
+          id: reqId,
+          phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
+        });
+        continue;
+      }
+
+      const unreadable = ours.filter((r) => !r.recognised);
+      if (unreadable.length > 0) {
+        result.unreadable.push({
+          id: reqId,
+          status: [...new Set(unreadable.map((r) => r.status))].join(', '),
+        });
+        continue;
+      }
+
+      // 'Complete' is not closeable but does mean done, so it must not count as
+      // held — that case is the idempotent re-run.
+      const held = ours.filter(
+        (r) =>
+          !CLOSEABLE_STATUSES.test(r.status) &&
+          r.status.trim().toLowerCase() !== 'complete',
+      );
+      if (held.length > 0) {
+        result.blocked.push({
+          id: reqId,
+          status: [...new Set(held.map((r) => r.status.trim()))].join(', '),
+        });
+        continue;
+      }
+
       result.closed.push(reqId);
-      idsToCheck.push(reqId);
-      // Only meaningful as a discrepancy when there is a table to be absent
-      // from — a project without one has nothing to be inconsistent with.
-      if (hasTable) result.unmapped.push(reqId);
-      continue;
+      rowsToClose.push(...ours);
+
+      // An ID split across several phases is only finished when no row still
+      // attributes outstanding work elsewhere — tick the box then, and not before.
+      const outstandingElsewhere = idRows.some(
+        (r) => !ours.includes(r) && r.status.toLowerCase() !== 'complete',
+      );
+      if (!outstandingElsewhere) idsToCheck.push(reqId);
     }
 
-    const ours = idRows.filter((r) => phaseCellNamesPhase(r.phase, phaseNum));
-    if (ours.length === 0) {
-      result.otherPhase.push({
-        id: reqId,
-        phase: [...new Set(idRows.map((r) => r.phase))].join(', '),
-      });
-      continue;
+    for (const row of rowsToClose) {
+      if (!CLOSEABLE_STATUSES.test(row.status)) continue;
+      const cells = lines[row.lineIndex].split('|');
+      // Replace the cell's text, preserving its padding so the table stays aligned.
+      cells[3] = cells[3].replace(/\S.*\S|\S/, 'Complete');
+      lines[row.lineIndex] = cells.join('|');
     }
 
-    const unreadable = ours.filter((r) => !r.recognised);
-    if (unreadable.length > 0) {
-      result.unreadable.push({
-        id: reqId,
-        status: [...new Set(unreadable.map((r) => r.status))].join(', '),
-      });
-      continue;
+    let reqContent = lines.join('\n');
+    for (const reqId of idsToCheck) {
+      // Checkbox: - [ ] **<id>** → - [x] **<id>**
+      reqContent = reqContent.replace(
+        new RegExp(
+          `(-\\s*\\[)[ ](\\]\\s*\\*\\*${escapeRegex(reqId)}\\*\\*)`,
+          'gi',
+        ),
+        '$1x$2',
+      );
     }
 
-    // 'Complete' is not closeable but does mean done, so it must not count as
-    // held — that case is the idempotent re-run.
-    const held = ours.filter(
-      (r) =>
-        !CLOSEABLE_STATUSES.test(r.status) &&
-        r.status.trim().toLowerCase() !== 'complete',
-    );
-    if (held.length > 0) {
-      result.blocked.push({
-        id: reqId,
-        status: [...new Set(held.map((r) => r.status.trim()))].join(', '),
-      });
-      continue;
-    }
+    if (reqContent === originalContent) return result;
 
-    result.closed.push(reqId);
-    rowsToClose.push(...ours);
-
-    // An ID split across several phases is only finished when no row still
-    // attributes outstanding work elsewhere — tick the box then, and not before.
-    const outstandingElsewhere = idRows.some(
-      (r) => !ours.includes(r) && r.status.toLowerCase() !== 'complete',
-    );
-    if (!outstandingElsewhere) idsToCheck.push(reqId);
-  }
-
-  for (const row of rowsToClose) {
-    if (!CLOSEABLE_STATUSES.test(row.status)) continue;
-    const cells = lines[row.lineIndex].split('|');
-    // Replace the cell's text, preserving its padding so the table stays aligned.
-    cells[3] = cells[3].replace(/\S.*\S|\S/, 'Complete');
-    lines[row.lineIndex] = cells.join('|');
-  }
-
-  let reqContent = lines.join('\n');
-  for (const reqId of idsToCheck) {
-    // Checkbox: - [ ] **<id>** → - [x] **<id>**
-    reqContent = reqContent.replace(
-      new RegExp(
-        `(-\\s*\\[)[ ](\\]\\s*\\*\\*${escapeRegex(reqId)}\\*\\*)`,
-        'gi',
-      ),
-      '$1x$2',
-    );
-  }
-
-  if (reqContent === originalContent) return result;
-
-  writeFileAtomic(reqPath, reqContent);
-  result.updated = true;
-  return result;
+    writeFileAtomic(reqPath, reqContent);
+    result.updated = true;
+    return result;
+  });
 }
 
 /**
@@ -1220,21 +1227,253 @@ function cmdPhaseInsert(cwd, afterPhase, description) {
   });
 }
 
-// True when a milestone slice still names an integer phase above `removedInt`,
-// by header or by checkbox. That is what the renumbering exists to rewrite, so a
+// True when the current milestone still names a phase the shift would move, by
+// header or by checkbox. That is what the renumbering exists to rewrite, so a
 // renumbering that changed nothing while one is present has missed its target.
-function namesPhaseAbove(slice, removedInt) {
-  const headerPattern = /^#{2,4}\s*Phase\s+(\d+)/gim;
-  const numbers = [];
+// Called with the whole current milestone rather than the write scope, for the
+// reason the other probes are: a phase above a collapsed section is a target the
+// renumbering cannot reach, not one it has no business reaching.
+function namesShiftTarget(region, shiftId) {
+  const headerPattern = /^#{2,4}\s*Phase\s+(\d+[A-Za-z]?(?:\.\d+)*)/gim;
+  const ids = [];
   let m;
-  while ((m = headerPattern.exec(slice)) !== null) {
-    numbers.push(parseInt(m[1], 10));
-  }
-  for (const entry of parsePhaseCheckboxes(slice)) {
-    numbers.push(parseInt(entry.num, 10));
-  }
-  return numbers.some((n) => Number.isFinite(n) && n > removedInt);
+  while ((m = headerPattern.exec(region)) !== null) ids.push(m[1]);
+  for (const entry of parsePhaseCheckboxes(region)) ids.push(entry.num);
+  return ids.some((id) => shiftId(id, 'phase') !== null);
 }
+
+/**
+ * Phase identifiers a roadmap's live milestones name more than once.
+ *
+ * Headings and checkbox items are counted in separate namespaces: one phase
+ * legitimately has both, but not two headings or two checkboxes. Identifiers are
+ * compared unpadded, so a padded spelling and a bare one of the same number are
+ * one phase named twice — which is the point, since a partial renumbering
+ * produces exactly that.
+ *
+ * @returns {string[]} the duplicated identifiers, unpadded and sorted
+ */
+function duplicatePhaseIds(content) {
+  const milestone = extractCurrentMilestone(content);
+  const headings = [];
+  const headingPattern = /^#{2,4}\s*Phase\s+(\d+[A-Za-z]?(?:\.\d+)*)/gim;
+  let m;
+  while ((m = headingPattern.exec(milestone)) !== null) headings.push(m[1]);
+
+  const duplicates = new Set();
+  for (const group of [
+    headings,
+    parsePhaseCheckboxes(milestone).map((entry) => entry.num),
+  ]) {
+    const seen = new Set();
+    for (const raw of group) {
+      const id = String(raw)
+        .replace(/^0+(?=\d)/, '')
+        .toUpperCase();
+      if (seen.has(id)) duplicates.add(id);
+      seen.add(id);
+    }
+  }
+  return [...duplicates].sort();
+}
+
+// How much text either side of a number can decide whether it is a phase
+// reference. The longest shape below — a bolded dependency label and the word
+// Phase — is under thirty characters, so this is generous rather than a limit.
+const RENUMBER_CONTEXT_CHARS = 64;
+
+// A whole phase identifier: the integer, the sidecar letter that may hang off
+// it, and the decimal segments that may follow. Read as bare digit runs instead,
+// a decimal identifier was two separate tokens whose context neither half
+// matched, so the renumbering reached the integer phases and left every decimal
+// and lettered one at the number the directory rename had just moved it off.
+const PHASE_ID_TOKEN = /\d+[A-Za-z]?(?:\.\d+)*/g;
+const PHASE_ID_PARTS = /^(\d+)([A-Za-z]?(?:\.\d+)*)$/;
+
+// One notion of where a run of digits begins and ends a token of prose, shared
+// by both spellings of a reference below. Each used to carry its own, and the
+// two disagreed in opposite directions.
+//
+// OPENS_TOKEN is the left edge. Asked as "the character before is not a digit,
+// dot or hyphen", it admitted a URL path segment, a Windows path, an ISO week's
+// W, a shell variable and a bracketed token — everything whose delimiter is
+// none of those three. Asked positively, only whitespace, a backtick, an
+// opening bracket or the start of the text begins a token. A square bracket is
+// deliberately not among them: it opens a link label, not prose.
+//
+// CONTINUES_TOKEN is the right edge. Asked as "a colon or a space follows", it
+// missed every reference a comma, a semicolon, a bracket, an apostrophe or a
+// full stop ended, leaving those at the number the phase had before the run.
+// Asked negatively, anything that is not a word character continues nothing. A
+// hyphen is excluded with the word characters: `Phases 10-12` is a range whose
+// end a decrement of the start cannot reach, so rewriting the start alone is
+// worse than leaving the pair.
+const OPENS_TOKEN = /(?:^|[\s`(])$/;
+const CONTINUES_TOKEN = /^[\w-]/;
+
+// A hyphenated pair is a plan reference within a phase, `18-01`, unless the word
+// in front of it makes it a span of phases. The milestone index the roadmap
+// template writes is exactly that shape once the numbers reach two digits.
+const PHASE_SPAN_WORD = /(?:^|[^A-Za-z])phases?\s+$/i;
+
+/**
+ * The spans of `text` inside fenced code blocks.
+ *
+ * A fence quotes; it does not refer. Renumbering inside one rewrites a document
+ * that is being shown, not one that names the phases this project has. An
+ * unclosed fence runs to the end of the text, which is CommonMark's reading and
+ * the conservative one here.
+ */
+function fencedCodeRanges(text) {
+  const fence = /^ {0,3}(`{3,}|~{3,})/;
+  const ranges = [];
+  let open = null;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const marker = fence.exec(line);
+    if (open === null) {
+      if (marker) {
+        open = { char: marker[1][0], length: marker[1].length, start: offset };
+      }
+    } else if (
+      marker &&
+      marker[1][0] === open.char &&
+      marker[1].length >= open.length
+    ) {
+      ranges.push([open.start, offset + line.length]);
+      open = null;
+    }
+    offset += line.length + 1;
+  }
+  if (open !== null) ranges.push([open.start, text.length]);
+  return ranges;
+}
+
+// Zero-padding is preserved at the width it was found, so a roadmap that pads
+// its phase numbers to two digits goes on doing so and one that writes them bare
+// is not padded against its will. Reaching only the bare spelling left every
+// padded reference pointing at whichever phase now holds its old number.
+//
+// Which of those two a reference is depends on where it was read. A plan
+// reference is the name of a file on disk, and the directory rename pads those
+// to two digits and no further, so it is padded to two whatever width it was
+// written at — which for a two-digit reference is the width it was found at,
+// and for a three-digit one is the width the rename just gave it. A heading is
+// prose and is written at its natural width, so the same decrement unpads it.
+// Padding both the same way gets one of them wrong: keyed on a leading zero
+// alone, a plan reference shortened across the ten boundary named a file that
+// does not exist.
+function integerPhaseShift(removedInt) {
+  return (written, kind) => {
+    const parts = PHASE_ID_PARTS.exec(written);
+    if (!parts) return null;
+    const num = parseInt(parts[1], 10);
+    if (!Number.isFinite(num) || num <= removedInt) return null;
+    let pad = 0;
+    if (kind === 'plan') pad = 2;
+    else if (parts[1].startsWith('0')) pad = parts[1].length;
+    return String(num - 1).padStart(pad, '0') + parts[2];
+  };
+}
+
+// Removing a decimal closes the gap among its own siblings and nothing else:
+// the integer it hangs off keeps its number, and so does every other base's
+// decimals. Bases are compared unpadded, since the directories pad and the
+// document does not.
+function decimalSiblingShift(baseId, removedDecimal) {
+  const unpad = (id) => id.replace(/^0+(?=\d)/, '').toUpperCase();
+  const base = unpad(String(baseId));
+  return (written) => {
+    const parts = /^(\d+[A-Za-z]?)\.(\d+)$/.exec(written);
+    if (!parts || unpad(parts[1]) !== base) return null;
+    const decimal = parseInt(parts[2], 10);
+    if (!Number.isFinite(decimal) || decimal <= removedDecimal) return null;
+    return `${parts[1]}.${decimal - 1}`;
+  };
+}
+
+/**
+ * Move STATE.md's current position by the same mapping the records moved by.
+ *
+ * The canonical file spells the position and the count as separate fields, one
+ * fact per line. A compound `4 of 4 (Four)` is the form that replaced, and both
+ * of its facts have to move together: the position because the phase it names
+ * has a new number, the count because there is one phase fewer. A count this
+ * carries is the same count `Total Phases` states, so whichever the file
+ * carries is decremented once and only once.
+ */
+function shiftStatePosition(value, shiftId) {
+  const renumbered = value.replace(
+    /^\d+[A-Za-z]?(?:\.\d+)*/,
+    (id) => shiftId(id, 'phase') ?? id,
+  );
+  return renumbered.replace(/(\bof\s+)(\d+)/i, (whole, lead, total) => {
+    const remaining = parseInt(total, 10) - 1;
+    return remaining >= 0 ? `${lead}${remaining}` : whole;
+  });
+}
+
+/**
+ * Shift every phase reference `shiftId` claims, leaving the rest alone.
+ *
+ * One pass over the identifiers, each judged by the text as it was read and
+ * rewritten at most once. Rewriting in a pass per source number, walking down
+ * from the highest, re-read its own output: a reference lowered to N by the pass
+ * for N+1 was lowered again by the pass for N, and again by the pass below that,
+ * so every phase above the removed one collapsed onto the removed one's number.
+ */
+function renumberPhaseReferences(text, shiftId) {
+  const referenceKind = (written, before, after) => {
+    // The word Phase and the number it introduces: section headings, checkbox
+    // items, dependency lines and prose alike, whatever ends them.
+    if (/Phase\s+$/i.test(before) && !CONTINUES_TOKEN.test(after))
+      return 'phase';
+    // A progress-table row: `| N. Name`.
+    if (/\|\s*$/.test(before) && /^\.\s/.test(after)) return 'phase';
+    // A plan reference, `18-01`, which is the name of a file on disk. Two or
+    // three digits, since a project may reach three-figure phase numbers and a
+    // fourth is a year: `2020-01` is a date wherever it is written. A decimal
+    // one is admitted only where a version number cannot follow — the
+    // directories number their decimals from one and never pad them, so a
+    // padded fraction is somebody else's token — which is what keeps
+    // `3.14-05` and `1.05-01` out. The trailing side stays open to a hyphen so
+    // that 18-01-PLAN.md is still a plan reference, but not to a hyphen another
+    // number follows, which is the rest of a date.
+    const plan =
+      /^\d{2,3}(?:[A-Za-z]|\.[1-9]\d*)?$/.test(written) &&
+      OPENS_TOKEN.test(before) &&
+      !PHASE_SPAN_WORD.test(before) &&
+      /^-\d{2}(?!\d)(?!-\d)/.test(after);
+    return plan ? 'plan' : null;
+  };
+
+  const fenced = fencedCodeRanges(text);
+
+  return text.replace(PHASE_ID_TOKEN, (written, index) => {
+    if (fenced.some(([start, stop]) => index >= start && index < stop))
+      return written;
+    const before = text.slice(
+      Math.max(0, index - RENUMBER_CONTEXT_CHARS),
+      index,
+    );
+    const end = index + written.length;
+    const after = text.slice(end, end + RENUMBER_CONTEXT_CHARS);
+    const kind = referenceKind(written, before, after);
+    if (kind === null) return written;
+    const next = shiftId(written, kind);
+    return next === null ? written : next;
+  });
+}
+
+// Unlike phase-close, a re-run is not a repair here: the renumbering shifts what
+// every later phase is called, so the second run's target number names a
+// different phase than the first run's did. Saying so is the whole point of
+// reporting what landed.
+const PHASE_REMOVE_RETRY_HINT =
+  'Re-running `phase remove` is not a repair: the renumbering has already ' +
+  'shifted what the later phases are called, so the same number now names a ' +
+  'different phase. Reconcile .planning/phases/ against ROADMAP.md and ' +
+  'STATE.md by hand.';
 
 // Locked over the directory work as well as the rewrite: the renumbering is
 // driven by what is on disk, and a roadmap written from a pre-renumbering read
@@ -1244,346 +1483,507 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
     error('phase number required for phase remove');
   }
 
-  return withRoadmapLock(cwd, () => {
-    const { roadmap: roadmapPath, phases: phasesDir } = planningPaths(cwd);
-    const force = options.force || false;
+  // Collected inside the locked body and read by the catch outside it: what a
+  // failure partway through has already written.
+  const applied = [];
 
-    if (!fs.existsSync(roadmapPath)) {
-      error('ROADMAP.md not found');
-    }
+  try {
+    return withRoadmapLock(cwd, () => {
+      const { roadmap: roadmapPath, phases: phasesDir } = planningPaths(cwd);
+      const force = options.force || false;
 
-    // Normalize the target
-    const normalized = normalizePhaseName(targetPhase);
-    const isDecimal = targetPhase.includes('.');
+      if (!fs.existsSync(roadmapPath)) {
+        error('ROADMAP.md not found');
+      }
 
-    // Find and validate target directory
-    let targetDir = null;
-    try {
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const dirs = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-        .sort((a, b) => comparePhaseNum(a, b));
-      targetDir = dirs.find(
-        (d) => d.startsWith(normalized + '-') || d === normalized,
-      );
-    } catch {}
+      // Normalize the target
+      const normalized = normalizePhaseName(targetPhase);
+      const isDecimal = targetPhase.includes('.');
+      // A letter phase is a sidecar hung off an integer, not the integer. The
+      // integer renumbering reads its number with parseInt, which drops the
+      // letter, so removing one shifted every phase above the integer down onto
+      // a number that was never vacated — two directories parsing alike, and
+      // their plan files renamed to match. Nothing follows a sidecar's number
+      // the way the next decimal follows a decimal's, so removing one renumbers
+      // nothing: it leaves a gap, which is what a gap in a lettered sequence
+      // means.
+      const isLetter = !isDecimal && /[A-Za-z]/.test(normalized);
+      // Read before anything is deleted, so the existence check below sees the
+      // document as it stood.
+      const roadmapBeforeAnything = fs.readFileSync(roadmapPath, 'utf-8');
 
-    // Check for executed work (SUMMARY.md files)
-    if (targetDir && !force) {
-      const targetPath = path.join(phasesDir, targetDir);
-      const files = fs.readdirSync(targetPath);
-      const summaries = files.filter(
-        (f) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md',
-      );
-      if (summaries.length > 0) {
+      // Find and validate target directory
+      let targetDir = null;
+      try {
+        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+        const dirs = entries
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .sort((a, b) => comparePhaseNum(a, b));
+        targetDir = dirs.find(
+          (d) => d.startsWith(normalized + '-') || d === normalized,
+        );
+      } catch {}
+
+      // A phase with no directory that the current milestone names nowhere does
+      // not exist, and removing it is nothing. Falling through decremented the
+      // phase count for a phase that was never counted — a number that was never
+      // true — and reported the write as an update.
+      //
+      // A progress-table row is not evidence on its own. A shipped milestone
+      // keeps its rows outside the <details> that collapses the rest of it, so
+      // every phase it delivered is named in the region the probes read as
+      // current. Counted as existing, a number belonging to the archive was
+      // removed from that table and the phases still in progress were shifted
+      // down to compensate for a removal that had happened in neither record.
+      const namedInRoadmap =
+        hasPhaseHeader(roadmapBeforeAnything, targetPhase) ||
+        parsePhaseCheckboxes(
+          extractCurrentMilestone(roadmapBeforeAnything),
+        ).some((entry) => comparePhaseNum(entry.num, targetPhase) === 0);
+
+      if (
+        !targetDir &&
+        !namedInRoadmap &&
+        hasPhaseTableRow(roadmapBeforeAnything, targetPhase)
+      ) {
         error(
-          `Phase ${targetPhase} has ${summaries.length} executed plan(s). Use --force to remove anyway.`,
+          `Phase ${targetPhase} has no directory, and ROADMAP.md names it only ` +
+            `in a progress table — which is where a shipped milestone keeps ` +
+            `the history of the phases it delivered. Removing it would renumber ` +
+            `the phases still in progress to compensate for a removal that ` +
+            `happened nowhere. Delete the row by hand if it is stale.`,
         );
       }
-    }
 
-    // Delete target directory
-    if (targetDir) {
-      fs.rmSync(path.join(phasesDir, targetDir), {
-        recursive: true,
-        force: true,
-      });
-    }
-
-    // Renumber subsequent phases
-    const renamedDirs = [];
-    const renamedFiles = [];
-
-    if (isDecimal) {
-      // Decimal removal: renumber sibling decimals (e.g., removing 06.2 → 06.3 becomes 06.2)
-      const baseParts = normalized.split('.');
-      const baseInt = baseParts[0];
-      const removedDecimal = parseInt(baseParts[1], 10);
-
-      try {
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        const dirs = entries
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name)
-          .sort((a, b) => comparePhaseNum(a, b));
-
-        // Find sibling decimals with higher numbers
-        const decPattern = new RegExp(`^${baseInt}\\.(\\d+)-(.+)$`);
-        const toRename = [];
-        for (const dir of dirs) {
-          const dm = dir.match(decPattern);
-          if (dm && parseInt(dm[1], 10) > removedDecimal) {
-            toRename.push({
-              dir,
-              oldDecimal: parseInt(dm[1], 10),
-              slug: dm[2],
-            });
-          }
-        }
-
-        // Sort descending to avoid conflicts
-        toRename.sort((a, b) => b.oldDecimal - a.oldDecimal);
-
-        for (const item of toRename) {
-          const newDecimal = item.oldDecimal - 1;
-          const oldPhaseId = `${baseInt}.${item.oldDecimal}`;
-          const newPhaseId = `${baseInt}.${newDecimal}`;
-          const newDirName = `${baseInt}.${newDecimal}-${item.slug}`;
-
-          // Rename directory
-          fs.renameSync(
-            path.join(phasesDir, item.dir),
-            path.join(phasesDir, newDirName),
-          );
-          renamedDirs.push({ from: item.dir, to: newDirName });
-
-          // Rename files inside
-          const dirFiles = fs.readdirSync(path.join(phasesDir, newDirName));
-          for (const f of dirFiles) {
-            // Files may have phase prefix like "06.2-01-PLAN.md"
-            if (f.includes(oldPhaseId)) {
-              const newFileName = f.replace(oldPhaseId, newPhaseId);
-              fs.renameSync(
-                path.join(phasesDir, newDirName, f),
-                path.join(phasesDir, newDirName, newFileName),
-              );
-              renamedFiles.push({ from: f, to: newFileName });
-            }
-          }
-        }
-      } catch {}
-    } else {
-      // Integer removal: renumber all subsequent integer phases
-      const removedInt = parseInt(normalized, 10);
-
-      try {
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        const dirs = entries
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name)
-          .sort((a, b) => comparePhaseNum(a, b));
-
-        // Collect directories that need renumbering (integer phases > removed, and their decimals/letters)
-        const toRename = [];
-        for (const dir of dirs) {
-          const dm = dir.match(/^(\d+)([A-Z])?(?:\.(\d+))?-(.+)$/i);
-          if (!dm) continue;
-          const dirInt = parseInt(dm[1], 10);
-          if (dirInt > removedInt) {
-            toRename.push({
-              dir,
-              oldInt: dirInt,
-              letter: dm[2] ? dm[2].toUpperCase() : '',
-              decimal: dm[3] ? parseInt(dm[3], 10) : null,
-              slug: dm[4],
-            });
-          }
-        }
-
-        // Sort descending to avoid conflicts
-        toRename.sort((a, b) => {
-          if (a.oldInt !== b.oldInt) return b.oldInt - a.oldInt;
-          return (b.decimal || 0) - (a.decimal || 0);
+      if (!targetDir && !namedInRoadmap) {
+        output({
+          removed: null,
+          found: false,
+          directory_deleted: null,
+          renamed_directories: [],
+          renamed_files: [],
+          roadmap_updated: false,
+          roadmap_landed: [],
+          roadmap_missed_targets: [],
+          roadmap_withheld: [],
+          roadmap_withheld_hint: null,
+          state_updated: false,
         });
+        return;
+      }
 
-        for (const item of toRename) {
-          const newInt = item.oldInt - 1;
-          const newPadded = String(newInt).padStart(2, '0');
-          const oldPadded = String(item.oldInt).padStart(2, '0');
-          const letterSuffix = item.letter || '';
-          const decimalSuffix = item.decimal !== null ? `.${item.decimal}` : '';
-          const oldPrefix = `${oldPadded}${letterSuffix}${decimalSuffix}`;
-          const newPrefix = `${newPadded}${letterSuffix}${decimalSuffix}`;
-          const newDirName = `${newPrefix}-${item.slug}`;
-
-          // Rename directory
-          fs.renameSync(
-            path.join(phasesDir, item.dir),
-            path.join(phasesDir, newDirName),
+      // Check for executed work (SUMMARY.md files)
+      if (targetDir && !force) {
+        const targetPath = path.join(phasesDir, targetDir);
+        const files = fs.readdirSync(targetPath);
+        const summaries = files.filter(
+          (f) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md',
+        );
+        if (summaries.length > 0) {
+          error(
+            `Phase ${targetPhase} has ${summaries.length} executed plan(s). Use --force to remove anyway.`,
           );
-          renamedDirs.push({ from: item.dir, to: newDirName });
+        }
+      }
 
-          // Rename files inside
-          const dirFiles = fs.readdirSync(path.join(phasesDir, newDirName));
-          for (const f of dirFiles) {
-            if (f.startsWith(oldPrefix)) {
-              const newFileName = newPrefix + f.slice(oldPrefix.length);
-              fs.renameSync(
-                path.join(phasesDir, newDirName, f),
-                path.join(phasesDir, newDirName, newFileName),
-              );
-              renamedFiles.push({ from: f, to: newFileName });
+      // Delete target directory
+      if (targetDir) {
+        fs.rmSync(path.join(phasesDir, targetDir), {
+          recursive: true,
+          force: true,
+        });
+        applied.push(`.planning/phases/${targetDir} deleted`);
+      }
+
+      // Renumber subsequent phases
+      const renamedDirs = [];
+      const renamedFiles = [];
+
+      if (isLetter) {
+        // Nothing follows a sidecar's number, so nothing is renumbered.
+      } else if (isDecimal) {
+        // Decimal removal: renumber sibling decimals (e.g., removing 06.2 → 06.3 becomes 06.2)
+        const baseParts = normalized.split('.');
+        const baseInt = baseParts[0];
+        const removedDecimal = parseInt(baseParts[1], 10);
+
+        try {
+          const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+          const dirs = entries
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name)
+            .sort((a, b) => comparePhaseNum(a, b));
+
+          // Find sibling decimals with higher numbers
+          const decPattern = new RegExp(`^${baseInt}\\.(\\d+)-(.+)$`);
+          const toRename = [];
+          for (const dir of dirs) {
+            const dm = dir.match(decPattern);
+            if (dm && parseInt(dm[1], 10) > removedDecimal) {
+              toRename.push({
+                dir,
+                oldDecimal: parseInt(dm[1], 10),
+                slug: dm[2],
+              });
             }
           }
-        }
-      } catch {}
-    }
 
-    // Update ROADMAP.md. Every rewrite here is scoped to the current milestone and
-    // checked for landing: unscoped, the removals deleted a same-numbered phase
-    // out of an archived milestone section, and unchecked they reported success
-    // having matched nothing.
-    let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-    const roadmapBefore = roadmapContent;
-    const roadmapLanded = [];
-    const roadmapMissed = [];
+          // Sort descending to avoid conflicts
+          toRename.sort((a, b) => b.oldDecimal - a.oldDecimal);
 
-    // Remove the target phase section
-    const targetEscaped = phaseNumPattern(targetPhase);
-    const sectionPattern = new RegExp(
-      `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{2,4}\\s+Phase\\s+\\d+[A-Z]?(?:\\.\\d+)*|$)`,
-      'i',
-    );
-    const section = replaceInCurrentMilestone(
-      roadmapContent,
-      sectionPattern,
-      '',
-    );
-    roadmapContent = section.content;
-    if (section.changed) roadmapLanded.push('phase-section');
-    else if (hasPhaseHeader(roadmapBefore, targetPhase))
-      roadmapMissed.push('phase-section');
+          for (const item of toRename) {
+            const newDecimal = item.oldDecimal - 1;
+            const oldPhaseId = `${baseInt}.${item.oldDecimal}`;
+            const newPhaseId = `${baseInt}.${newDecimal}`;
+            const newDirName = `${baseInt}.${newDecimal}-${item.slug}`;
 
-    // Remove from phase list (checkbox)
-    const checkboxPattern = new RegExp(
-      String.raw`\n?` + phaseCheckboxPattern(targetPhase),
-      'gi',
-    );
-    const checkbox = replaceInCurrentMilestone(
-      roadmapContent,
-      checkboxPattern,
-      '',
-    );
-    roadmapContent = checkbox.content;
-    if (checkbox.changed) roadmapLanded.push('phase-checkbox');
-    else if (!isPhaseCheckboxSatisfied(roadmapBefore, targetPhase))
-      roadmapMissed.push('phase-checkbox');
+            // Rename directory
+            fs.renameSync(
+              path.join(phasesDir, item.dir),
+              path.join(phasesDir, newDirName),
+            );
+            renamedDirs.push({ from: item.dir, to: newDirName });
 
-    // Remove from progress table
-    const tableRowPattern = new RegExp(
-      `\\n?\\|\\s*${targetEscaped}\\.?\\s[^|]*\\|[^\\n]*`,
-      'gi',
-    );
-    const tableRow = replaceInCurrentMilestone(
-      roadmapContent,
-      tableRowPattern,
-      '',
-    );
-    roadmapContent = tableRow.content;
-    if (tableRow.changed) roadmapLanded.push('progress-table');
-    else if (hasPhaseTableRow(roadmapBefore, targetPhase))
-      roadmapMissed.push('progress-table');
+            // Rename files inside
+            const dirFiles = fs.readdirSync(path.join(phasesDir, newDirName));
+            for (const f of dirFiles) {
+              // Files may have phase prefix like "06.2-01-PLAN.md"
+              if (f.includes(oldPhaseId)) {
+                const newFileName = f.replace(oldPhaseId, newPhaseId);
+                fs.renameSync(
+                  path.join(phasesDir, newDirName, f),
+                  path.join(phasesDir, newDirName, newFileName),
+                );
+                renamedFiles.push({ from: f, to: newFileName });
+              }
+            }
+          }
+        } catch {}
+      } else {
+        // Integer removal: renumber all subsequent integer phases
+        const removedInt = parseInt(normalized, 10);
 
-    // Renumber references in ROADMAP for subsequent phases. The loop runs over the
-    // current milestone slice only — run over the whole document it renumbered
-    // archived milestone sections and mangled the dates in their progress tables.
-    if (!isDecimal) {
-      const removedInt = parseInt(normalized, 10);
-      const offset = currentMilestoneOffset(roadmapContent);
-      const head = roadmapContent.slice(0, offset);
-      const tailBefore = roadmapContent.slice(offset);
-      let tail = tailBefore;
+        try {
+          const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+          const dirs = entries
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name)
+            .sort((a, b) => comparePhaseNum(a, b));
 
-      // Collect all integer phases > removedInt
-      const maxPhase = 99; // reasonable upper bound
-      for (let oldNum = maxPhase; oldNum > removedInt; oldNum--) {
-        const newNum = oldNum - 1;
-        const oldStr = String(oldNum);
-        const newStr = String(newNum);
-        const oldPad = oldStr.padStart(2, '0');
-        const newPad = newStr.padStart(2, '0');
+          // Collect directories that need renumbering (integer phases > removed, and their decimals/letters)
+          const toRename = [];
+          for (const dir of dirs) {
+            const dm = dir.match(/^(\d+)([A-Z])?(?:\.(\d+))?-(.+)$/i);
+            if (!dm) continue;
+            const dirInt = parseInt(dm[1], 10);
+            if (dirInt > removedInt) {
+              toRename.push({
+                dir,
+                oldInt: dirInt,
+                letter: dm[2] ? dm[2].toUpperCase() : '',
+                decimal: dm[3] ? parseInt(dm[3], 10) : null,
+                slug: dm[4],
+              });
+            }
+          }
 
-        // Phase headings: ## Phase N: or ### Phase N: — renumber old to new
-        tail = tail.replace(
-          new RegExp(`(#{2,4}\\s*Phase\\s+)${oldStr}(\\s*:)`, 'gi'),
-          `$1${newStr}$2`,
-        );
+          // Sort descending to avoid conflicts
+          toRename.sort((a, b) => {
+            if (a.oldInt !== b.oldInt) return b.oldInt - a.oldInt;
+            return (b.decimal || 0) - (a.decimal || 0);
+          });
 
-        // Checkbox items: - [ ] Phase N: — renumber old to new
-        tail = tail.replace(
-          new RegExp(`(Phase\\s+)${oldStr}([:\\s])`, 'g'),
-          `$1${newStr}$2`,
-        );
+          for (const item of toRename) {
+            const newInt = item.oldInt - 1;
+            const newPadded = String(newInt).padStart(2, '0');
+            const oldPadded = String(item.oldInt).padStart(2, '0');
+            const letterSuffix = item.letter || '';
+            const decimalSuffix =
+              item.decimal !== null ? `.${item.decimal}` : '';
+            const oldPrefix = `${oldPadded}${letterSuffix}${decimalSuffix}`;
+            const newPrefix = `${newPadded}${letterSuffix}${decimalSuffix}`;
+            const newDirName = `${newPrefix}-${item.slug}`;
 
-        // Plan references: 18-01 → 17-01. A leading digit or hyphen disqualifies
-        // the match, or the renumbering walks into dates: 2020-01-01 became
-        // 2002-01-01, one iteration of the loop at a time. The trailing side stays
-        // open to a hyphen so that 18-01-PLAN.md is still a plan reference.
-        tail = tail.replace(
-          new RegExp(`(?<![\\d-])${oldPad}-(\\d{2})(?!\\d)`, 'g'),
-          `${newPad}-$1`,
-        );
+            // Rename directory
+            fs.renameSync(
+              path.join(phasesDir, item.dir),
+              path.join(phasesDir, newDirName),
+            );
+            renamedDirs.push({ from: item.dir, to: newDirName });
 
-        // Table rows: | 18. → | 17.
-        tail = tail.replace(
-          new RegExp(`(\\|\\s*)${oldStr}\\.\\s`, 'g'),
-          `$1${newStr}. `,
-        );
+            // Rename files inside
+            const dirFiles = fs.readdirSync(path.join(phasesDir, newDirName));
+            for (const f of dirFiles) {
+              if (f.startsWith(oldPrefix)) {
+                const newFileName = newPrefix + f.slice(oldPrefix.length);
+                fs.renameSync(
+                  path.join(phasesDir, newDirName, f),
+                  path.join(phasesDir, newDirName, newFileName),
+                );
+                renamedFiles.push({ from: f, to: newFileName });
+              }
+            }
+          }
+        } catch {}
+      }
 
-        // Depends on references
-        tail = tail.replace(
-          new RegExp(`(Depends on:\\*\\*\\s*Phase\\s+)${oldStr}\\b`, 'gi'),
-          `$1${newStr}`,
+      if (renamedDirs.length > 0) {
+        applied.push(
+          `${renamedDirs.length} directory renumbering(s) under .planning/phases/`,
         );
       }
 
-      roadmapContent = head + tail;
-      if (tail !== tailBefore) roadmapLanded.push('renumber');
-      else if (namesPhaseAbove(tailBefore, removedInt))
-        roadmapMissed.push('renumber');
-    }
+      // Update ROADMAP.md. Every rewrite here is scoped to the current milestone and
+      // checked for landing: unscoped, the removals deleted a same-numbered phase
+      // out of an archived milestone section, and unchecked they reported success
+      // having matched nothing.
+      let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+      const roadmapBefore = roadmapContent;
+      const roadmapLanded = [];
+      const roadmapMissed = [];
+      const roadmapWithheld = [];
+      let roadmapWithheldHint = null;
 
-    if (roadmapLanded.length > 0) {
-      writeFileAtomic(roadmapPath, roadmapContent);
-    }
+      // Remove the target phase section, which runs to the next heading of its
+      // own level or shallower. Bounded by the next phase header or the end of
+      // the file, removing the last phase in the list deleted everything below
+      // it — the progress table, which the next rewrite then reported as a
+      // target it could not reach rather than one it had destroyed, and any
+      // section after that. A deeper heading belongs to the phase, so the bound
+      // is the header's own level and not simply the next heading.
+      const targetEscaped = phaseNumPattern(targetPhase);
+      const headerMatch = roadmapContent
+        .slice(currentMilestoneOffset(roadmapContent))
+        .match(new RegExp(`(#{2,4})\\s*Phase\\s+${targetEscaped}\\s*:`, 'i'));
+      const headerLevel = headerMatch ? headerMatch[1].length : 4;
+      const sectionPattern = new RegExp(
+        `\\n?#{2,4}\\s*Phase\\s+${targetEscaped}\\s*:[\\s\\S]*?(?=\\n#{1,${headerLevel}}\\s|$)`,
+        'i',
+      );
+      const section = replaceInCurrentMilestone(
+        roadmapContent,
+        sectionPattern,
+        '',
+      );
+      roadmapContent = section.content;
+      if (section.changed) roadmapLanded.push('phase-section');
+      else if (hasPhaseHeader(roadmapBefore, targetPhase))
+        roadmapMissed.push('phase-section');
 
-    // Update STATE.md phase count. Locked across the read: the new count is the
-    // count this reads minus one, so a read that loses its window does not just
-    // drop a concurrent writer's entry, it writes a number that was never true.
-    const statePath = planningPaths(cwd).state;
-    if (fs.existsSync(statePath)) {
-      withStateLock(cwd, () => {
-        let stateContent = fs.readFileSync(statePath, 'utf-8');
-        // Update "Total Phases" field. stateReplaceField rewrites the whole value,
-        // so anything trailing the count — "7 phases" — is carried over rather than
-        // dropped.
-        const totalRaw = stateExtractField(stateContent, 'Total Phases');
-        const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
-        if (totalMatch) {
-          const newTotal = parseInt(totalMatch[1], 10) - 1;
-          stateContent =
-            stateReplaceField(
-              stateContent,
-              'Total Phases',
-              `${newTotal}${totalMatch[2]}`,
-            ) || stateContent;
+      // Remove from phase list (checkbox)
+      const checkboxPattern = new RegExp(
+        String.raw`\n?` + phaseCheckboxPattern(targetPhase),
+        'gi',
+      );
+      const checkbox = replaceInCurrentMilestone(
+        roadmapContent,
+        checkboxPattern,
+        '',
+      );
+      roadmapContent = checkbox.content;
+      if (checkbox.changed) roadmapLanded.push('phase-checkbox');
+      else if (!isPhaseCheckboxSatisfied(roadmapBefore, targetPhase))
+        roadmapMissed.push('phase-checkbox');
+
+      // Remove from progress table
+      const tableRowPattern = new RegExp(
+        `\\n?\\|\\s*${targetEscaped}\\.?\\s[^|]*\\|[^\\n]*`,
+        'gi',
+      );
+      const tableRow = replaceInCurrentMilestone(
+        roadmapContent,
+        tableRowPattern,
+        '',
+      );
+      roadmapContent = tableRow.content;
+      if (tableRow.changed) roadmapLanded.push('progress-table');
+      else if (hasPhaseTableRow(roadmapBefore, targetPhase))
+        roadmapMissed.push('progress-table');
+
+      // Renumber references in ROADMAP for subsequent phases. Applied to the
+      // current milestone slice only — over the whole document it renumbered
+      // archived milestone sections and mangled the dates in their progress tables.
+      //
+      // The renumbering is the only rewrite here that can give two phases the
+      // same number: the removals only delete. So that is where the consistency
+      // of the result is decided, and it is refused outright in the two cases
+      // that produce a duplicate, rather than written and reported afterwards.
+      //
+      // The hint names the record the operator has to reconcile, so it reads
+      // the renumbering that actually happened rather than assuming one: a
+      // removal with nothing above it on disk moves no directory, and a hint
+      // that says otherwise sends the reader to look for damage in the one
+      // record that is intact.
+      const renumberedRecord =
+        renamedDirs.length > 0
+          ? `The phase directories have been renumbered, so ROADMAP.md now ` +
+            `names phases by their old numbers`
+          : `No phase directory needed renumbering, so the numbering on disk ` +
+            `is still the one ROADMAP.md uses`;
+
+      // The document follows whatever the directory renumbering above did, so
+      // each kind of removal renumbers references the same way it renamed
+      // directories: an integer shifts every phase above it and carries their
+      // decimals and letters along, a decimal closes the gap among its own
+      // siblings, and a sidecar letter moves nothing. Skipped for anything but
+      // an integer, a decimal removal renamed its siblings on disk and left the
+      // document naming a different phase by the number the rename had just
+      // freed.
+      // Split the way the directory renaming above splits it, so the two
+      // records read the same identifier as the same phase.
+      const shiftId = isLetter
+        ? null
+        : isDecimal
+          ? decimalSiblingShift(
+              normalized.split('.')[0],
+              parseInt(normalized.split('.')[1], 10),
+            )
+          : integerPhaseShift(parseInt(normalized, 10));
+
+      if (shiftId) {
+        const offset = currentMilestoneOffset(roadmapContent);
+        const head = roadmapContent.slice(0, offset);
+        const tailBefore = roadmapContent.slice(offset);
+        // Over the whole current milestone, not the write scope: a phase above a
+        // collapsed section is a target the renumbering cannot reach, and read
+        // scoped like the rewrite it was reported clean.
+        const namesAbove = namesShiftTarget(
+          extractCurrentMilestone(roadmapContent),
+          shiftId,
+        );
+
+        // A renumbering compensates for a removal that happened. Applied on top
+        // of one that did not, it shifts the next phase onto the number the
+        // document still uses for the phase being removed.
+        if (roadmapMissed.length > 0) {
+          if (namesAbove) {
+            roadmapWithheld.push('renumber');
+            roadmapWithheldHint =
+              `Renumbering was withheld: ROADMAP.md still names the removed ` +
+              `phase (${roadmapMissed.join(', ')}), and shifting the later ` +
+              `phases down on top of that would give two phases the same ` +
+              `number. ${renumberedRecord} — fix the unreachable reference ` +
+              `and reconcile the two by hand.`;
+          }
+        } else {
+          const tail = renumberPhaseReferences(tailBefore, shiftId);
+          const candidate = head + tail;
+          // Only duplicates this rewrite would introduce count. A roadmap that
+          // already names a phase twice is not made worse by leaving it alone,
+          // and refusing to renumber it forever is not a fix.
+          const before = duplicatePhaseIds(roadmapContent);
+          const introduced = duplicatePhaseIds(candidate).filter(
+            (id) => !before.includes(id),
+          );
+
+          if (introduced.length > 0) {
+            roadmapWithheld.push('renumber');
+            roadmapWithheldHint =
+              `Renumbering was withheld: applying it would have named phase ` +
+              `${introduced.join(', ')} twice in ROADMAP.md, because some ` +
+              `reference to it is written in a shape the rewrite cannot reach. ` +
+              `${renumberedRecord} — reconcile the two by hand.`;
+          } else {
+            roadmapContent = candidate;
+            if (tail !== tailBefore) roadmapLanded.push('renumber');
+            else if (namesAbove) roadmapMissed.push('renumber');
+          }
         }
-        // Update "Phase: X of Y" pattern
-        const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
-        const ofMatch = stateContent.match(ofPattern);
-        if (ofMatch) {
-          const oldTotal = parseInt(ofMatch[2], 10);
-          stateContent = stateContent.replace(ofPattern, `$1${oldTotal - 1}$3`);
-        }
-        writeStateMd(statePath, stateContent, cwd);
-      });
-    }
+      }
 
-    const result = {
-      removed: targetPhase,
-      directory_deleted: targetDir || null,
-      renamed_directories: renamedDirs,
-      renamed_files: renamedFiles,
-      roadmap_updated: roadmapLanded.length > 0,
-      roadmap_landed: roadmapLanded,
-      roadmap_missed_targets: roadmapMissed,
-      state_updated: fs.existsSync(statePath),
-    };
+      if (roadmapLanded.length > 0) {
+        writeFileAtomic(roadmapPath, roadmapContent);
+        applied.push(`ROADMAP.md (${roadmapLanded.join(', ')})`);
+      }
 
-    output(result);
-  });
+      // Update STATE.md phase count. Locked across the read: the new count is the
+      // count this reads minus one, so a read that loses its window does not just
+      // drop a concurrent writer's entry, it writes a number that was never true.
+      const statePath = planningPaths(cwd).state;
+      if (fs.existsSync(statePath)) {
+        withStateLock(cwd, () => {
+          let stateContent = fs.readFileSync(statePath, 'utf-8');
+          // Update "Total Phases" field. stateReplaceField rewrites the whole value,
+          // so anything trailing the count — "7 phases" — is carried over rather than
+          // dropped.
+          const totalRaw = stateExtractField(stateContent, 'Total Phases');
+          const totalMatch = totalRaw && totalRaw.match(/^(\d+)(.*)$/);
+          if (totalMatch) {
+            const newTotal = parseInt(totalMatch[1], 10) - 1;
+            stateContent =
+              stateReplaceField(
+                stateContent,
+                'Total Phases',
+                `${newTotal}${totalMatch[2]}`,
+              ) || stateContent;
+          }
+          // The position moves with the phase it names, by the same mapping the
+          // directories and the document were renumbered by. Decrementing the
+          // count alone left the file describing a position that cannot exist —
+          // phase 4 of 3 — while the phase that had been 4 was by then 3, and
+          // reported the whole thing as a state update that landed.
+          const positionRaw = stateExtractField(stateContent, 'Current Phase');
+          const carriesTotal =
+            positionRaw !== null && /\bof\s+\d+/i.test(positionRaw);
+          if (positionRaw !== null && shiftId) {
+            const position = shiftStatePosition(positionRaw, shiftId);
+            if (position !== positionRaw) {
+              stateContent =
+                stateReplaceField(stateContent, 'Current Phase', position) ||
+                stateContent;
+            }
+          }
+          // A STATE.md written before one fact per line was settled carries the
+          // count on a free-form line of its own instead. Read document-wide,
+          // and so only where the position above did not already carry it: run
+          // over a compound Current Phase this has just rewritten, it would
+          // decrement the same count a second time.
+          if (!carriesTotal) {
+            const ofPattern = /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i;
+            const ofMatch = stateContent.match(ofPattern);
+            if (ofMatch) {
+              const oldTotal = parseInt(ofMatch[2], 10);
+              stateContent = stateContent.replace(
+                ofPattern,
+                `$1${oldTotal - 1}$3`,
+              );
+            }
+          }
+          writeStateMd(statePath, stateContent, cwd);
+        });
+      }
+
+      const result = {
+        removed: targetPhase,
+        found: true,
+        directory_deleted: targetDir || null,
+        renamed_directories: renamedDirs,
+        renamed_files: renamedFiles,
+        roadmap_updated: roadmapLanded.length > 0,
+        roadmap_landed: roadmapLanded,
+        roadmap_missed_targets: roadmapMissed,
+        roadmap_withheld: roadmapWithheld,
+        roadmap_withheld_hint: roadmapWithheldHint,
+        state_updated: fs.existsSync(statePath),
+      };
+
+      output(result);
+    });
+  } catch (err) {
+    throw notePartialWrites(err, applied, PHASE_REMOVE_RETRY_HINT);
+  }
 }
+
+// Every rewrite here is a recomputation from what is on disk — the checkbox, the
+// progress row, the plan count and the position all follow from the summaries
+// present — so re-running after a failure converges on the same result rather
+// than compounding it. That is what makes naming what landed a sufficient
+// remedy, and it is what this sentence promises the operator.
+const PHASE_COMPLETE_RETRY_HINT =
+  'Every field this writes is recomputed from what is on disk, so `phase ' +
+  'complete` is safe to re-run: clear the cause and run it again to finish the ' +
+  'updates that did not land.';
 
 // Locked even though phase-close runs after every executor in the phase has
 // returned: that ordering is a workflow convention, not something the command
@@ -1592,325 +1992,346 @@ function cmdPhaseRemove(cwd, targetPhase, options) {
 // date from a read a straggler's update-plan-progress then writes over. It reads
 // the roadmap twice — once to rewrite it, once to find the next phase — and the
 // lock also makes those two reads agree.
+//
+// The state lock is taken where STATE.md is written and not one line earlier, so
+// a failure between the two writes leaves ROADMAP.md updated and STATE.md not.
+// Taking both up front would narrow that window without closing it — the writes
+// are to different files and no lock makes a pair of them atomic, so an I/O
+// error or a crash produces the same half-applied result — while every executor
+// calling `state record-metric` in parallel would then queue behind this whole
+// body, requirement collection and all. The window is reported instead, by
+// notePartialWrites below.
 function cmdPhaseComplete(cwd, phaseNum) {
   if (!phaseNum) {
     error('phase number required for phase complete');
   }
 
-  return withRoadmapLock(cwd, () => {
-    const {
-      roadmap: roadmapPath,
-      state: statePath,
-      phases: phasesDir,
-    } = planningPaths(cwd);
-    const normalized = normalizePhaseName(phaseNum);
-    const today = new Date().toISOString().split('T')[0];
+  // Collected inside the locked body and read by the catch outside it: what a
+  // failure partway through has already written.
+  const applied = [];
 
-    // Verify phase info
-    const phaseInfo = findPhaseInternal(cwd, phaseNum);
-    if (!phaseInfo) {
-      error(`Phase ${phaseNum} not found`);
-    }
+  try {
+    return withRoadmapLock(cwd, () => {
+      const {
+        roadmap: roadmapPath,
+        state: statePath,
+        phases: phasesDir,
+      } = planningPaths(cwd);
+      const normalized = normalizePhaseName(phaseNum);
+      const today = new Date().toISOString().split('T')[0];
 
-    const planCount = phaseInfo.plans.length;
-    const summaryCount = phaseInfo.summaries.length;
-    let requirementsUpdated = false;
-    let roadmapContent = null;
-    const roadmapLanded = [];
-    const roadmapMissed = [];
-
-    // Update ROADMAP.md: mark phase complete
-    if (fs.existsSync(roadmapPath)) {
-      roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-
-      // Checkbox: - [ ] Phase N: → - [x] Phase N: (...completed DATE)
-      const checkboxPattern = new RegExp(
-        phaseCheckboxPattern(phaseNum, '[ ]'),
-        'i',
-      );
-      const checkbox = replaceInCurrentMilestone(
-        roadmapContent,
-        checkboxPattern,
-        `$1x$3 (completed ${today})`,
-      );
-      roadmapContent = checkbox.content;
-      if (checkbox.changed) roadmapLanded.push('phase-checkbox');
-      else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum))
-        roadmapMissed.push('phase-checkbox');
-
-      // Progress table: update Status to Complete, add date (handles 4 or 5 column tables)
-      const phaseEscaped = phaseNumPattern(phaseNum);
-      const tableRowPattern = new RegExp(
-        `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
-        'im',
-      );
-      const tableRow = replaceInCurrentMilestone(
-        roadmapContent,
-        tableRowPattern,
-        (fullRow) => {
-          const cells = fullRow.split('|').slice(1, -1);
-          if (cells.length === 5) {
-            // 5-col: Phase | Milestone | Plans | Status | Completed
-            cells[3] = ' Complete    ';
-            cells[4] = ` ${today} `;
-          } else if (cells.length === 4) {
-            // 4-col: Phase | Plans | Status | Completed
-            cells[2] = ' Complete    ';
-            cells[3] = ` ${today} `;
-          }
-          return '|' + cells.join('|') + '|';
-        },
-      );
-      roadmapContent = tableRow.content;
-      if (tableRow.changed) roadmapLanded.push('progress-table');
-      else if (hasPhaseTableRow(roadmapContent, phaseNum))
-        roadmapMissed.push('progress-table');
-
-      // Update plan count in phase section
-      const planCountPattern = new RegExp(
-        phaseFieldPattern(phaseEscaped, 'Plans'),
-        'i',
-      );
-      const plansLine = replaceInCurrentMilestone(
-        roadmapContent,
-        planCountPattern,
-        `$1${summaryCount}/${planCount} plans complete`,
-      );
-      roadmapContent = plansLine.content;
-      if (plansLine.changed) roadmapLanded.push('plans-line');
-      else if (hasPhasePlansLine(roadmapContent, phaseNum))
-        roadmapMissed.push('plans-line');
-
-      if (roadmapLanded.length > 0) {
-        writeFileAtomic(roadmapPath, roadmapContent);
+      // Verify phase info
+      const phaseInfo = findPhaseInternal(cwd, phaseNum);
+      if (!phaseInfo) {
+        error(`Phase ${phaseNum} not found`);
       }
-    }
 
-    // ── Requirement closure ───────────────────────────────────────────────────
-    // Gated on the verifier's assessment: VERIFICATION.md is the completion
-    // authority everywhere in GSD (see getPhaseCompletionStatus).
-    const phaseDirAbs = path.join(cwd, phaseInfo.directory);
-    const verificationStatus = readVerificationStatus(phaseDirAbs);
-    const requirementsBlockedBy = FAILED_VERIFICATION_STATUSES.has(
-      verificationStatus,
-    )
-      ? verificationStatus
-      : null;
+      const planCount = phaseInfo.plans.length;
+      const summaryCount = phaseInfo.summaries.length;
+      let requirementsUpdated = false;
+      let roadmapContent = null;
+      const roadmapLanded = [];
+      const roadmapMissed = [];
 
-    // A report older than the work it judges is stale by construction. Reported
-    // either way; it changes nothing about whether closure proceeds.
-    const staleSummaries = summariesNewerThanVerification(
-      phaseDirAbs,
-      phaseInfo.summaries,
-    );
-    const verificationStale = staleSummaries.length > 0;
+      // Update ROADMAP.md: mark phase complete
+      if (fs.existsSync(roadmapPath)) {
+        roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
 
-    let requirementIds = [];
-    let requirementsUnreadableRows = [];
-    let requirementsBlockedRows = [];
-    let requirementsOtherPhase = [];
-    let requirementsUnmapped = [];
-    let requirementsUndeclared = [];
-    let requirementsUnreadableSummaries = [];
-    let requirementsEmptySummaries = [];
-    let requirementsNarrowedSummaries = [];
-    let requirementsBlockedHint = null;
-    if (requirementsBlockedBy) {
-      // Verifier says the goal is not met — leave every ID Pending. A later
-      // re-run after gap closure will pick them up. When the report predates the
-      // summaries it is blocking on, say so: the block is otherwise indistinguish-
-      // able from a current verdict, and an operator has no way to tell that the
-      // remedy is to re-run the verifier rather than to re-close the same gaps.
-      requirementsBlockedHint = verificationStale
-        ? `Requirement closure is blocked by a verification report (${requirementsBlockedBy}) ` +
-          `that predates ${staleSummaries.length} summary file(s) in this phase: ` +
-          `${staleSummaries.join(', ')}. The report cannot reflect that work. ` +
-          `Re-run verification for this phase; closure stays withheld until it does, ` +
-          `because the report's age is not evidence the gaps were closed.`
-        : `Requirement closure is blocked by a verification report (${requirementsBlockedBy}). ` +
-          `Close the reported gaps and re-run verification.`;
-    } else {
-      // Either the verifier passed, it needs human sign-off (which execute-phase
-      // obtains before reaching phase-close), or no VERIFICATION.md exists at all
-      // because workflow.verifier is off. Verification is a qualifier, not a gate
-      // — an absent report must not strand requirements as permanently Pending.
-      const collected = collectPhaseRequirementIds(
-        cwd,
-        phaseNum,
-        phaseInfo,
-        roadmapContent,
-      );
-      const closure = closePhaseRequirements(cwd, collected.ids, phaseNum);
-      requirementsUpdated = closure.updated;
-      requirementIds = closure.closed;
-      requirementsBlockedRows = closure.blocked;
-      requirementsUnreadableRows = closure.unreadable;
-      requirementsOtherPhase = closure.otherPhase;
-      requirementsUnmapped = closure.unmapped;
-      requirementsUndeclared = collected.undeclared;
-      requirementsUnreadableSummaries = collected.unreadableSummaries;
-      requirementsEmptySummaries = collected.emptySummaries;
-      requirementsNarrowedSummaries = collected.narrowedSummaries;
-    }
-
-    // Find next phase — check both filesystem AND roadmap
-    // Phases may be defined in ROADMAP.md but not yet scaffolded to disk,
-    // so a filesystem-only scan would incorrectly report is_last_phase:true
-    let nextPhaseNum = null;
-    let nextPhaseName = null;
-    let isLastPhase = true;
-
-    try {
-      const isDirInMilestone = getMilestonePhaseFilter(cwd);
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const dirs = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-        .filter(isDirInMilestone)
-        .sort((a, b) => comparePhaseNum(a, b));
-
-      // Find the next phase directory after current
-      for (const dir of dirs) {
-        const dm = dir.match(/^(\d+[A-Z]?(?:\.\d+)*)-?(.*)/i);
-        if (dm) {
-          if (comparePhaseNum(dm[1], phaseNum) > 0) {
-            nextPhaseNum = dm[1];
-            nextPhaseName = dm[2] || null;
-            isLastPhase = false;
-            break;
-          }
-        }
-      }
-    } catch {}
-
-    // Fallback: if filesystem found no next phase, check ROADMAP.md
-    // for phases that are defined but not yet planned (no directory on disk).
-    // Union of two sources:
-    //   1. Header pattern: `### Phase N: Title` (post-planning, when Details section exists)
-    //   2. Checkbox lines (pre-planning, bullet-only entry), read through the
-    //      shared helper so both supported forms — bare and bold — are seen here.
-    // Note on normalization: the header pattern returns whatever is written (e.g. '06'),
-    // while the checkbox returns whatever is written (e.g. '6'). We do NOT pad here —
-    // comparePhaseNum handles both forms semantically. When both a header and bullet reference
-    // the same phase, the header entry is preferred (via sort-stable dedup).
-    if (isLastPhase && fs.existsSync(roadmapPath)) {
-      try {
-        const roadmapForPhases = extractCurrentMilestone(
-          fs.readFileSync(roadmapPath, 'utf-8'),
+        // Checkbox: - [ ] Phase N: → - [x] Phase N: (...completed DATE)
+        const checkboxPattern = new RegExp(
+          phaseCheckboxPattern(phaseNum, '[ ]'),
+          'i',
         );
-        const headerPattern =
-          /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:\s*([^\n]+)/gi;
+        const checkbox = replaceInCurrentMilestone(
+          roadmapContent,
+          checkboxPattern,
+          `$1x$3 (completed ${today})`,
+        );
+        roadmapContent = checkbox.content;
+        if (checkbox.changed) roadmapLanded.push('phase-checkbox');
+        else if (!isPhaseCheckboxSatisfied(roadmapContent, phaseNum, '[ ]'))
+          roadmapMissed.push('phase-checkbox');
 
-        const candidates = [];
-        let pm;
-        while ((pm = headerPattern.exec(roadmapForPhases)) !== null) {
-          candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
-        }
-        for (const entry of parsePhaseCheckboxes(roadmapForPhases)) {
-          candidates.push({
-            index: entry.index,
-            num: entry.num,
-            name: entry.name || '',
-          });
-        }
-        // Sort by phase number ascending (comparePhaseNum handles padded/unpadded forms).
-        // At equal phase number, preserve document order (header tends to appear after bullet
-        // in ROADMAP.md, but the dedup step below keeps the first — typically the bullet — unless
-        // the header appeared earlier in the document, in which case document order wins).
-        candidates.sort((a, b) => {
-          const c = comparePhaseNum(a.num, b.num);
-          if (c !== 0) return c;
-          return a.index - b.index;
-        });
-        // Dedupe by phase number, keeping first (header-preferred when headers appear before
-        // bullets in the ROADMAP; for typical layout where bullet lists precede Details sections,
-        // the bullet match is kept — both yield the same name so the choice is cosmetic).
-        const seen = new Set();
-        const unique = candidates.filter((c) => {
-          if (seen.has(c.num)) return false;
-          seen.add(c.num);
-          return true;
-        });
+        // Progress table: update Status to Complete, add date (handles 4 or 5 column tables)
+        const phaseEscaped = phaseNumPattern(phaseNum);
+        const tableRowPattern = new RegExp(
+          `^(\\|\\s*${phaseEscaped}\\.?\\s[^|]*(?:\\|[^\\n]*)*)$`,
+          'im',
+        );
+        const tableRow = replaceInCurrentMilestone(
+          roadmapContent,
+          tableRowPattern,
+          (fullRow) => {
+            const cells = fullRow.split('|').slice(1, -1);
+            if (cells.length === 5) {
+              // 5-col: Phase | Milestone | Plans | Status | Completed
+              cells[3] = ' Complete    ';
+              cells[4] = ` ${today} `;
+            } else if (cells.length === 4) {
+              // 4-col: Phase | Plans | Status | Completed
+              cells[2] = ' Complete    ';
+              cells[3] = ` ${today} `;
+            }
+            return '|' + cells.join('|') + '|';
+          },
+        );
+        roadmapContent = tableRow.content;
+        if (tableRow.changed) roadmapLanded.push('progress-table');
+        else if (hasPhaseTableRow(roadmapContent, phaseNum))
+          roadmapMissed.push('progress-table');
 
-        for (const c of unique) {
-          if (comparePhaseNum(c.num, phaseNum) > 0) {
-            nextPhaseNum = c.num;
-            nextPhaseName =
-              c.name
-                .replace(/\(INSERTED\)/i, '')
-                .trim()
-                .toLowerCase()
-                .replace(/\s+/g, '-') || null;
-            isLastPhase = false;
-            break;
+        // Update plan count in phase section
+        const planCountPattern = new RegExp(
+          phaseFieldPattern(phaseEscaped, 'Plans'),
+          'i',
+        );
+        const plansLine = replaceInCurrentMilestone(
+          roadmapContent,
+          planCountPattern,
+          `$1${summaryCount}/${planCount} plans complete`,
+        );
+        roadmapContent = plansLine.content;
+        if (plansLine.changed) roadmapLanded.push('plans-line');
+        else if (hasPhasePlansLine(roadmapContent, phaseNum))
+          roadmapMissed.push('plans-line');
+
+        if (roadmapLanded.length > 0) {
+          writeFileAtomic(roadmapPath, roadmapContent);
+          applied.push(`ROADMAP.md (${roadmapLanded.join(', ')})`);
+        }
+      }
+
+      // ── Requirement closure ───────────────────────────────────────────────────
+      // Gated on the verifier's assessment: VERIFICATION.md is the completion
+      // authority everywhere in GSD (see getPhaseCompletionStatus).
+      const phaseDirAbs = path.join(cwd, phaseInfo.directory);
+      const verificationStatus = readVerificationStatus(phaseDirAbs);
+      const requirementsBlockedBy = FAILED_VERIFICATION_STATUSES.has(
+        verificationStatus,
+      )
+        ? verificationStatus
+        : null;
+
+      // A report older than the work it judges is stale by construction. Reported
+      // either way; it changes nothing about whether closure proceeds.
+      const staleSummaries = summariesNewerThanVerification(
+        phaseDirAbs,
+        phaseInfo.summaries,
+      );
+      const verificationStale = staleSummaries.length > 0;
+
+      let requirementIds = [];
+      let requirementsUnreadableRows = [];
+      let requirementsBlockedRows = [];
+      let requirementsOtherPhase = [];
+      let requirementsUnmapped = [];
+      let requirementsUndeclared = [];
+      let requirementsUnreadableSummaries = [];
+      let requirementsEmptySummaries = [];
+      let requirementsNarrowedSummaries = [];
+      let requirementsBlockedHint = null;
+      if (requirementsBlockedBy) {
+        // Verifier says the goal is not met — leave every ID Pending. A later
+        // re-run after gap closure will pick them up. When the report predates the
+        // summaries it is blocking on, say so: the block is otherwise indistinguish-
+        // able from a current verdict, and an operator has no way to tell that the
+        // remedy is to re-run the verifier rather than to re-close the same gaps.
+        requirementsBlockedHint = verificationStale
+          ? `Requirement closure is blocked by a verification report (${requirementsBlockedBy}) ` +
+            `that predates ${staleSummaries.length} summary file(s) in this phase: ` +
+            `${staleSummaries.join(', ')}. The report cannot reflect that work. ` +
+            `Re-run verification for this phase; closure stays withheld until it does, ` +
+            `because the report's age is not evidence the gaps were closed.`
+          : `Requirement closure is blocked by a verification report (${requirementsBlockedBy}). ` +
+            `Close the reported gaps and re-run verification.`;
+      } else {
+        // Either the verifier passed, it needs human sign-off (which execute-phase
+        // obtains before reaching phase-close), or no VERIFICATION.md exists at all
+        // because workflow.verifier is off. Verification is a qualifier, not a gate
+        // — an absent report must not strand requirements as permanently Pending.
+        const collected = collectPhaseRequirementIds(
+          cwd,
+          phaseNum,
+          phaseInfo,
+          roadmapContent,
+        );
+        const closure = closePhaseRequirements(cwd, collected.ids, phaseNum);
+        requirementsUpdated = closure.updated;
+        if (closure.updated) {
+          applied.push('REQUIREMENTS.md (traceability rows and checkboxes)');
+        }
+        requirementIds = closure.closed;
+        requirementsBlockedRows = closure.blocked;
+        requirementsUnreadableRows = closure.unreadable;
+        requirementsOtherPhase = closure.otherPhase;
+        requirementsUnmapped = closure.unmapped;
+        requirementsUndeclared = collected.undeclared;
+        requirementsUnreadableSummaries = collected.unreadableSummaries;
+        requirementsEmptySummaries = collected.emptySummaries;
+        requirementsNarrowedSummaries = collected.narrowedSummaries;
+      }
+
+      // Find next phase — check both filesystem AND roadmap
+      // Phases may be defined in ROADMAP.md but not yet scaffolded to disk,
+      // so a filesystem-only scan would incorrectly report is_last_phase:true
+      let nextPhaseNum = null;
+      let nextPhaseName = null;
+      let isLastPhase = true;
+
+      try {
+        const isDirInMilestone = getMilestonePhaseFilter(cwd);
+        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+        const dirs = entries
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .filter(isDirInMilestone)
+          .sort((a, b) => comparePhaseNum(a, b));
+
+        // Find the next phase directory after current
+        for (const dir of dirs) {
+          const dm = dir.match(/^(\d+[A-Z]?(?:\.\d+)*)-?(.*)/i);
+          if (dm) {
+            if (comparePhaseNum(dm[1], phaseNum) > 0) {
+              nextPhaseNum = dm[1];
+              nextPhaseName = dm[2] || null;
+              isLastPhase = false;
+              break;
+            }
           }
         }
       } catch {}
-    }
 
-    // Update STATE.md. Locked for the same reason the roadmap write above is:
-    // the position and status written here are computed from a read of the file
-    // being replaced, so an executor's metric or decision landing in that window
-    // is discarded with success reported for both.
-    let stateFieldsUpdated = [];
-    let stateFieldsMissing = [];
-    if (fs.existsSync(statePath)) {
-      withStateLock(cwd, () => {
-        const stateContent = fs.readFileSync(statePath, 'utf-8');
-        const applied = stateReplaceFields(stateContent, [
-          ['Current Phase', nextPhaseNum || phaseNum],
-          [
-            'Current Phase Name',
-            nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
-          ],
-          ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
-          ['Current Plan', 'Not started'],
-          ['Last Activity', today],
-          [
-            'Last Activity Description',
-            `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
-          ],
-        ]);
-        stateFieldsUpdated = applied.updated;
-        stateFieldsMissing = applied.missing;
-        writeStateMd(statePath, applied.content, cwd);
-      });
-    }
+      // Fallback: if filesystem found no next phase, check ROADMAP.md
+      // for phases that are defined but not yet planned (no directory on disk).
+      // Union of two sources:
+      //   1. Header pattern: `### Phase N: Title` (post-planning, when Details section exists)
+      //   2. Checkbox lines (pre-planning, bullet-only entry), read through the
+      //      shared helper so both supported forms — bare and bold — are seen here.
+      // Note on normalization: the header pattern returns whatever is written (e.g. '06'),
+      // while the checkbox returns whatever is written (e.g. '6'). We do NOT pad here —
+      // comparePhaseNum handles both forms semantically. When both a header and bullet reference
+      // the same phase, the header entry is preferred (via sort-stable dedup).
+      if (isLastPhase && fs.existsSync(roadmapPath)) {
+        try {
+          const roadmapForPhases = extractCurrentMilestone(
+            fs.readFileSync(roadmapPath, 'utf-8'),
+          );
+          const headerPattern =
+            /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:\s*([^\n]+)/gi;
 
-    const result = {
-      completed_phase: phaseNum,
-      phase_name: phaseInfo.phase_name,
-      plans_executed: `${summaryCount}/${planCount}`,
-      next_phase: nextPhaseNum
-        ? { number: nextPhaseNum, name: nextPhaseName }
-        : null,
-      next_phase_name: nextPhaseName, // keep for backward compat with transition.md consumers
-      is_last_phase: isLastPhase,
-      date: today,
-      roadmap_updated: roadmapLanded.length > 0,
-      roadmap_missed_targets: roadmapMissed,
-      state_updated: fs.existsSync(statePath),
-      state_fields_updated: stateFieldsUpdated,
-      state_fields_missing: stateFieldsMissing,
-      requirements_updated: requirementsUpdated,
-      requirements_closed: requirementIds,
-      requirements_blocked_rows: requirementsBlockedRows,
-      requirements_unreadable_rows: requirementsUnreadableRows,
-      requirements_other_phase: requirementsOtherPhase,
-      requirements_unmapped: requirementsUnmapped,
-      requirements_undeclared: requirementsUndeclared,
-      requirements_unreadable_summaries: requirementsUnreadableSummaries,
-      requirements_empty_summaries: requirementsEmptySummaries,
-      requirements_narrowed_summaries: requirementsNarrowedSummaries,
-      verification_status: verificationStatus,
-      verification_stale: verificationStale,
-      verification_stale_summaries: staleSummaries,
-      requirements_blocked_by: requirementsBlockedBy,
-      requirements_blocked_hint: requirementsBlockedHint,
-    };
+          const candidates = [];
+          let pm;
+          while ((pm = headerPattern.exec(roadmapForPhases)) !== null) {
+            candidates.push({ index: pm.index, num: pm[1], name: pm[2] });
+          }
+          for (const entry of parsePhaseCheckboxes(roadmapForPhases)) {
+            candidates.push({
+              index: entry.index,
+              num: entry.num,
+              name: entry.name || '',
+            });
+          }
+          // Sort by phase number ascending (comparePhaseNum handles padded/unpadded forms).
+          // At equal phase number, preserve document order (header tends to appear after bullet
+          // in ROADMAP.md, but the dedup step below keeps the first — typically the bullet — unless
+          // the header appeared earlier in the document, in which case document order wins).
+          candidates.sort((a, b) => {
+            const c = comparePhaseNum(a.num, b.num);
+            if (c !== 0) return c;
+            return a.index - b.index;
+          });
+          // Dedupe by phase number, keeping first (header-preferred when headers appear before
+          // bullets in the ROADMAP; for typical layout where bullet lists precede Details sections,
+          // the bullet match is kept — both yield the same name so the choice is cosmetic).
+          const seen = new Set();
+          const unique = candidates.filter((c) => {
+            if (seen.has(c.num)) return false;
+            seen.add(c.num);
+            return true;
+          });
 
-    output(result);
-  });
+          for (const c of unique) {
+            if (comparePhaseNum(c.num, phaseNum) > 0) {
+              nextPhaseNum = c.num;
+              nextPhaseName =
+                c.name
+                  .replace(/\(INSERTED\)/i, '')
+                  .trim()
+                  .toLowerCase()
+                  .replace(/\s+/g, '-') || null;
+              isLastPhase = false;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      // Update STATE.md. Locked for the same reason the roadmap write above is:
+      // the position and status written here are computed from a read of the file
+      // being replaced, so an executor's metric or decision landing in that window
+      // is discarded with success reported for both.
+      let stateFieldsUpdated = [];
+      let stateFieldsMissing = [];
+      if (fs.existsSync(statePath)) {
+        withStateLock(cwd, () => {
+          const stateContent = fs.readFileSync(statePath, 'utf-8');
+          const applied = stateReplaceFields(stateContent, [
+            ['Current Phase', nextPhaseNum || phaseNum],
+            [
+              'Current Phase Name',
+              nextPhaseName ? nextPhaseName.replace(/-/g, ' ') : null,
+            ],
+            ['Status', isLastPhase ? 'Milestone complete' : 'Ready to plan'],
+            ['Current Plan', 'Not started'],
+            ['Last Activity', today],
+            [
+              'Last Activity Description',
+              `Phase ${phaseNum} complete${nextPhaseNum ? `, transitioned to Phase ${nextPhaseNum}` : ''}`,
+            ],
+          ]);
+          stateFieldsUpdated = applied.updated;
+          stateFieldsMissing = applied.missing;
+          writeStateMd(statePath, applied.content, cwd);
+        });
+      }
+
+      const result = {
+        completed_phase: phaseNum,
+        phase_name: phaseInfo.phase_name,
+        plans_executed: `${summaryCount}/${planCount}`,
+        next_phase: nextPhaseNum
+          ? { number: nextPhaseNum, name: nextPhaseName }
+          : null,
+        next_phase_name: nextPhaseName, // keep for backward compat with transition.md consumers
+        is_last_phase: isLastPhase,
+        date: today,
+        roadmap_updated: roadmapLanded.length > 0,
+        roadmap_missed_targets: roadmapMissed,
+        state_updated: fs.existsSync(statePath),
+        state_fields_updated: stateFieldsUpdated,
+        state_fields_missing: stateFieldsMissing,
+        requirements_updated: requirementsUpdated,
+        requirements_closed: requirementIds,
+        requirements_blocked_rows: requirementsBlockedRows,
+        requirements_unreadable_rows: requirementsUnreadableRows,
+        requirements_other_phase: requirementsOtherPhase,
+        requirements_unmapped: requirementsUnmapped,
+        requirements_undeclared: requirementsUndeclared,
+        requirements_unreadable_summaries: requirementsUnreadableSummaries,
+        requirements_empty_summaries: requirementsEmptySummaries,
+        requirements_narrowed_summaries: requirementsNarrowedSummaries,
+        verification_status: verificationStatus,
+        verification_stale: verificationStale,
+        verification_stale_summaries: staleSummaries,
+        requirements_blocked_by: requirementsBlockedBy,
+        requirements_blocked_hint: requirementsBlockedHint,
+      };
+
+      output(result);
+    });
+  } catch (err) {
+    throw notePartialWrites(err, applied, PHASE_COMPLETE_RETRY_HINT);
+  }
 }
 
 module.exports = {

@@ -652,7 +652,17 @@ it tells them the remedy is to re-run verification for this phase, not to wait o
 to re-close the same gaps. (The retained manual `requirements mark-complete` remains
 the deliberate override.)
 
-Extract from result: `next_phase`, `next_phase_name`, `is_last_phase`,
+**ROADMAP.md landing.** `roadmap_updated` is false when no rewrite matched
+anything — the file was left as it was. `roadmap_landed` names the rewrites that
+did land (`phase-checkbox`, `progress-table`, `plans-line`) and
+`roadmap_missed_targets` names the ones that had a target in the current
+milestone and could not reach it, which means ROADMAP.md is written in a shape
+the rewrite does not recognise, or the live milestone sits above a collapsed one
+where no rewrite can reach it. Report those; the phase is not cleanly closed on
+the roadmap while the list is non-empty, whatever the requirement closure says.
+
+Extract from result: `roadmap_updated`, `roadmap_landed`,
+`roadmap_missed_targets`, `next_phase`, `next_phase_name`, `is_last_phase`,
 `requirements_closed`, `requirements_blocked_by`, `requirements_blocked_hint`,
 `requirements_blocked_rows`, `requirements_unreadable_rows`,
 `requirements_unreadable_summaries`, `requirements_empty_summaries`,
@@ -684,6 +694,21 @@ stay Pending; that is a claim to check, not a bug to route around.
 with the IDs it did not record. Those stay Pending, and the phase-level roadmap line
 is withheld for the whole phase — a phase-level declaration cannot be trusted to
 close IDs when the per-plan records show work that did not land.
+
+**If `phase complete` fails.** It writes ROADMAP.md, REQUIREMENTS.md and STATE.md
+one after another, so a failure can land partway. When it does, the error names
+what it already wrote — `Already applied before this failure: ...` — and every
+field it writes is recomputed from what is on disk, so **re-running it is the
+remedy**: it finishes the updates that did not land without duplicating the ones
+that did. An error with no such line wrote nothing at all.
+
+The common cause is a lock timeout (`Timed out waiting for a lock on ...`,
+error code `GSD_LOCK_TIMEOUT`): another gsd process was holding ROADMAP.md or
+STATE.md and did not let go within the acquire budget. Wait for that process and
+re-run. If the named holder is gone — a hard-killed process on a host that never
+ran the release path — delete the lock file the message names and re-run. Do not
+report a failed phase on a lock timeout without having retried; nothing is lost
+and nothing is corrupt.
 
 ```bash
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs(phase-{X}): complete phase execution" --files .planning/ROADMAP.md .planning/STATE.md .planning/REQUIREMENTS.md {phase_dir}/*-VERIFICATION.md

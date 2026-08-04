@@ -140,6 +140,9 @@
  *     [--resume-file path]
  *   state begin-phase --phase N --name S --plans C  Update STATE.md for new phase start
  *   state adjust-quick-table          Add Status column to Quick Tasks table if missing
+ *   state record-quick-task --id X     Add a row to the Quick Tasks Completed table
+ *     --description "..." [--description-file path]
+ *     [--date D] [--commit H] [--dir NAME] [--status S]
  *
  * Compound Commands (workflow-specific initialization):
  *   init execute-phase <phase>         All context for execute-phase workflow
@@ -260,6 +263,7 @@ const SUBCOMMANDS = {
     'record-session',
     'begin-phase',
     'adjust-quick-table',
+    'record-quick-task',
     'rebuild-frontmatter',
   ],
   template: ['select', 'fill'],
@@ -347,6 +351,18 @@ const ARG_SCHEMAS = {
       flags: ['--phase', '--name', '--plans'],
     },
     'adjust-quick-table': { positional: { min: 0, max: 0 }, flags: [] },
+    'record-quick-task': {
+      positional: { min: 0, max: 0 },
+      flags: [
+        '--id',
+        '--description',
+        '--description-file',
+        '--date',
+        '--commit',
+        '--dir',
+        '--status',
+      ],
+    },
   },
   template: {
     select: { positional: { min: 0, max: 1 }, flags: [] },
@@ -1165,6 +1181,20 @@ async function main() {
         );
       } else if (subcommand === 'adjust-quick-table') {
         state.cmdStateAdjustQuickTable(cwd);
+      } else if (subcommand === 'record-quick-task') {
+        const flagValue = (name) => {
+          const idx = args.indexOf(name);
+          return idx !== -1 ? args[idx + 1] : null;
+        };
+        state.cmdStateRecordQuickTask(cwd, {
+          id: flagValue('--id'),
+          description: flagValue('--description'),
+          description_file: flagValue('--description-file'),
+          date: flagValue('--date'),
+          commit: flagValue('--commit'),
+          dir: flagValue('--dir'),
+          status: flagValue('--status'),
+        });
       } else if (subcommand === 'rebuild-frontmatter') {
         state.cmdStateRebuildFrontmatter(cwd);
       } else if (subcommand === 'load' || !subcommand) {
@@ -2288,6 +2318,9 @@ main()
     }
   })
   .catch((err) => {
-    process.stderr.write((err && err.message) || String(err));
+    // Terminated, so the message cannot run into the next shell prompt. error()
+    // writes its own; a thrown Error carries none.
+    const message = (err && err.message) || String(err);
+    process.stderr.write(message.endsWith('\n') ? message : message + '\n');
     process.exit(1);
   });

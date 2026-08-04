@@ -567,11 +567,91 @@ function withFileLock(filePath, fn, opts = {}) {
  * The section must span the read, so callers wrap their whole body rather than
  * the write; planningPaths is called inside to keep the one lock path per project.
  *
- * Ordering: this is the outer lock. A command that mutates ROADMAP.md and
- * STATE.md takes this one first and withStateLock inside it, never the reverse.
+ * Ordering: this is the outermost of the three locks, which are taken
+ * ROADMAP.md, then REQUIREMENTS.md, then STATE.md, and never the other way.
  */
 function withRoadmapLock(cwd, fn) {
   return withFileLock(planningPaths(cwd).roadmap, fn);
+}
+
+/**
+ * Run a REQUIREMENTS.md read-modify-write as one indivisible step.
+ *
+ * Two commands rewrite the file from a read of it: `requirements mark-complete`
+ * and the requirement closure inside `phase complete`. Marking two IDs at once
+ * from separate processes loses one of them, with both reporting the ID they
+ * marked — and the closure path is only serialised today by happening to sit
+ * inside the roadmap lock, which the CLI entry point does not take.
+ *
+ * Locking one writer and not the other would be worth nothing: an unlocked
+ * whole-file write lands on top of whatever the lock holder wrote.
+ *
+ * Ordering: between the roadmap lock and the state lock. `milestone complete`
+ * holds all three, outermost first.
+ */
+function withRequirementsLock(cwd, fn) {
+  return withFileLock(planningPaths(cwd).requirements, fn);
+}
+
+/**
+ * The canonical path of the guarded planning document `filePath` names, or null.
+ *
+ * For the generic commands that rewrite an arbitrary file — the frontmatter
+ * writers — pointed at a planning document. Their write is a whole-file rewrite
+ * built from a read, so outside the lock it discards whatever a locked writer
+ * appended in between and voids the lock for everyone who took it. Pointed at
+ * anything else, a todo in every workflow that calls them today, they get no lock:
+ * a lock nobody contends for is a lock file to leave behind and a deadlock surface
+ * for nothing.
+ *
+ * Returning the canonical path rather than a boolean is what keeps one lock per
+ * document: an absolute argument, a relative one and a symlinked tree must all
+ * resolve to the lock path the guarded commands use.
+ */
+function lockedPlanningDoc(cwd, filePath) {
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const target = real(filePath);
+  const paths = planningPaths(cwd);
+  for (const guarded of [paths.state, paths.roadmap, paths.requirements]) {
+    if (real(guarded) === target) return guarded;
+  }
+  return null;
+}
+
+/**
+ * Record on a failing error what the command had already written.
+ *
+ * A command that mutates several planning files writes them one at a time.
+ * Locks give each write exclusivity, not the set of them atomicity, so anything
+ * thrown partway — a lock timeout on the next file, a disk error, a bug — leaves
+ * some files updated and the rest untouched. The error alone cannot be read
+ * either way, and the operator's next move depends entirely on which it was: a
+ * failure that wrote nothing is a retry, a failure that wrote half needs to be
+ * reconciled first.
+ *
+ * `applied` is empty for the no-op case and the error comes back untouched, so
+ * the annotation's presence is itself the distinction. `remedy` is the caller's
+ * because idempotence is not a property of this function's callers in general —
+ * one command can be safely re-run and another cannot.
+ *
+ * @param {Error} err - the error on its way out
+ * @param {string[]} applied - what landed, most significant first
+ * @param {string} remedy - one sentence on what to do about it
+ * @returns {Error} the same error, annotated
+ */
+function notePartialWrites(err, applied, remedy) {
+  if (!(err instanceof Error) || applied.length === 0) return err;
+  err.partialWrites = applied;
+  err.message =
+    `${err.message}\n\nAlready applied before this failure: ` +
+    `${applied.join('; ')}. ${remedy}`;
+  return err;
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -1228,13 +1308,29 @@ function getArchivedPhaseDirs(cwd) {
 
 // ─── Roadmap milestone scoping ───────────────────────────────────────────────
 
+// The tag both scopes below read. ROADMAP.md is written by hand as often as by
+// GSD, so `<details open>` and `<DETAILS>` are spellings of the same archive as
+// far as either of them is concerned; recognising one spelling and not the
+// other put whichever helper missed it over the whole document.
+const DETAILS_OPEN_SOURCE = String.raw`<details\b[^>]*>`;
+const DETAILS_CLOSE_SOURCE = String.raw`</details\s*>`;
+
 /**
  * Extract the current (active) milestone content from ROADMAP.md.
  * Strips shipped milestone sections wrapped in <details> blocks.
  * Returns the remaining content which is the active milestone.
+ *
+ * This is the authoritative answer to what the current milestone *is*: anything
+ * a <details> block does not enclose. `currentMilestoneOffset` below answers a
+ * narrower question — where a rewrite may write — and the two disagree about
+ * content above the first <details>. That is deliberate, and the reason the
+ * rewrite probes read this function rather than the write scope.
  */
 function extractCurrentMilestone(content) {
-  return content.replace(/<details>[\s\S]*?<\/details>/gi, '');
+  return content.replace(
+    new RegExp(`${DETAILS_OPEN_SOURCE}[\\s\\S]*?${DETAILS_CLOSE_SOURCE}`, 'gi'),
+    '',
+  );
 }
 
 /**
@@ -1256,9 +1352,18 @@ function replaceInCurrentMilestone(content, pattern, replacement) {
   return { content: before + after.replace(pattern, replacement), changed };
 }
 
+// Where a rewrite may write: the text after the last </details>, so a splice
+// cannot land inside an archived milestone and byte offsets stay valid. A
+// contiguous tail, which is narrower than the current milestone whenever live
+// content sits above a collapsed section.
 function currentMilestoneOffset(content) {
-  const lastDetailsClose = content.lastIndexOf('</details>');
-  return lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
+  let offset = 0;
+  for (const match of content.matchAll(
+    new RegExp(DETAILS_CLOSE_SOURCE, 'gi'),
+  )) {
+    offset = match.index + match[0].length;
+  }
+  return offset;
 }
 
 function currentMilestoneSlice(content) {
@@ -1271,12 +1376,19 @@ function currentMilestoneSlice(content) {
 // decide whether a rewrite that matched nothing is worth reporting. A roadmap
 // with no progress table has not missed one; a roadmap whose table row is
 // written in a shape the rewrite cannot reach has.
+//
+// They read the whole current milestone — `extractCurrentMilestone`, not the
+// write scope. Scoped like the rewrites they could only ever find a shape
+// mismatch inside the scope, never a scope mismatch, and a roadmap whose live
+// milestone sits above a collapsed one put every target out of reach and was
+// reported clean. Archived content stays excluded: it is unreachable by design,
+// so naming it would report a miss on work no rewrite is allowed to do.
 
 function hasPhaseTableRow(content, phaseNum) {
   return new RegExp(
     String.raw`^\|\s*${phaseNumPattern(phaseNum)}[.\s|]`,
     'im',
-  ).test(currentMilestoneSlice(content));
+  ).test(extractCurrentMilestone(content));
 }
 
 // A header naming the phase, without requiring the colon the section rewrites
@@ -1286,11 +1398,11 @@ function hasPhaseHeader(content, phaseNum) {
   return new RegExp(
     String.raw`^#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])`,
     'im',
-  ).test(currentMilestoneSlice(content));
+  ).test(extractCurrentMilestone(content));
 }
 
 function hasPhasePlansLine(content, phaseNum) {
-  const section = currentMilestoneSlice(content).match(
+  const section = extractCurrentMilestone(content).match(
     new RegExp(
       String.raw`#{2,4}\s*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])(?:(?!\n#{2,4}\s*Phase\s)[\s\S])*`,
       'i',
@@ -1299,18 +1411,22 @@ function hasPhasePlansLine(content, phaseNum) {
   return section ? /^\s*\*{0,2}Plans\*{0,2}\s*:/im.test(section[0]) : false;
 }
 
-// True when there is nothing to report: either the phase has no checkbox at
-// all, or it has one in the supported form and a tick that matched nothing
-// only means the box was already ticked. False when some checkbox line names
-// the phase in a shape the rewrite cannot reach.
-function isPhaseCheckboxSatisfied(content, phaseNum) {
-  const slice = currentMilestoneSlice(content);
+// True when there is nothing to report. `boxState` is the state the rewrite
+// searched for, and must be the one it used: a checkbox its own pattern can
+// match is a target it failed to reach, while one in the other state — a box
+// already ticked, for a rewrite that ticks — is what a no-op means. Reading a
+// wider region than the rewrite is what forces the distinction; scoped the same
+// way, an unticked supported-form box could not survive the rewrite at all.
+function isPhaseCheckboxSatisfied(content, phaseNum, boxState = '[ x]') {
+  const region = extractCurrentMilestone(content);
   const loose = new RegExp(
     String.raw`-\s*\[[ x]\][^\n]*Phase\s+${phaseNumPattern(phaseNum)}(?![\dA-Za-z.])[:\s]`,
     'i',
   );
-  if (!loose.test(slice)) return true;
-  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(slice);
+  if (!loose.test(region)) return true;
+  if (new RegExp(phaseCheckboxPattern(phaseNum, boxState), 'i').test(region))
+    return false;
+  return new RegExp(phaseCheckboxPattern(phaseNum), 'i').test(region);
 }
 
 // ─── Roadmap & model utilities ────────────────────────────────────────────────
@@ -1663,6 +1779,9 @@ module.exports = {
   releaseFileLock,
   withFileLock,
   withRoadmapLock,
+  withRequirementsLock,
+  lockedPlanningDoc,
+  notePartialWrites,
   LOCK_STALE_MS,
   LOCK_ACQUIRE_BUDGET_MS,
   safeReadFile,

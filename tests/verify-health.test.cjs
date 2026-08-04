@@ -3308,4 +3308,58 @@ describe('validate health --repair waits for the STATE.md lock', () => {
       `the regenerated file should say so: ${after}`,
     );
   });
+
+  // The decision to regenerate is a read of STATE.md, and a lock around the write
+  // alone leaves it outside the section: the writer this waited for repaired the
+  // file, and the replacement is built to fix a version that no longer exists.
+  //
+  // The pass direction does not depend on the clock. Holding the lock before the
+  // child starts means the child cannot read STATE.md until this process has
+  // finished with it, so the version it checks is the repaired one and there is
+  // nothing for it to repair. The window below only makes the unfixed ordering —
+  // check first, wait second — the one that gets exercised.
+  test('does not overwrite a STATE.md that the lock holder repaired', async () => {
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['-e', CHILD_SRC, '--', VERIFY_LIB, tmpDir, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const exited = new Promise((r) => child.on('close', r));
+
+    await waitForReadyFlag(readyFlag, 'the child');
+    await new Promise((r) => setTimeout(r, 600));
+
+    // What a concurrent writer holding the lock leaves behind: a STATE.md with
+    // nothing left to repair.
+    const repaired = '# Session State\n\nPhase 1 is current.\n';
+    fs.writeFileSync(statePath, repaired);
+    fs.unlinkSync(lockPath);
+
+    const code = await exited;
+    assert.strictEqual(code, 0, `the health run should succeed: ${stderr.trim()}`);
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf-8'),
+      repaired,
+      'the repair decided before the lock was free overwrote the holder’s STATE.md',
+    );
+    const backups = fs
+      .readdirSync(path.join(tmpDir, '.planning'))
+      .filter((f) => f.startsWith('STATE.md.bak-'));
+    assert.deepStrictEqual(
+      backups,
+      [],
+      `a repair that had nothing to repair should leave no backup: ${backups.join(', ')}`,
+    );
+  });
 });

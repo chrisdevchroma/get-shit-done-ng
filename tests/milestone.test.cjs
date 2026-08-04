@@ -12,6 +12,8 @@ const {
   createTempProject,
   cleanup,
   waitForReadyFlag,
+  trackExit,
+  waitForExit,
 } = require('./helpers.cjs');
 const {
   formatMilestoneHeading,
@@ -1511,7 +1513,7 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     );
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d));
-    const exited = new Promise((r) => child.on('close', r));
+    trackExit(child);
 
     await waitForReadyFlag(readyFlag, 'the child');
 
@@ -1525,7 +1527,7 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     );
 
     fs.unlinkSync(lockPath);
-    const code = await exited;
+    const code = await waitForExit(child, 'milestone complete');
     assert.strictEqual(code, 0, `the command should succeed: ${stderr.trim()}`);
 
     const after = fs.readFileSync(statePath, 'utf-8');
@@ -1537,6 +1539,220 @@ describe('milestone complete STATE.md write waits for the lock', () => {
     assert.ok(
       after.includes('**Status:** v1.0 milestone complete'),
       `the status update should have landed: ${after}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUIREMENTS.md has two writers, and they must both be inside its lock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `requirements mark-complete` rewrites the whole file from a read of it, so two
+// callers marking different IDs each report the ID they marked and one of the
+// marks is gone. Phase close does the same rewrite and was serialised only by
+// happening to sit inside the roadmap lock, which this entry point never takes.
+
+describe('concurrent requirements mark-complete', () => {
+  const { resolveTmpDir, TOOLS_PATH } = require('./helpers.cjs');
+
+  let tmpDir;
+  let reqPath;
+  let flagDir;
+
+  const IDS = ['REQ-01', 'REQ-02', 'REQ-03', 'REQ-04', 'REQ-05', 'REQ-06'];
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+    fs.writeFileSync(
+      reqPath,
+      [
+        '# Requirements',
+        '',
+        ...IDS.map((id) => `- [ ] **${id}** Something to build`),
+        '',
+        '## Traceability',
+        '',
+        '| ID | Phase | Status |',
+        '|----|-------|--------|',
+        ...IDS.map((id) => `| ${id} | 1 | Pending |`),
+        '',
+      ].join('\n'),
+    );
+    flagDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-req-barrier-'));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(flagDir);
+  });
+
+  test('every concurrent mark survives', async () => {
+    const goFlag = path.join(flagDir, 'go');
+    const CHILD_SRC = `
+      const fs = require('fs');
+      const { spawnSync } = require('child_process');
+      const [tools, cwd, readyFlag, goFlag, id] = process.argv.slice(1);
+      fs.writeFileSync(readyFlag, '');
+      const spin = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(goFlag)) { Atomics.wait(spin, 0, 0, 1); }
+      const r = spawnSync(process.execPath, [tools, 'requirements', 'mark-complete', id, '--json'], { cwd, encoding: 'utf-8' });
+      process.stderr.write(r.stderr || '');
+      process.exit(r.status === 0 ? 0 : 1);
+    `;
+
+    const children = IDS.map((id, i) => {
+      const readyFlag = path.join(flagDir, `ready-${i}`);
+      const child = spawn(
+        process.execPath,
+        ['-e', CHILD_SRC, '--', TOOLS_PATH, tmpDir, readyFlag, goFlag, id],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      child._readyFlag = readyFlag;
+      child._stderr = '';
+      child.stderr.on('data', (d) => (child._stderr += d));
+      return child;
+    });
+
+    const deadline = Date.now() + 20000;
+    while (!children.every((c) => fs.existsSync(c._readyFlag))) {
+      assert.ok(Date.now() < deadline, 'a child never signalled readiness');
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    fs.writeFileSync(goFlag, '');
+
+    const codes = await Promise.all(
+      children.map((c) => new Promise((r) => c.on('close', r))),
+    );
+    assert.deepStrictEqual(
+      codes,
+      IDS.map(() => 0),
+      `every child should succeed (stderr: ${children
+        .map((c) => c._stderr.trim())
+        .filter(Boolean)
+        .join(' | ')})`,
+    );
+
+    const content = fs.readFileSync(reqPath, 'utf-8');
+    const unticked = IDS.filter(
+      (id) => !content.includes(`- [x] **${id}**`),
+    );
+    assert.deepStrictEqual(
+      unticked,
+      [],
+      `marks reported as made but absent from REQUIREMENTS.md: ${unticked.join(', ')}`,
+    );
+    const stillPending = IDS.filter((id) =>
+      new RegExp(`\\|\\s*${id}\\s*\\|[^|]+\\|\\s*Pending\\s*\\|`).test(content),
+    );
+    assert.deepStrictEqual(
+      stillPending,
+      [],
+      `traceability rows left Pending: ${stillPending.join(', ')}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// milestone complete archives one version of the roadmap
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The command reads ROADMAP.md to archive it and then records a status beside it
+// in STATE.md. With the state lock alone, the snapshot could predate a roadmap
+// write that the recorded status is on the other side of — a shipped milestone
+// described by two versions, with nothing saying which.
+
+describe('milestone complete waits for the ROADMAP.md lock', () => {
+  const MILESTONE_LIB = path.join(
+    __dirname,
+    '..',
+    'gsd-ng',
+    'bin',
+    'lib',
+    'milestone.cjs',
+  );
+
+  const CHILD_SRC = `
+    const fs = require('fs');
+    const [lib, cwd, readyFlag] = process.argv.slice(1);
+    const milestone = require(lib);
+    fs.writeFileSync(readyFlag, '');
+    milestone.cmdMilestoneComplete(cwd, 'v1.0', { name: 'MVP' });
+  `;
+
+  let tmpDir;
+  let roadmapPath;
+  let roadmapLock;
+  let archived;
+  let readyFlag;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    roadmapLock = path.join(tmpDir, '.planning', '.ROADMAP.md.gsd-lock');
+    archived = path.join(
+      tmpDir,
+      '.planning',
+      'milestones',
+      'v1.0-ROADMAP.md',
+    );
+    readyFlag = path.join(tmpDir, 'child-ready');
+    fs.writeFileSync(
+      roadmapPath,
+      '# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Session State\n\n## Current Position\n\n**Status:** Executing\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('archives nothing while another writer holds the roadmap', async () => {
+    fs.writeFileSync(
+      roadmapLock,
+      JSON.stringify({
+        pid: process.pid,
+        host: require('os').hostname(),
+        at: new Date().toISOString(),
+      }),
+    );
+
+    const child = spawn(
+      process.execPath,
+      ['-e', CHILD_SRC, '--', MILESTONE_LIB, tmpDir, readyFlag],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    trackExit(child);
+
+    await waitForReadyFlag(readyFlag, 'the child');
+
+    // A window far wider than the read and the copy the archive performs; the
+    // lock, not the clock, is what keeps the child out.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.ok(
+      !fs.existsSync(archived),
+      'the roadmap was archived while another writer held it',
+    );
+
+    // What the lock holder was in the middle of writing.
+    fs.writeFileSync(
+      roadmapPath,
+      '# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n### Phase 2: Next\n**Goal:** More\n',
+    );
+    fs.unlinkSync(roadmapLock);
+
+    const code = await waitForExit(child, 'milestone complete');
+    assert.strictEqual(code, 0, `the command should succeed: ${stderr.trim()}`);
+    assert.strictEqual(
+      fs.readFileSync(archived, 'utf-8'),
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      'the archive must be the version the status was recorded against',
     );
   });
 });

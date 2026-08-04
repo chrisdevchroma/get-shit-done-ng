@@ -2602,6 +2602,356 @@ describe('stateReplaceFieldWithFallback', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// state record-quick-task
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The quick workflow used to read STATE.md and then edit it, which is a
+// read-modify-write outside the lock — and one of those voids the lock for every
+// command that takes it. The verb exists so the workflow has something to call
+// that does the read and the write as one step; the table's shape is decided here
+// because a caller that cannot read and act atomically cannot decide it.
+
+describe('state record-quick-task', () => {
+  let tmpDir;
+  let statePath;
+
+  const SEEDED = [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    '**Status:** Executing',
+    '**Last Activity:** 2026-01-01',
+    '**Last Activity Description:** Something else',
+    '',
+    '## Accumulated Context',
+    '',
+    '### Blockers/Concerns',
+    '',
+    'None',
+    '',
+    '## Session Continuity',
+    '',
+    '**Last session:** 2026-01-01',
+    '',
+  ].join('\n');
+
+  const record = (extra = '') =>
+    runGsdTools(
+      `state record-quick-task --id 260730-8id --description "Close the writers" ` +
+        `--date 2026-07-30 --commit abc1234 --dir 260730-8id-close ${extra}--json`,
+      tmpDir,
+    );
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, SEEDED);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('creates the section after Blockers when it is missing', () => {
+    const result = record('--status Verified ');
+    assert.ok(result.success, `command should succeed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.recorded, true, 'should report the row recorded');
+    assert.strictEqual(output.section, 'created', 'should create the section');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.match(content, /### Quick Tasks Completed/);
+    assert.ok(
+      content.indexOf('### Quick Tasks Completed') <
+        content.indexOf('## Session Continuity'),
+      `the section belongs inside Accumulated Context: ${content}`,
+    );
+    assert.match(
+      content,
+      /\| 260730-8id \| Close the writers \| 2026-07-30 \| abc1234 \| Verified \| \[260730-8id-close\]\(\.\/quick\/260730-8id-close\/\) \|/,
+    );
+  });
+
+  test('updates Last Activity and its description', () => {
+    record();
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.match(content, /\*\*Last Activity:\*\* 2026-07-30/);
+    assert.match(
+      content,
+      /\*\*Last Activity Description:\*\* Completed quick task 260730-8id: Close the writers/,
+    );
+  });
+
+  test('appends to a table that has no Status column without adding a cell', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description | Date | Commit | Directory |',
+          '|---|-------------|------|--------|-----------|',
+          '| 260101-a1b | Fix typo | 2026-01-01 | dd11223 | [260101-a1b-fix](./quick/260101-a1b-fix/) |',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.strictEqual(output.section, 'existing', 'should reuse the table');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    const rows = content
+      .split('\n')
+      .filter((l) => l.startsWith('| 260101-a1b') || l.startsWith('| 260730-8id'));
+    assert.strictEqual(rows.length, 2, `both rows must be present: ${content}`);
+    assert.deepStrictEqual(
+      rows.map((r) => r.split('|').length),
+      [7, 7],
+      `the new row must match the table's column count: ${rows.join(' / ')}`,
+    );
+    assert.ok(
+      !rows[1].includes('Verified'),
+      `a table without a Status column must not gain a Status value: ${rows[1]}`,
+    );
+  });
+
+  test('names every value the table had no column for', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '| 260101-a1b | Fix typo |',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.strictEqual(output.recorded, true, 'the row is still recorded');
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'status', 'directory'],
+      'every value without a column must be named',
+    );
+  });
+
+  test('a value that was never given is not reported as dropped', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED +
+        [
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description |',
+          '|---|-------------|',
+          '',
+        ].join('\n'),
+    );
+
+    const output = JSON.parse(record().output);
+    assert.deepStrictEqual(
+      output.dropped,
+      ['date', 'commit', 'directory'],
+      'no --status was passed, so nothing was dropped for it',
+    );
+  });
+
+  test('reports nothing dropped when the table carries every column', () => {
+    const output = JSON.parse(record('--status Verified ').output);
+    assert.deepStrictEqual(output.dropped, [], 'every value found a column');
+  });
+
+  test('a STATE.md with no Blockers section gets the section at the end', () => {
+    fs.writeFileSync(statePath, '# Project State\n\n**Last Activity:** none\n');
+    const output = JSON.parse(record().output);
+    assert.strictEqual(output.section, 'appended', 'nowhere else to put it');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.match(content, /### Quick Tasks Completed/);
+    assert.match(content, /\| 260730-8id \|/);
+  });
+
+  test('a section that has lost its table gets one', () => {
+    fs.writeFileSync(
+      statePath,
+      SEEDED + '\n### Quick Tasks Completed\n\nNo table here yet.\n',
+    );
+    const output = JSON.parse(record().output);
+    assert.strictEqual(output.section, 'table_created', 'should add the table');
+
+    const content = fs.readFileSync(statePath, 'utf-8');
+    assert.strictEqual(
+      (content.match(/### Quick Tasks Completed/g) || []).length,
+      1,
+      `the existing section is reused, not duplicated: ${content}`,
+    );
+    assert.ok(
+      content.indexOf('| 260730-8id |') < content.indexOf('No table here yet.'),
+      `the table belongs at the top of the section: ${content}`,
+    );
+  });
+
+  // Absence is one way a description file fails to read and not the interesting
+  // one: a fixture that is merely not there exercises only the half of this a
+  // bare existence check would also cover. A directory at the path is present and
+  // still unreadable, whoever is running the suite. Both refusals have to name
+  // the argument that caused them — an errno reaching the caller instead says the
+  // read was never the command's to explain.
+  test('a description file that cannot be read is reported, not written', () => {
+    const recordFromFile = (file) =>
+      JSON.parse(
+        runGsdTools(
+          `state record-quick-task --id 260730-8id --description-file ${file} --json`,
+          tmpDir,
+        ).output,
+      );
+
+    const absent = recordFromFile('missing.md');
+    assert.strictEqual(
+      absent.recorded,
+      false,
+      'a description file that is not there should reject the call',
+    );
+    assert.match(absent.reason, /description file .*missing\.md/);
+
+    fs.mkdirSync(path.join(tmpDir, 'a-directory.md'));
+    const unreadable = recordFromFile('a-directory.md');
+    assert.strictEqual(
+      unreadable.recorded,
+      false,
+      'a description file that cannot be read should reject the call',
+    );
+    assert.match(unreadable.reason, /description file .*a-directory\.md/);
+
+    assert.ok(
+      !fs.readFileSync(statePath, 'utf-8').includes('260730-8id'),
+      'nothing should have been written',
+    );
+  });
+
+  test('a pipe in the description cannot break the row', () => {
+    const result = runGsdTools(
+      'state record-quick-task --id 260730-8id --description "a | b" --json',
+      tmpDir,
+    );
+    assert.ok(result.success, `command should succeed: ${result.error}`);
+    const content = fs.readFileSync(statePath, 'utf-8');
+    const row = content.split('\n').find((l) => l.startsWith('| 260730-8id'));
+    assert.ok(row, `the row should exist: ${content}`);
+    assert.strictEqual(
+      row.split(/(?<!\\)\|/).length,
+      8,
+      `the escaped pipe must not open a cell: ${row}`,
+    );
+    assert.match(row, /a \\\| b/);
+  });
+
+  test('reports recorded false when STATE.md is missing', () => {
+    fs.unlinkSync(statePath);
+    const output = JSON.parse(record().output);
+    assert.strictEqual(output.recorded, false, 'nothing to record into');
+    assert.strictEqual(output.reason, 'STATE.md not found');
+  });
+
+  test('reports recorded false when the description is missing', () => {
+    const result = runGsdTools(
+      'state record-quick-task --id 260730-8id --json',
+      tmpDir,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.recorded, false, 'should reject the call');
+    assert.match(output.reason, /--id and --description are required/);
+  });
+
+  test('the quick workflow calls the verb instead of editing STATE.md', () => {
+    const workflow = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'workflows', 'quick.md'),
+      'utf-8',
+    );
+    const step7 = workflow.slice(
+      workflow.indexOf('**Step 7: Update STATE.md**'),
+      workflow.indexOf('**Step 8:'),
+    );
+    assert.ok(step7.length > 0, 'step 7 should still exist');
+    assert.match(
+      step7,
+      /state record-quick-task/,
+      'step 7 must record the row through the locked verb',
+    );
+    assert.ok(
+      !/Edit tool/i.test(step7),
+      `step 7 must not tell the model to edit STATE.md: ${step7}`,
+    );
+  });
+});
+
+// The workflow is copied, not read around: a model that finds `--status` in the
+// block passes it whatever the prose below the block says.
+describe('quick.md step 7 instructions', () => {
+  const workflow = fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-ng', 'workflows', 'quick.md'),
+    'utf-8',
+  );
+  const step7 = workflow.slice(
+    workflow.indexOf('**Step 7: Update STATE.md**'),
+    workflow.indexOf('**Step 8:'),
+  );
+  const recordBlocks = [...step7.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((b) => b.includes('record-quick-task'));
+
+  test('the command block itself decides whether --status is passed', () => {
+    assert.strictEqual(
+      recordBlocks.length,
+      2,
+      `one block per branch, so neither has to be edited: ${step7}`,
+    );
+    assert.deepStrictEqual(
+      recordBlocks.map((b) => b.includes('--status')),
+      [true, false],
+      'the verify branch passes --status and the other one omits it',
+    );
+  });
+
+  test('the result table covers the call that prints no JSON', () => {
+    const table = step7.slice(step7.indexOf('| Output |'));
+    assert.match(
+      table,
+      /No JSON.*\n/i,
+      `a non-zero exit with no JSON needs its own row: ${table}`,
+    );
+    assert.match(
+      table,
+      /"dropped"/,
+      `the dropped list needs its own row: ${table}`,
+    );
+  });
+
+  test('the completion checklist repeats step 7 caveat about Status', () => {
+    const criteria = workflow.slice(
+      workflow.indexOf('<success_criteria>'),
+      workflow.indexOf('</success_criteria>'),
+    );
+    const row = criteria
+      .split('\n')
+      .find((l) => l.includes('quick task row'));
+    assert.ok(row, `the checklist should still cover the row: ${criteria}`);
+    assert.match(
+      row,
+      /dropped/,
+      'the checklist must not promise a Status column the table may not have',
+    );
+  });
+});
+
 describe('state adjust-quick-table command', () => {
   let tmpDir;
 
@@ -5718,6 +6068,7 @@ describe('concurrent STATE.md mutations', () => {
       blocker: () => state.cmdStateAddBlocker(cwd, { text: arg }),
       metric: () => state.cmdStateRecordMetric(cwd, { phase: '1', plan: arg, duration: '2m', tasks: '3', files: '4' }),
       advance: () => state.cmdStateAdvancePlan(cwd),
+      quick: () => state.cmdStateRecordQuickTask(cwd, { id: arg, description: 'quick ' + arg, date: '2026-07-30', commit: 'abc1234', dir: arg + '-slug', status: 'Verified' }),
     };
     fs.writeFileSync(readyFlag, '');
     const spin = new Int32Array(new SharedArrayBuffer(4));
@@ -5829,6 +6180,39 @@ describe('concurrent STATE.md mutations', () => {
       missing,
       [],
       `decisions reported as added but absent from STATE.md: ${missing.join(', ')}`,
+    );
+  });
+
+  test('every concurrent quick-task row survives, in one table', async () => {
+    // Eight quick tasks finishing at once against a STATE.md with no Quick Tasks
+    // section: last-writer-wins loses all but one row, and eight creators racing
+    // to add the section leave eight of them. The lock is what makes the file
+    // carry one table with every row in it.
+    const ids = Array.from({ length: 8 }, (_, i) => `260730-r${i}`);
+    const { codes, stderr, content } = await raceMutations(
+      ids.map((id) => ['quick', id]),
+    );
+
+    assert.deepStrictEqual(
+      codes,
+      ids.map(() => 0),
+      `every child should succeed (stderr: ${stderr.join(' | ')})`,
+    );
+    const missing = ids.filter((id) => !content.includes(`| ${id} |`));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `rows reported as recorded but absent from STATE.md: ${missing.join(', ')}`,
+    );
+    assert.strictEqual(
+      (content.match(/### Quick Tasks Completed/g) || []).length,
+      1,
+      `exactly one Quick Tasks section: ${content}`,
+    );
+    assert.strictEqual(
+      (content.match(/^\| # \| Description \|/gm) || []).length,
+      1,
+      `exactly one header row: ${content}`,
     );
   });
 

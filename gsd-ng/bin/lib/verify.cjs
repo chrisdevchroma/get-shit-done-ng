@@ -885,7 +885,15 @@ function buildRepairedState(cwd) {
     .content;
 }
 
-function cmdValidateHealth(cwd, options) {
+/**
+ * Health check, and the repairs it decides on.
+ *
+ * In repair mode the whole run is one section — see cmdValidateHealth — because
+ * the checks are what decide the repairs. Nothing here may take the ROADMAP.md
+ * lock: verify.cjs depends on neither roadmap.cjs nor phase.cjs, and
+ * tests/core.test.cjs asserts the direction.
+ */
+function runHealth(cwd, options) {
   // Guard: detect if CWD is the home directory (likely accidental)
   const resolved = path.resolve(cwd);
   if (resolved === os.homedir()) {
@@ -1839,6 +1847,29 @@ function cmdValidateHealth(cwd, options) {
     repairable_count: repairableCount,
     repairs_performed: repairActions.length > 0 ? repairActions : undefined,
   });
+}
+
+/**
+ * Run the health check, holding the STATE.md lock across the whole of a repair.
+ *
+ * The repairs are decided by the checks, and the check that decides
+ * regenerateState is a read of STATE.md. A lock taken around the write alone
+ * leaves that decision outside it: a writer that repairs STATE.md between the
+ * check and the repair is overwritten by a replacement built to fix a file that
+ * no longer needs fixing, and the backup left behind is of content nobody else
+ * holds. The section has to span the read that decided, so it spans the run.
+ *
+ * A check-only run is not wrapped. It publishes nothing and writes nothing, so a
+ * warning derived from a version of STATE.md that has since been rewritten is a
+ * stale report and not a lost update — and this is the command people run when
+ * something already looks wrong, so blocking on a wave's lock to produce one
+ * would be the worse trade.
+ */
+function cmdValidateHealth(cwd, options) {
+  if (options && options.repair) {
+    return withStateLock(cwd, () => runHealth(cwd, options));
+  }
+  return runHealth(cwd, options);
 }
 
 module.exports = {

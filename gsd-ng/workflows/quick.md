@@ -646,56 +646,56 @@ Store as `$VERIFICATION_STATUS`.
 
 **Step 7: Update STATE.md**
 
-Update STATE.md with quick task completion record.
+Record the quick task in STATE.md's "Quick Tasks Completed" table.
 
-The `init quick` command (Step 1) already detected the table format and migrated it if `--verify` was used. The `table_has_status` field from init JSON determines which row format to use.
+**Never edit STATE.md by hand here.** Parallel executors and other GSD commands
+write the same file under a lock; a read-then-Edit from this workflow overlapping
+one of them discards its entry and reports success. `state record-quick-task` does
+the read, the append and the "Last Activity" update as one locked step, and it
+decides the table's shape itself — create the section if it is missing, match the
+existing header if it is there.
 
-**7a. Check if "Quick Tasks Completed" section exists:**
-
-Read STATE.md and check for `### Quick Tasks Completed` section.
-
-**7b. If section doesn't exist, create it:**
-
-Insert after `### Blockers/Concerns` section:
-
-**If `table_has_status` (from init JSON):**
-```markdown
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Status | Directory |
-|---|-------------|------|--------|--------|-----------|
+```bash
+task_commit=$(git rev-parse --short HEAD)
 ```
 
-**If NOT `table_has_status`:**
-```markdown
-### Quick Tasks Completed
+**If `$VERIFY_MODE`** — `$VERIFICATION_STATUS` holds the verifier's outcome:
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
+```bash
+node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
+  --id "${quick_id}" \
+  --description "${DESCRIPTION}" \
+  --date "${date}" \
+  --commit "${task_commit}" \
+  --dir "${quick_id}-${slug}" \
+  --status "${VERIFICATION_STATUS}" \
+  --json
 ```
 
-**7c. Append new row to table:**
+**If NOT `$VERIFY_MODE`** — no verification ran, so there is no status to record:
 
-Use `date` from init:
-
-**If `table_has_status` (from init JSON):**
-```markdown
-| ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | ${VERIFICATION_STATUS} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
+```bash
+node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" state record-quick-task \
+  --id "${quick_id}" \
+  --description "${DESCRIPTION}" \
+  --date "${date}" \
+  --commit "${task_commit}" \
+  --dir "${quick_id}-${slug}" \
+  --json
 ```
 
-**If NOT `table_has_status`:**
-```markdown
-| ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
-```
+The row matches the table's existing header. A value the table has no column for
+is left out rather than shifting the other cells, and `dropped` names it.
 
-**7d. Update "Last activity" line:**
+Check the result:
 
-Use `date` from init:
-```
-Last activity: ${date} - Completed quick task ${quick_id}: ${DESCRIPTION}
-```
-
-Use Edit tool to make these changes atomically
+| Output | Meaning | Action |
+|--------|---------|--------|
+| `"recorded": true`, `"dropped": []` | Row appended, Last Activity updated | Continue to step 8 |
+| `"recorded": true`, `"dropped"` non-empty | The table has no column for those values, so they are not in the row (`directory` is what `--dir` carries) | Tell the user which values were dropped, then continue to step 8 — the row itself is correct for this table |
+| `"recorded": false` with `"reason": "STATE.md not found"` | No project state to record into | Report it and continue to step 8 — the task itself is done |
+| `"recorded": false`, other reason | The arguments were rejected | Fix the flags and re-run; do not fall back to editing STATE.md |
+| No JSON at all — exit 1 with `Error:` on stderr | The flags were rejected before the command ran; a description starting with `--` is read as a flag | Write the description to a file and pass `--description-file <path>` instead; do not fall back to editing STATE.md |
 
 ---
 
@@ -919,7 +919,7 @@ Note: `todo complete` triggers inline issue-sync automatically — no additional
 - [ ] (--verify) Plan checker validates plan, revision loop capped at 2
 - [ ] `${quick_id}-SUMMARY.md` created by executor
 - [ ] (--verify) `${quick_id}-VERIFICATION.md` created by verifier
-- [ ] STATE.md updated with quick task row (Status column when --verify)
+- [ ] STATE.md updated with quick task row via `state record-quick-task` (Status filled when --verify and the table has that column; whatever the table had no column for is named in `dropped` and reported)
 - [ ] Artifacts committed
 - [ ] (--todo-file) Origin todo tracked and closure offered at completion
 - [ ] (--todo-file) Closure gated on lightweight verification

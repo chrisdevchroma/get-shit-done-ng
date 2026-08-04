@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  boldLabel,
   loadConfig,
   resolveTargetBranch,
   findPhaseInternal,
@@ -49,10 +50,10 @@ function escapeRegex(value) {
  * Readers are deliberately not wrapped: writeFileAtomic already hands them a
  * whole file, and they publish nothing for anyone else to lose.
  *
- * Ordering: this is the inner lock. Commands that mutate both files take the
- * ROADMAP.md lock first and this one inside it, never the reverse — the require
- * graph is what holds that (state.cjs is below phase.cjs and roadmap.cjs, so
- * nothing reachable from inside this section can acquire the roadmap lock), and
+ * Ordering: this is the innermost of the three locks — ROADMAP.md, then
+ * REQUIREMENTS.md, then this one, never the reverse. The require graph is what
+ * holds that (state.cjs is below phase.cjs, roadmap.cjs and milestone.cjs, so
+ * nothing reachable from inside this section can acquire either outer lock), and
  * tests/core.test.cjs asserts the direction.
  */
 function withStateLock(cwd, fn) {
@@ -310,8 +311,10 @@ function cmdStateUpdate(cwd, field, value) {
 function stateExtractField(content, fieldName) {
   const body = stripFrontmatter(content);
   const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Try **Field:** bold format first
-  const boldPattern = new RegExp(`\\*\\*${escaped}:\\*\\*\\s*(.+)`, 'i');
+  // Try **Field:** bold format first. Through boldLabel, so the colon may sit
+  // on either side of the markers: written one way and read the other, a field
+  // is invisible to every reader while looking perfectly present in the file.
+  const boldPattern = new RegExp(`${boldLabel(fieldName)}\\s*(.+)`, 'i');
   const boldMatch = body.match(boldPattern);
   if (boldMatch) return boldMatch[1].trim();
   // Fall back to plain Field: format
@@ -327,8 +330,10 @@ function stateReplaceField(content, fieldName, newValue) {
     ? content.slice(frontmatterMatch[0].length)
     : content;
   const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Try **Field:** bold format first, then plain Field: format
-  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*\\s*)(.*)`, 'i');
+  // Try **Field:** bold format first, then plain Field: format. Both colon
+  // placements, and the same ones the read above accepts — a writer that
+  // reaches fewer spellings than the reader silently drops the update.
+  const boldPattern = new RegExp(`(${boldLabel(fieldName)}\\s*)(.*)`, 'i');
   if (boldPattern.test(body)) {
     return (
       frontmatter +
@@ -1448,6 +1453,200 @@ function cmdStateAdjustQuickTable(cwd) {
   output(result);
 }
 
+const QUICK_TABLE_HEADER =
+  '| # | Description | Date | Commit | Status | Directory |\n' +
+  '|---|-------------|------|--------|--------|-----------|';
+
+/** One line of text: a newline in a value would end the row it sits in. */
+function quickText(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/\r?\n/g, ' ')
+    .trim();
+}
+
+/** A cell's text, with pipes escaped so none of them closes the cell early. */
+function quickCell(value) {
+  return quickText(value).replace(/\|/g, '\\|');
+}
+
+const QUICK_FIELD_FOR_COLUMN = {
+  '#': 'id',
+  id: 'id',
+  task: 'id',
+  description: 'description',
+  date: 'date',
+  commit: 'commit',
+  status: 'status',
+  directory: 'directory',
+};
+
+const QUICK_FIELD_ORDER = [
+  'id',
+  'description',
+  'date',
+  'commit',
+  'status',
+  'directory',
+];
+
+/**
+ * Fill a row from the table's own header, so a table that predates a column keeps
+ * its shape. A header cell nobody recognises gets an empty value rather than the
+ * next value along, which would silently shift every field one column over.
+ *
+ * A value whose column is absent has nowhere to go, so it is returned in `dropped`
+ * rather than only being missing from the row: the caller reports success either
+ * way, and a caller that cannot see the loss cannot mention it.
+ */
+function quickRowFor(headerCells, values) {
+  const columns = new Set();
+  const cells = headerCells.map((name) => {
+    const field = QUICK_FIELD_FOR_COLUMN[name.trim().toLowerCase()];
+    if (field) columns.add(field);
+    return ` ${quickCell(field ? values[field] : '')} `;
+  });
+  const dropped = QUICK_FIELD_ORDER.filter(
+    (field) => quickText(values[field]) !== '' && !columns.has(field),
+  );
+  return { row: `|${cells.join('|')}|`, dropped };
+}
+
+function quickHeaderCells(headerLine) {
+  return headerLine
+    .split('|')
+    .slice(1, -1)
+    .map((c) => c.trim());
+}
+
+/**
+ * Record a completed quick task in the Quick Tasks Completed table.
+ *
+ * The quick workflow used to do this itself: read STATE.md, then edit it. That is
+ * a read-modify-write outside the lock, and one of those voids the lock for every
+ * command that takes it — a `state add-decision` overlapping it reports success
+ * and loses its entry. The table's shape (whether it carries a Status column) is
+ * decided here rather than by the caller, because the caller cannot read the file
+ * and act on it as one step.
+ *
+ * @param {string} cwd
+ * @param {object} options - id, description, date, commit, dir, status
+ */
+function cmdStateRecordQuickTask(cwd, options) {
+  return withStateLock(cwd, () => {
+    const { state: statePath } = planningPaths(cwd);
+    if (!fs.existsSync(statePath)) {
+      output({ recorded: false, reason: 'STATE.md not found' }, 'false');
+      return;
+    }
+
+    const { id, date, commit, dir, status } = options;
+    let description = null;
+    try {
+      description = readTextArgOrFile(
+        cwd,
+        options.description,
+        options.description_file,
+        'description',
+      );
+    } catch (err) {
+      output({ recorded: false, reason: err.message }, 'false');
+      return;
+    }
+
+    if (!id || !description) {
+      output(
+        { recorded: false, reason: '--id and --description are required' },
+        'false',
+      );
+      return;
+    }
+
+    // Escaping belongs to quickRowFor, which is the only place the values become
+    // cells; escaping here too would put a backslash in the Last Activity line.
+    const dirName = quickText(dir);
+    const values = {
+      id: quickText(id),
+      description: quickText(description),
+      date: quickText(date),
+      commit: quickText(commit),
+      status: quickText(status),
+      directory: dirName ? `[${dirName}](./quick/${dirName}/)` : '',
+    };
+
+    let content = fs.readFileSync(statePath, 'utf-8');
+    const heading = content.match(QUICK_TASKS_HEADING);
+    let section;
+    let row;
+    let dropped;
+
+    if (!heading) {
+      ({ row, dropped } = quickRowFor(
+        quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
+        values,
+      ));
+      const block = `### Quick Tasks Completed\n\n${QUICK_TABLE_HEADER}\n${row}`;
+      const blockers = content.match(sectionPattern(BLOCKER_HEADINGS, '###?'));
+      if (blockers) {
+        const at = blockers.index + blockers[0].length;
+        content =
+          content.slice(0, at).replace(/\s*$/, '\n\n') +
+          block +
+          content.slice(at).replace(/^\s*/, '\n\n');
+        section = 'created';
+      } else {
+        content = content.replace(/\s*$/, '\n\n') + block + '\n';
+        section = 'appended';
+      }
+    } else {
+      const at = heading.index + heading[0].length;
+      const lines = content.slice(at).split('\n');
+      const headerIdx = findTableHeaderIndex(lines);
+      if (headerIdx === -1) {
+        ({ row, dropped } = quickRowFor(
+          quickHeaderCells(QUICK_TABLE_HEADER.split('\n')[0]),
+          values,
+        ));
+        lines.splice(0, 0, '', ...QUICK_TABLE_HEADER.split('\n'), row);
+        section = 'table_created';
+      } else {
+        ({ row, dropped } = quickRowFor(
+          quickHeaderCells(lines[headerIdx]),
+          values,
+        ));
+        let end = headerIdx + 1;
+        while (end < lines.length && lines[end].trimStart().startsWith('|')) {
+          end++;
+        }
+        lines.splice(end, 0, row);
+        section = 'existing';
+      }
+      content = content.slice(0, at) + lines.join('\n');
+    }
+
+    const applied = stateReplaceFields(content, [
+      ['Last Activity', values.date || null],
+      [
+        'Last Activity Description',
+        `Completed quick task ${values.id}: ${values.description}`,
+      ],
+    ]);
+    content = applied.content;
+
+    writeStateMd(statePath, content, cwd);
+    output(
+      {
+        recorded: true,
+        id: values.id,
+        section,
+        row,
+        dropped,
+        fields_updated: applied.updated,
+      },
+      'true',
+    );
+  });
+}
+
 module.exports = {
   QUICK_TASKS_HEADING,
   findTableHeaderIndex,
@@ -1477,4 +1676,5 @@ module.exports = {
   cmdStateBeginPhase,
   adjustQuickTable,
   cmdStateAdjustQuickTable,
+  cmdStateRecordQuickTask,
 };

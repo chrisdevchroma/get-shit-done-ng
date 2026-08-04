@@ -1430,6 +1430,81 @@ Plans: TBD
       'an absent progress table is not a missed target',
     );
   });
+
+  // The rewrites are scoped to the text after the last </details>. A live
+  // milestone written above a collapsed one is therefore out of their reach
+  // entirely, which is the scope mismatch the reporting exists for: probes
+  // scoped the same way as the rewrites reported the file clean.
+  test('names every target a live milestone above the archive puts out of reach', () => {
+    const before = `# Roadmap
+
+- [ ] **Phase 50: Build** - build stuff
+
+### Phase 50: Build
+**Goal**: Build stuff
+**Plans**: TBD
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+
+<details>
+<summary>v0.9 (Phases 1-49) - SHIPPED 2020-01-01</summary>
+
+### Phase 49: Legacy
+**Plans**: 1/1 plans complete
+
+</details>
+`;
+    const output = completePhase50(before);
+    assert.strictEqual(
+      output.updated,
+      false,
+      'nothing was rewritten — every target sits above the collapsed section',
+    );
+    assert.deepStrictEqual(output.missed_targets, [
+      'progress-table',
+      'plans-line',
+      'phase-checkbox',
+    ]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      before,
+      'and the file is left as it was',
+    );
+  });
+
+  // The other side of that scope: content inside a <details> block is archived
+  // and deliberately unreachable, so it is not a missed target. Probing the
+  // whole document instead of the current milestone would report this one.
+  test('a target that exists only in an archived milestone is not reported', () => {
+    const output = completePhase50(`# Roadmap
+
+<details>
+<summary>v0.9 (Phases 1-49) - SHIPPED 2020-01-01</summary>
+
+### Phase 50: Build
+**Plans**: 1/1 plans complete
+
+</details>
+
+- [ ] **Phase 50: Build** - build stuff
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|---------------|--------|-----------|
+| 50. Build | 0/1 | Planned |  |
+`);
+    assert.strictEqual(output.updated, true, 'the reachable targets landed');
+    assert.deepStrictEqual(
+      output.missed_targets,
+      [],
+      'the archived Plans line is out of scope by design, not missed',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
