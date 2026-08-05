@@ -56,10 +56,10 @@ Parse current values (default to `true` if not present):
 </step>
 
 <step name="present_settings">
-Use AskUserQuestion with current values pre-selected:
+Use {{USER_QUESTION_TOOL}} with current values pre-selected:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Which model profile for agents?",
     header: "Model",
@@ -245,7 +245,7 @@ AskUserQuestion([
 If user selected "Choose manually" for Platform, present a follow-up question:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Which git hosting platform?",
     header: "Platform",
@@ -269,7 +269,7 @@ Extract the `platform` field from the JSON result. Store it for display in the c
 Present close_state question:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Close transition mode (issue_tracker.close_state) when GSD resolves an external issue?",
     header: "Close State",
@@ -286,7 +286,7 @@ AskUserQuestion([
 If user selected "Verify" or "Verify then Close", present follow-up:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Label to apply in verify modes (issue_tracker.verify_label)?",
     header: "Verify Label",
@@ -345,7 +345,7 @@ Write updated config to `.planning/config.json`.
 Ask whether to save these settings as global defaults for future projects:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Save these as default settings for all new projects?",
     header: "Defaults",

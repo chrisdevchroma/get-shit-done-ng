@@ -39,6 +39,7 @@ const {
   phaseCheckboxLinePattern,
   phaseCheckboxName,
   parsePhaseCheckboxes,
+  getEngineRuntime,
 } = require('../gsd-ng/bin/lib/core.cjs');
 
 // ─── loadConfig ────────────────────────────────────────────────────────────────
@@ -4126,5 +4127,68 @@ describe('notePartialWrites', () => {
       notePartialWrites(undefined, ['ROADMAP.md'], 'x'),
       undefined,
     );
+  });
+});
+
+// ─── getEngineRuntime ─────────────────────────────────────────────────────────
+
+describe('getEngineRuntime', () => {
+  let markerDir;
+
+  beforeEach(() => {
+    markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-runtime-marker-'),
+    );
+    process.env.GSD_TEST_RUNTIME_MARKER_DIR = markerDir;
+  });
+
+  afterEach(() => {
+    delete process.env.GSD_TEST_RUNTIME_MARKER_DIR;
+    cleanup(markerDir);
+  });
+
+  function writeMarker(value) {
+    fs.writeFileSync(path.join(markerDir, '.runtime'), value + '\n', 'utf-8');
+  }
+
+  test('RUNTIME-ID-01: an opencode marker resolves to opencode', () => {
+    writeMarker('opencode');
+    assert.strictEqual(getEngineRuntime(), 'opencode');
+  });
+
+  test('RUNTIME-ID-02: a copilot marker resolves to copilot', () => {
+    writeMarker('copilot');
+    assert.strictEqual(getEngineRuntime(), 'copilot');
+  });
+
+  test('RUNTIME-ID-03: a claude marker resolves to claude', () => {
+    writeMarker('claude');
+    assert.strictEqual(getEngineRuntime(), 'claude');
+  });
+
+  test('RUNTIME-ID-04: a marker naming a runtime the registry does not know falls back to claude', () => {
+    writeMarker('zed');
+    assert.strictEqual(
+      getEngineRuntime(),
+      'claude',
+      'an unknown value must not reach a reinstall command line',
+    );
+  });
+
+  test('RUNTIME-ID-05: an absent marker resolves to claude', () => {
+    assert.strictEqual(getEngineRuntime(), 'claude');
+  });
+
+  test('RUNTIME-ID-06: every registry runtime name is accepted verbatim', () => {
+    const { RUNTIMES } = require('../gsd-ng/bin/lib/template-processor.cjs');
+    for (const name of Object.keys(RUNTIMES)) {
+      writeMarker(name);
+      assert.strictEqual(getEngineRuntime(), name, name);
+    }
+  });
+
+  test('RUNTIME-ID-07: a marker value that is a prototype key does not resolve', () => {
+    writeMarker('constructor');
+    assert.strictEqual(getEngineRuntime(), 'claude');
   });
 });

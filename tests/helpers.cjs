@@ -55,12 +55,18 @@ function runGsdTools(args, cwd = process.cwd(), envOverrides = {}) {
 
 // Resolve a writable temp base dir — os.tmpdir() may point to /tmp/claude which doesn't
 // exist in the Claude Code sandbox. Fall back through known-writable candidates.
+//
+// The result is realpath'd. On macOS the temp root is /var/folders/... symlinked to
+// /private/var/folders/..., and anything that resolves a path through require() or
+// realpath reports the /private form. Comparing an unresolved base against such a
+// value passes on Linux, where the temp root is not a symlink, and fails on macOS —
+// so resolve once here rather than at each assertion.
 function resolveTmpDir() {
   const candidates = [process.env.TMPDIR, os.tmpdir(), `/tmp/claude-${process.getuid()}`, '/tmp'].filter(Boolean);
   for (const dir of candidates) {
-    try { if (fs.existsSync(dir)) return dir; } catch {}
+    try { if (fs.existsSync(dir)) return fs.realpathSync(dir); } catch {}
   }
-  return os.tmpdir(); // last resort
+  try { return fs.realpathSync(os.tmpdir()); } catch { return os.tmpdir(); } // last resort
 }
 
 // Create temp directory structure

@@ -1387,19 +1387,32 @@ function commandMatchesPattern(command, pattern) {
 // ── loadMergedSettings ────────────────────────────────────────────────────────
 /**
  * Read and merge permissions from all 4 settings layers:
- *   Layer 1: $CLAUDE_SETTINGS_PATH || ~/.claude/settings.json
- *   Layer 2: ~/.claude/settings.local.json
- *   Layer 3: $CLAUDE_PROJECT_DIR/.claude/settings.json
- *   Layer 4: $CLAUDE_PROJECT_DIR/.claude/settings.local.json
+ *   Layer 1: $CLAUDE_SETTINGS_PATH || <global config dir>/settings.json
+ *   Layer 2: <global config dir>/settings.local.json
+ *   Layer 3: $CLAUDE_PROJECT_DIR/<local config dir>/settings.json
+ *   Layer 4: $CLAUDE_PROJECT_DIR/<local config dir>/settings.local.json
+ *
+ * The config dirs default to Claude's — `~/.claude` and `.claude` — so a caller
+ * that names neither resolves exactly the four paths it always did. A caller
+ * running under another runtime names its own config home instead, because
+ * decide() is the shared safety decision for every runtime GSD installs into
+ * and its settings source must not be a Claude directory by construction.
+ *
+ * $CLAUDE_SETTINGS_PATH names a Claude settings file, so an explicitly supplied
+ * config home wins over it.
  *
  * Missing files and JSON parse errors are silently skipped.
  * allow/deny arrays are concatenated and deduplicated across layers.
  *
  * @param {object} [envOverride] - Override env vars (for testing). Defaults to process.env.
+ * @param {object} [options] - Config-home resolution.
+ * @param {string} [options.globalConfigDir] - Global config home. Defaults to `<home>/.claude`.
+ * @param {string} [options.localConfigDirName] - Project-local config dir name. Defaults to `.claude`.
  * @returns {{ permissions: { allow: string[], deny: string[] } }}
  */
-function loadMergedSettings(envOverride) {
+function loadMergedSettings(envOverride, options) {
   const env = envOverride || process.env;
+  const opts = options || {};
 
   /**
    * @param {string} filePath
@@ -1415,23 +1428,28 @@ function loadMergedSettings(envOverride) {
   }
 
   const homeDir = env.HOME || os.homedir();
+  const globalConfigDir = opts.globalConfigDir || path.join(homeDir, '.claude');
+  const localConfigDirName = opts.localConfigDirName || '.claude';
 
-  // Layer 1: global settings ($CLAUDE_SETTINGS_PATH or ~/.claude/settings.json)
-  const layer1Path =
-    env.CLAUDE_SETTINGS_PATH || path.join(homeDir, '.claude', 'settings.json');
+  // Layer 1: global settings ($CLAUDE_SETTINGS_PATH or <global config dir>/settings.json)
+  const layer1Path = opts.globalConfigDir
+    ? path.join(globalConfigDir, 'settings.json')
+    : env.CLAUDE_SETTINGS_PATH || path.join(globalConfigDir, 'settings.json');
   const layer1 = loadSettings(layer1Path);
 
-  // Layer 2: global local settings (~/.claude/settings.local.json)
-  const layer2Path = path.join(homeDir, '.claude', 'settings.local.json');
+  // Layer 2: global local settings (<global config dir>/settings.local.json)
+  const layer2Path = path.join(globalConfigDir, 'settings.local.json');
   const layer2 = loadSettings(layer2Path);
 
   // Layers 3 & 4 require CLAUDE_PROJECT_DIR
   const projectDir = env.CLAUDE_PROJECT_DIR || '';
   const layer3 = projectDir
-    ? loadSettings(path.join(projectDir, '.claude', 'settings.json'))
+    ? loadSettings(path.join(projectDir, localConfigDirName, 'settings.json'))
     : {};
   const layer4 = projectDir
-    ? loadSettings(path.join(projectDir, '.claude', 'settings.local.json'))
+    ? loadSettings(
+        path.join(projectDir, localConfigDirName, 'settings.local.json'),
+      )
     : {};
 
   // Merge all layers — concatenate and deduplicate

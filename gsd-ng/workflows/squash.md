@@ -50,7 +50,7 @@ Extract PHASE_NUMBER, PHASE_NAME, PHASE_SLUG, TARGET_BRANCH, REMOTE from init JS
 <step name="select_strategy">
 If --strategy flag provided, use it.
 
-Otherwise, present the three strategies with AskUserQuestion:
+Otherwise, present the three strategies with {{USER_QUESTION_TOOL}}:
 
 ```
 Squash Strategy:
@@ -61,7 +61,7 @@ Squash Strategy:
 Recommended: 'single' for small phases, 'per-plan' for multi-plan phases
 ```
 
-AskUserQuestion with options: "single", "per-plan", "logical"
+{{USER_QUESTION_TOOL}} with options: "single", "per-plan", "logical"
 </step>
 
 <step name="dry_run_preview">

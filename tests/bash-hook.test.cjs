@@ -385,6 +385,250 @@ describe('BASH-HOOK-12: reads allowlist from all 4 settings layers', () => {
   });
 });
 
+// ── the four layers resolve under a caller-supplied config home ────
+// decide() is the shared safety decision for every runtime GSD installs into,
+// so its settings source cannot be a Claude directory by construction.
+
+describe('BASH-HOOK-CONFIGHOME: layers resolve under the config home the caller names', () => {
+  const BASE_TMPDIR = resolveTmpDir();
+
+  test('no options argument still resolves the four claude paths', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const homeClaudeDir = path.join(tmpDir, 'home', '.claude');
+      fs.mkdirSync(homeClaudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(homeClaudeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(git:*)'], deny: [] } }),
+      );
+      fs.writeFileSync(
+        path.join(homeClaudeDir, 'settings.local.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(curl:*)'], deny: [] } }),
+      );
+      const projectClaudeDir = path.join(tmpDir, 'project', '.claude');
+      fs.mkdirSync(projectClaudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectClaudeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(npm:*)'], deny: [] } }),
+      );
+      fs.writeFileSync(
+        path.join(projectClaudeDir, 'settings.local.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(node:*)'], deny: [] } }),
+      );
+
+      const settings = loadMergedSettings({
+        HOME: path.join(tmpDir, 'home'),
+        CLAUDE_PROJECT_DIR: path.join(tmpDir, 'project'),
+      });
+
+      assert.deepEqual(settings.permissions.allow, [
+        'Bash(git:*)',
+        'Bash(curl:*)',
+        'Bash(npm:*)',
+        'Bash(node:*)',
+      ]);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('an explicit config home replaces both global .claude layers', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const configHome = path.join(tmpDir, 'cfg-opencode');
+      fs.mkdirSync(configHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(configHome, 'settings.json'),
+        JSON.stringify({ permissions: { allow: [], deny: ['Bash(rm:*)'] } }),
+      );
+      fs.writeFileSync(
+        path.join(configHome, 'settings.local.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(ls:*)'], deny: [] } }),
+      );
+
+      // A .claude tree under HOME that must NOT be read once a config home is named.
+      const homeClaudeDir = path.join(tmpDir, 'home', '.claude');
+      fs.mkdirSync(homeClaudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(homeClaudeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(git:*)'], deny: [] } }),
+      );
+
+      const settings = loadMergedSettings(
+        { HOME: path.join(tmpDir, 'home') },
+        { globalConfigDir: configHome },
+      );
+
+      assert.deepEqual(settings.permissions.deny, ['Bash(rm:*)']);
+      assert.deepEqual(settings.permissions.allow, ['Bash(ls:*)']);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('an explicit local config dir name replaces the project .claude layers', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const projectDir = path.join(tmpDir, 'project');
+      const projectOpencodeDir = path.join(projectDir, '.opencode');
+      fs.mkdirSync(projectOpencodeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectOpencodeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(npm:*)'], deny: [] } }),
+      );
+      fs.writeFileSync(
+        path.join(projectOpencodeDir, 'settings.local.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(node:*)'], deny: [] } }),
+      );
+      const projectClaudeDir = path.join(projectDir, '.claude');
+      fs.mkdirSync(projectClaudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectClaudeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(git:*)'], deny: [] } }),
+      );
+
+      const settings = loadMergedSettings(
+        { HOME: path.join(tmpDir, 'home'), CLAUDE_PROJECT_DIR: projectDir },
+        {
+          globalConfigDir: path.join(tmpDir, 'cfg-opencode'),
+          localConfigDirName: '.opencode',
+        },
+      );
+
+      assert.deepEqual(settings.permissions.allow, [
+        'Bash(npm:*)',
+        'Bash(node:*)',
+      ]);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('CLAUDE_SETTINGS_PATH still overrides layer 1 when no config home is named', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const explicit = path.join(tmpDir, 'explicit-settings.json');
+      fs.writeFileSync(
+        explicit,
+        JSON.stringify({ permissions: { allow: ['Bash(jq:*)'], deny: [] } }),
+      );
+      const homeClaudeDir = path.join(tmpDir, 'home', '.claude');
+      fs.mkdirSync(homeClaudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(homeClaudeDir, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(git:*)'], deny: [] } }),
+      );
+
+      const settings = loadMergedSettings({
+        CLAUDE_SETTINGS_PATH: explicit,
+        HOME: path.join(tmpDir, 'home'),
+      });
+
+      assert.deepEqual(settings.permissions.allow, ['Bash(jq:*)']);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('a named config home wins over CLAUDE_SETTINGS_PATH', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const explicit = path.join(tmpDir, 'explicit-settings.json');
+      fs.writeFileSync(
+        explicit,
+        JSON.stringify({ permissions: { allow: ['Bash(jq:*)'], deny: [] } }),
+      );
+      const configHome = path.join(tmpDir, 'cfg-opencode');
+      fs.mkdirSync(configHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(configHome, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash(ls:*)'], deny: [] } }),
+      );
+
+      const settings = loadMergedSettings(
+        { CLAUDE_SETTINGS_PATH: explicit, HOME: path.join(tmpDir, 'home') },
+        { globalConfigDir: configHome },
+      );
+
+      assert.deepEqual(settings.permissions.allow, ['Bash(ls:*)']);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('missing files and unparseable JSON under a config home are skipped', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const configHome = path.join(tmpDir, 'cfg-opencode');
+      fs.mkdirSync(configHome, { recursive: true });
+      fs.writeFileSync(path.join(configHome, 'settings.json'), 'NOT JSON {{{');
+      // settings.local.json is absent entirely.
+
+      let settings;
+      assert.doesNotThrow(() => {
+        settings = loadMergedSettings(
+          { HOME: path.join(tmpDir, 'home') },
+          { globalConfigDir: configHome },
+        );
+      });
+      assert.deepEqual(settings.permissions.allow, []);
+      assert.deepEqual(settings.permissions.deny, []);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('allow and deny stay concatenated and de-duplicated in layer order', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-hook-ch-'));
+    try {
+      const configHome = path.join(tmpDir, 'cfg-opencode');
+      fs.mkdirSync(configHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(configHome, 'settings.json'),
+        JSON.stringify({
+          permissions: { allow: ['Bash(ls:*)'], deny: ['Bash(rm:*)'] },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(configHome, 'settings.local.json'),
+        JSON.stringify({
+          permissions: {
+            allow: ['Bash(ls:*)', 'Bash(cat:*)'],
+            deny: ['Bash(rm:*)', 'Bash(dd:*)'],
+          },
+        }),
+      );
+      const projectDir = path.join(tmpDir, 'project');
+      const projectOpencodeDir = path.join(projectDir, '.opencode');
+      fs.mkdirSync(projectOpencodeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectOpencodeDir, 'settings.json'),
+        JSON.stringify({
+          permissions: { allow: ['Bash(npm:*)'], deny: ['Bash(curl:*)'] },
+        }),
+      );
+
+      const settings = loadMergedSettings(
+        { HOME: path.join(tmpDir, 'home'), CLAUDE_PROJECT_DIR: projectDir },
+        { globalConfigDir: configHome, localConfigDirName: '.opencode' },
+      );
+
+      assert.deepEqual(settings.permissions.allow, [
+        'Bash(ls:*)',
+        'Bash(cat:*)',
+        'Bash(npm:*)',
+      ]);
+      assert.deepEqual(settings.permissions.deny, [
+        'Bash(rm:*)',
+        'Bash(dd:*)',
+        'Bash(curl:*)',
+      ]);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+
 // ── builtins require explicit allowlist ────────────────
 // Builtins take the same allowlist path as any other command. Redirection is
 // stripped before matching, so auto-approving a builtin on its bare name would

@@ -58,7 +58,7 @@ UI_REVIEW_FILE=$(ls "${PHASE_DIR}"/*-UI-REVIEW.md 2>/dev/null | head -1)
 
 **If `SUMMARY_FILES` empty:** Exit — "Phase {N} not executed. Run {{COMMAND_PREFIX}}execute-phase {N} first."
 
-**If `UI_REVIEW_FILE` non-empty:** Use AskUserQuestion:
+**If `UI_REVIEW_FILE` non-empty:** Use {{USER_QUESTION_TOOL}}:
 - header: "Existing UI Review"
 - question: "UI-REVIEW.md already exists for Phase {N}."
 - options:

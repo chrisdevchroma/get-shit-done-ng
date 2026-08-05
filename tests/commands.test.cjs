@@ -4614,6 +4614,107 @@ describe('update command — prerelease channel handling', () => {
     }
   });
 
+  // ── B4-B6) detectInstallLocation resolves every runtime's config home ───────
+  // Every variable that steers config-home resolution, saved and restored so a
+  // developer's own environment cannot decide the outcome either way.
+  const CONFIG_ENV_VARS = [
+    'GSD_TEST_HOME',
+    'XDG_CONFIG_HOME',
+    'CLAUDE_CONFIG_DIR',
+    'COPILOT_CONFIG_DIR',
+    'OPENCODE_CONFIG_DIR',
+  ];
+
+  function isolateConfigEnv() {
+    const saved = {};
+    for (const name of CONFIG_ENV_VARS) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+    return saved;
+  }
+
+  function restoreConfigEnv(saved) {
+    for (const name of CONFIG_ENV_VARS) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+
+  function seedInstall(base, version = '1.0.0-dev.7+30c9587\n') {
+    fs.mkdirSync(path.join(base, 'gsd-ng'), { recursive: true });
+    fs.writeFileSync(path.join(base, 'gsd-ng', 'VERSION'), version);
+  }
+
+  test('B4: detectInstallLocation resolves an opencode global install under XDG_CONFIG_HOME', () => {
+    const { detectInstallLocation } = require('../gsd-ng/bin/lib/commands.cjs');
+    const dir = createTempProject();
+    const homeDir = createTempProject();
+    const xdg = createTempProject();
+    const saved = isolateConfigEnv();
+    try {
+      seedInstall(path.join(xdg, 'opencode'));
+      process.env.XDG_CONFIG_HOME = xdg;
+      process.env.GSD_TEST_HOME = homeDir;
+      const r = detectInstallLocation(dir);
+      assert.ok(r, 'an opencode global install must be detected');
+      assert.strictEqual(r.isLocal, false);
+      assert.strictEqual(r.installPath, path.join(xdg, 'opencode', 'gsd-ng'));
+      assert.strictEqual(r.installedVersion, '1.0.0-dev.7');
+    } finally {
+      restoreConfigEnv(saved);
+      cleanup(dir);
+      cleanup(homeDir);
+      cleanup(xdg);
+    }
+  });
+
+  test('B5: detectInstallLocation resolves an opencode local install', () => {
+    const { detectInstallLocation } = require('../gsd-ng/bin/lib/commands.cjs');
+    const dir = createTempProject();
+    const homeDir = createTempProject();
+    const xdg = createTempProject();
+    const saved = isolateConfigEnv();
+    try {
+      seedInstall(path.join(dir, '.opencode'));
+      process.env.XDG_CONFIG_HOME = xdg;
+      process.env.GSD_TEST_HOME = homeDir;
+      const r = detectInstallLocation(dir);
+      assert.ok(r, 'an opencode local install must be detected');
+      assert.strictEqual(r.isLocal, true);
+      assert.strictEqual(r.installPath, path.join(dir, '.opencode', 'gsd-ng'));
+      assert.strictEqual(r.installedVersion, '1.0.0-dev.7');
+    } finally {
+      restoreConfigEnv(saved);
+      cleanup(dir);
+      cleanup(homeDir);
+      cleanup(xdg);
+    }
+  });
+
+  test('B6: detectInstallLocation resolves a copilot local install', () => {
+    const { detectInstallLocation } = require('../gsd-ng/bin/lib/commands.cjs');
+    const dir = createTempProject();
+    const homeDir = createTempProject();
+    const xdg = createTempProject();
+    const saved = isolateConfigEnv();
+    try {
+      seedInstall(path.join(dir, '.github'));
+      process.env.XDG_CONFIG_HOME = xdg;
+      process.env.GSD_TEST_HOME = homeDir;
+      const r = detectInstallLocation(dir);
+      assert.ok(r, 'a copilot local install must be detected');
+      assert.strictEqual(r.isLocal, true);
+      assert.strictEqual(r.installPath, path.join(dir, '.github', 'gsd-ng'));
+      assert.strictEqual(r.installedVersion, '1.0.0-dev.7');
+    } finally {
+      restoreConfigEnv(saved);
+      cleanup(dir);
+      cleanup(homeDir);
+      cleanup(xdg);
+    }
+  });
+
   // ── C) cmdUpdate end-to-end with prerelease versions ────────────────────────
 
   test('C1: prerelease user with newer prerelease available → update_available (headline regression)', () => {
@@ -8452,6 +8553,49 @@ describe('sub-batch H: cmdUpdate execUpdate seam exercised', () => {
       assert.doesNotMatch(parsed.install_command, /--runtime claude/);
     } finally {
       cleanup(markerDir);
+    }
+  });
+
+  test('RUNTIME-ID-08: cmdUpdate dry-execute threads --runtime opencode for npm path', () => {
+    // Its own project, opencode-shaped and holding no .claude anywhere: the
+    // suite's shared tmpDir carries a claude-shaped install, which resolves
+    // whatever the runtime marker says and so cannot exercise this path.
+    const project = createTempProject();
+    const emptyHome = createTempProject();
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-opencode-marker-'),
+    );
+    fs.mkdirSync(path.join(project, '.opencode', 'gsd-ng'), { recursive: true });
+    fs.writeFileSync(
+      path.join(project, '.opencode', 'gsd-ng', 'VERSION'),
+      '0.1.0\n',
+    );
+    fs.writeFileSync(path.join(markerDir, '.runtime'), 'opencode\n', 'utf-8');
+    try {
+      const r = runGsdTools(['update', '--json'], project, {
+        GSD_UPDATE_TEST_OVERRIDES: JSON.stringify({
+          latestVersion: '99.0.0',
+          updateSource: 'npm',
+        }),
+        GSD_TEST_DRY_EXECUTE: '1',
+        GSD_TEST_RUNTIME_MARKER_DIR: markerDir,
+        GSD_TEST_HOME: emptyHome,
+        XDG_CONFIG_HOME: path.join(emptyHome, 'config'),
+        CLAUDE_CONFIG_DIR: undefined,
+        COPILOT_CONFIG_DIR: undefined,
+        OPENCODE_CONFIG_DIR: undefined,
+      });
+      assert.ok(r.success, r.error);
+      const parsed = JSON.parse(r.output);
+      // Under a claude-only path resolver this is 'unknown_version' and there
+      // is no install_command to inspect at all.
+      assert.strictEqual(parsed.status, 'updated');
+      assert.match(parsed.install_command, /--runtime opencode/);
+      assert.doesNotMatch(parsed.install_command, /--runtime claude/);
+    } finally {
+      cleanup(markerDir);
+      cleanup(project);
+      cleanup(emptyHome);
     }
   });
 

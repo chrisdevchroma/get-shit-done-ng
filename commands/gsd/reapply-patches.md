@@ -44,8 +44,8 @@ Check for local patches directory:
 # Global install
 PATCHES_DIR="$HOME/.claude/gsd-local-patches"
 # Local install fallback
-if [ ! -d "$PATCHES_DIR" ] && [ -d "./.claude/gsd-local-patches" ]; then
-  PATCHES_DIR="./.claude/gsd-local-patches"
+if [ ! -d "$PATCHES_DIR" ] && [ -d "./{{CONFIG_DIR}}/gsd-local-patches" ]; then
+  PATCHES_DIR="./{{CONFIG_DIR}}/gsd-local-patches"
 fi
 ```
 

@@ -18,9 +18,10 @@ const {
   error,
   parsePhaseCheckboxes,
   planningPaths,
+  resolveRuntimeSpec,
+  escapeRegex,
 } = require('./core.cjs');
 const { DEFAULTS, WORKFLOW_DEFAULTS } = require('./defaults.cjs');
-const { RUNTIMES } = require('./template-processor.cjs');
 const {
   extractFrontmatter,
   spliceFrontmatter,
@@ -88,6 +89,20 @@ function isManuallyMaintained(filePath) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Absolute path to a project's memory directory for the given runtime.
+ *
+ * MEMORY_DIR is recorded with a trailing slash, so it is split rather than
+ * concatenated to keep the separator platform-correct.
+ *
+ * @param {string} cwd - Project root directory
+ * @param {object} spec - A RUNTIMES row
+ * @returns {string}
+ */
+function runtimeMemoryDir(cwd, spec) {
+  return path.join(cwd, ...spec.MEMORY_DIR.replace(/\/+$/, '').split('/'));
 }
 
 function cmdVerifySummary(cwd, summaryPath, checkFileCount) {
@@ -1259,11 +1274,11 @@ function runHealth(cwd, options) {
   }
 
   // ─── Check 9: Project rules file exists when .planning/ exists ────────────
-  const gsdRuntime = process.env.GSD_RUNTIME || 'claude';
-  const projectRulesFile = (RUNTIMES[gsdRuntime] || RUNTIMES.claude)
-    .PROJECT_RULES_FILE;
+  const runtimeSpec = resolveRuntimeSpec();
+  const projectRulesFile = runtimeSpec.PROJECT_RULES_FILE;
+  const memoryDirRel = runtimeSpec.MEMORY_DIR;
   const projectRulesPath = path.join(cwd, projectRulesFile);
-  const memoryDir = path.join(cwd, '.claude', 'memory');
+  const memoryDir = runtimeMemoryDir(cwd, runtimeSpec);
   const memoryDirExists = fs.existsSync(memoryDir);
   const projectRulesExists = fs.existsSync(projectRulesPath);
 
@@ -1285,16 +1300,16 @@ function runHealth(cwd, options) {
       .readdirSync(memoryDir)
       .filter((f) => f.endsWith('.md') && f !== 'MEMORY.md');
 
-    // Check 10: Orphaned memory files not referenced in CLAUDE.md
+    // Check 10: Orphaned memory files not referenced in the project rules file
     const rulesAreManual = claudeContent.includes(MANUAL_INDEX_MARKER);
     const orphaned = memFiles.filter(
-      (f) => !claudeContent.includes(`.claude/memory/${f}`),
+      (f) => !claudeContent.includes(`${memoryDirRel}${f}`),
     );
     if (orphaned.length > 0 && !rulesAreManual) {
       addIssue(
         'warning',
         'W011',
-        `${orphaned.length} memory file(s) not referenced in CLAUDE.md: ${orphaned.join(', ')}`,
+        `${orphaned.length} memory file(s) not referenced in ${projectRulesFile}: ${orphaned.join(', ')}`,
         'Run /gsd:health --repair to add missing references',
         true,
       );
@@ -1302,8 +1317,11 @@ function runHealth(cwd, options) {
         repairs.push('syncCLAUDEmdMemories');
     }
 
-    // Check 11: Stale memory refs in CLAUDE.md
-    const refPattern = /\[\.claude\/memory\/([^\]]+)\]/g;
+    // Check 11: Stale memory refs in the project rules file
+    const refPattern = new RegExp(
+      `\\[${escapeRegex(memoryDirRel)}([^\\]]+)\\]`,
+      'g',
+    );
     const referencedFiles = [];
     let refMatch;
     while ((refMatch = refPattern.exec(claudeContent)) !== null) {
@@ -1316,7 +1334,7 @@ function runHealth(cwd, options) {
       addIssue(
         'warning',
         'W012',
-        `CLAUDE.md references ${stale.length} memory file(s) that do not exist: ${stale.join(', ')}`,
+        `${projectRulesFile} references ${stale.length} memory file(s) that do not exist: ${stale.join(', ')}`,
         'Run /gsd:health --repair to remove stale references',
         true,
       );
@@ -1337,7 +1355,7 @@ function runHealth(cwd, options) {
         addIssue(
           'warning',
           'W013',
-          'MEMORY.md is out of sync with .claude/memory/ contents',
+          `MEMORY.md is out of sync with ${memoryDirRel} contents`,
           'Run /gsd:health --repair to regenerate MEMORY.md',
           true,
         );
@@ -1347,7 +1365,7 @@ function runHealth(cwd, options) {
       addIssue(
         'warning',
         'W013',
-        'MEMORY.md does not exist but .claude/memory/ contains files',
+        `MEMORY.md does not exist but ${memoryDirRel} contains files`,
         'Run /gsd:health --repair to create MEMORY.md',
         true,
       );
@@ -1700,9 +1718,7 @@ function runHealth(cwd, options) {
             break;
           }
           case 'writeCLAUDEmd': {
-            const repairRuntime = process.env.GSD_RUNTIME || 'claude';
-            const repairRulesFile = (RUNTIMES[repairRuntime] || RUNTIMES.claude)
-              .PROJECT_RULES_FILE;
+            const repairRulesFile = resolveRuntimeSpec().PROJECT_RULES_FILE;
             const repairRulesPath = path.join(cwd, repairRulesFile);
             const memoriesSection = generateMemoriesSection(cwd);
             if (fs.existsSync(repairRulesPath)) {
@@ -1727,9 +1743,7 @@ function runHealth(cwd, options) {
             break;
           }
           case 'syncCLAUDEmdMemories': {
-            const syncRuntime = process.env.GSD_RUNTIME || 'claude';
-            const syncRulesFile = (RUNTIMES[syncRuntime] || RUNTIMES.claude)
-              .PROJECT_RULES_FILE;
+            const syncRulesFile = resolveRuntimeSpec().PROJECT_RULES_FILE;
             const syncRulesPath = path.join(cwd, syncRulesFile);
             if (isManuallyMaintained(syncRulesPath)) {
               repairActions.push({
@@ -1762,13 +1776,14 @@ function runHealth(cwd, options) {
             break;
           }
           case 'syncMemoryMd': {
-            const memDir = path.join(cwd, '.claude', 'memory');
+            const memSpec = resolveRuntimeSpec();
+            const memDir = runtimeMemoryDir(cwd, memSpec);
             const memMdPath = path.join(memDir, 'MEMORY.md');
             if (isManuallyMaintained(memMdPath)) {
               repairActions.push({
                 action: repair,
                 success: false,
-                path: '.claude/memory/MEMORY.md',
+                path: `${memSpec.MEMORY_DIR}MEMORY.md`,
                 note: `MEMORY.md is marked ${MANUAL_INDEX_MARKER} — it is authored, not generated, and the generator cannot express sections it may carry (a link to .claude/memory/shared/, for one). Edit it directly, or drop the marker to opt back in.`,
               });
               break;
@@ -1779,7 +1794,7 @@ function runHealth(cwd, options) {
               repairActions.push({
                 action: repair,
                 success: true,
-                path: '.claude/memory/MEMORY.md',
+                path: `${memSpec.MEMORY_DIR}MEMORY.md`,
               });
             }
             break;

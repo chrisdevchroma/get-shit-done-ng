@@ -40,6 +40,11 @@ const {
   logSecurityEvent,
 } = require('./security.cjs');
 const {
+  CONFIG_DIR_VARIANTS,
+  resolveGlobalConfigDir,
+  selfLocatedConfigHome,
+} = require('./cache-path.cjs');
+const {
   getPlatformCliPatterns,
   PLATFORM_TO_CLI,
   getReadEditWriteAllowRules,
@@ -3972,11 +3977,51 @@ function cmdCleanup(cwd, options) {
 function detectInstallLocation(cwd) {
   const homeDir = process.env.GSD_TEST_HOME || os.homedir();
 
-  const localPath = path.join(cwd, '.claude', 'gsd-ng', 'VERSION');
-  const globalPath = path.join(homeDir, '.claude', 'gsd-ng', 'VERSION');
-
   // Strips build metadata (semver §10) so compareSemVer sees a clean version.
   const VERSION_RE = /^(\d+\.\d+\.\d+(?:-[\w.]+)?)/;
+
+  // An engine running from an install answers for that install and no other.
+  // The probes below find whichever registered runtime's config home matches
+  // first, which is the wrong install as soon as two of them coexist.
+  const selfHome = selfLocatedConfigHome();
+  if (selfHome) {
+    const selfVersionPath = path.join(selfHome, 'gsd-ng', 'VERSION');
+    try {
+      const m = fs
+        .readFileSync(selfVersionPath, 'utf-8')
+        .trim()
+        .match(VERSION_RE);
+      if (m) {
+        // Local means the config home sits directly under the working
+        // directory — the same shape the local probe below checks, including
+        // its guard against misreading a global install when cwd is the home
+        // directory itself.
+        const parent = path.dirname(selfHome);
+        return {
+          isLocal:
+            parent === path.resolve(cwd) &&
+            path.resolve(cwd) !== path.resolve(homeDir),
+          installPath: path.dirname(selfVersionPath),
+          installedVersion: m[1],
+        };
+      }
+    } catch {}
+  }
+
+  // Both paths come from the runtime registry, never a fixed directory name:
+  // an install lives under whichever config home its runtime declares, and a
+  // global one can sit outside the home dir entirely.
+  const localVariant =
+    CONFIG_DIR_VARIANTS.find((variant) =>
+      fs.existsSync(path.join(cwd, variant, 'gsd-ng', 'VERSION')),
+    ) || CONFIG_DIR_VARIANTS[0];
+  const localPath = path.join(cwd, localVariant, 'gsd-ng', 'VERSION');
+
+  // A non-null return already proved <home>/gsd-ng/VERSION exists.
+  const globalHome = resolveGlobalConfigDir(homeDir);
+  const globalPath = globalHome
+    ? path.join(globalHome, 'gsd-ng', 'VERSION')
+    : null;
 
   // Check local first
   if (fs.existsSync(localPath)) {
@@ -3987,7 +4032,7 @@ function detectInstallLocation(cwd) {
         // Only treat as LOCAL if local path differs from global path
         // (prevents misdetection when cwd === homeDir)
         const localDir = path.dirname(localPath);
-        const globalDir = path.dirname(globalPath);
+        const globalDir = globalPath ? path.dirname(globalPath) : null;
         if (localDir !== globalDir) {
           return {
             isLocal: true,
@@ -4000,7 +4045,7 @@ function detectInstallLocation(cwd) {
   }
 
   // Fall back to global
-  if (fs.existsSync(globalPath)) {
+  if (globalPath && fs.existsSync(globalPath)) {
     try {
       const globalVersion = fs.readFileSync(globalPath, 'utf-8').trim();
       const m = globalVersion.match(VERSION_RE);

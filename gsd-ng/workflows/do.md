@@ -13,7 +13,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 <step name="validate">
 **Check for input.**
 
-If `$ARGUMENTS` is empty, ask via AskUserQuestion:
+If `$ARGUMENTS` is empty, ask via {{USER_QUESTION_TOOL}}:
 
 ```
 What would you like to do? Describe the task, bug, or idea and I'll route it to the right GSD command.
@@ -58,7 +58,7 @@ Evaluate `$ARGUMENTS` against these routing rules. Apply the **first matching** 
 
 **Requires `.planning/` directory:** All routes except `{{COMMAND_PREFIX}}new-project`, `{{COMMAND_PREFIX}}map-codebase`, and `{{COMMAND_PREFIX}}help`. If the project doesn't exist and the route requires it, suggest `{{COMMAND_PREFIX}}new-project` first.
 
-**Ambiguity handling:** If the text could reasonably match multiple routes, ask the user via AskUserQuestion with the top 2-3 options. For example:
+**Ambiguity handling:** If the text could reasonably match multiple routes, ask the user via {{USER_QUESTION_TOOL}} with the top 2-3 options. For example:
 
 ```
 "Refactor the authentication system" could be:
@@ -88,7 +88,7 @@ Which approach fits better?
 
 Run the selected `{{COMMAND_PREFIX}}*` command, passing `$ARGUMENTS` as args.
 
-If the chosen command expects a phase number and one wasn't provided in the text, extract it from context or ask via AskUserQuestion.
+If the chosen command expects a phase number and one wasn't provided in the text, extract it from context or ask via {{USER_QUESTION_TOOL}}.
 
 After invoking the command, stop. The dispatched command handles everything from here.
 </step>

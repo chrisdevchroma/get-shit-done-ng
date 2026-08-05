@@ -68,7 +68,7 @@ cat "$PHASE_DIR"/*-VERIFICATION.md 2>/dev/null
      {list of gap truths that match between current and previous rounds}
 
      **Action required:** Human intervention needed. The automated gap closure cycle is not resolving these issues.
-     Suggest: `/gsd:debug` on the specific failing truth, or manual fix.
+     Suggest: `{{COMMAND_PREFIX}}debug` on the specific failing truth, or manual fix.
      ```
    - Write VERIFICATION.md with `status: halted` and `verification_round: {N}`
 8. **Skip to Step 3** with optimization:
@@ -409,7 +409,7 @@ If no source todo exists, `$SOURCE_TODO` is empty, or no related todos are in pe
 
 ## Step 10: Structure Gap Output (If Gaps Found)
 
-Structure gaps in YAML frontmatter for `/gsd:plan-phase --gaps`:
+Structure gaps in YAML frontmatter for `{{COMMAND_PREFIX}}plan-phase --gaps`:
 
 ```yaml
 gaps:
@@ -543,7 +543,7 @@ All must-haves verified. Phase goal achieved. Ready to proceed.
 1. **{Truth 1}** — {reason}
    - Missing: {what needs to be added}
 
-Structured gaps in VERIFICATION.md frontmatter for `/gsd:plan-phase --gaps`.
+Structured gaps in VERIFICATION.md frontmatter for `{{COMMAND_PREFIX}}plan-phase --gaps`.
 
 {If human_needed:}
 ### Human Verification Required
@@ -564,7 +564,7 @@ Automated checks passed. Awaiting human verification.
 
 **DO NOT skip key link verification.** 80% of stubs hide here — pieces exist but aren't connected.
 
-**Structure gaps in YAML frontmatter** for `/gsd:plan-phase --gaps`.
+**Structure gaps in YAML frontmatter** for `{{COMMAND_PREFIX}}plan-phase --gaps`.
 
 **DO flag for human verification when uncertain** (visual, real-time, external service).
 

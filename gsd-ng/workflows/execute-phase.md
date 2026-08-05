@@ -65,7 +65,7 @@ if [ "$SUBMODULE_AMBIGUOUS" = "true" ]; then
   if [ "$AMBIGUOUS_COUNT" -le 2 ] && [ "$AMBIGUOUS_COUNT" -gt 0 ]; then
     PATH1=$(echo "$AMBIGUOUS_PATHS" | jq -r '.[0] // ""' 2>/dev/null)
     PATH2=$(echo "$AMBIGUOUS_PATHS" | jq -r '.[1] // ""' 2>/dev/null)
-    AskUserQuestion(
+    {{USER_QUESTION_TOOL}}(
       question="Multiple submodules have changes. Which submodule(s) should be branched?",
       options=["$PATH1", "$PATH2", "All of them", "Skip branching"]
     )
@@ -75,7 +75,7 @@ if [ "$SUBMODULE_AMBIGUOUS" = "true" ]; then
     # 3+ ambiguous paths: text list + binary choice
     echo "Multiple submodules have changes:"
     echo "$AMBIGUOUS_PATHS" | jq -r '.[] | "  - " + .' 2>/dev/null
-    AskUserQuestion(
+    {{USER_QUESTION_TOOL}}(
       question="Multiple submodules have uncommitted changes. How should branching proceed?",
       options=["Branch all of them", "Skip branching"]
     )
@@ -148,7 +148,7 @@ if [[ "$ENTRY_COUNT" -gt 0 ]]; then
   BASELINE_FILE="${PHASE_DIR}/${PHASE_NUMBER}-test-baseline.json"
   echo "Capturing test baselines for $ENTRY_COUNT directory(ies)..."
 
-  node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" test capture-baseline "$DISCOVERED" "$BASELINE_FILE"
+  node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" test capture-baseline "$DISCOVERED" "$BASELINE_FILE"
 fi
 ```
 
@@ -217,8 +217,8 @@ Execute each wave in sequence. Within a wave: parallel if `PARALLELIZATION=true`
 
    Resolve workspace topology for agent context injection:
    ```bash
-   WORKSPACE_TYPE=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
-   WORKSPACE_JSON=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
+   WORKSPACE_TYPE=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
+   WORKSPACE_JSON=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
    SUBMODULE_PATHS=$(node -e "try{const w=JSON.parse(process.argv[1]);const p=w.submodule_paths||[];process.stdout.write(p.join(', ')||'none')}catch{process.stdout.write('none')}" "$WORKSPACE_JSON")
    PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
    ```
@@ -247,7 +247,7 @@ Execute each wave in sequence. Within a wave: parallel if `PARALLELIZATION=true`
 
        CRITICAL: Always commit to the source location. Your working directory is {PROJECT_ROOT}.
        If workspace type is 'submodule', source code lives in the submodule directories listed above.
-       Do NOT modify deployed copies (e.g., .claude/gsd-ng/) — always edit source first.
+       Do NOT modify deployed copies (e.g., {{CONFIG_DIR}}/gsd-ng/) — always edit source first.
        </workspace_context>
 
        <files_to_read>
@@ -256,7 +256,7 @@ Execute each wave in sequence. Within a wave: parallel if `PARALLELIZATION=true`
        - .planning/STATE.md (State)
        - .planning/config.json (Config, if exists)
        - ./{{PROJECT_RULES_FILE}} (Project instructions, if exists — follow project-specific guidelines and coding conventions)
-       - .claude/skills/ or .agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
+       - {{CONFIG_DIR}}/skills/ or .agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
        </files_to_read>
 
        <success_criteria>
@@ -281,14 +281,14 @@ Execute each wave in sequence. Within a wave: parallel if `PARALLELIZATION=true`
    - **Breakout check** — compare committed files against plan's `files_modified`:
      ```bash
      PLAN_FILE="{phase_dir}/{plan_file}"
-     FILES_MODIFIED=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" frontmatter get "$PLAN_FILE" --field files_modified 2>/dev/null)
+     FILES_MODIFIED=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" frontmatter get "$PLAN_FILE" --field files_modified 2>/dev/null)
 
      if [[ -n "$FILES_MODIFIED" ]]; then
-       BREAKOUT_RESULT=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" breakout-check --plan "{phase}-{plan}" --declared-files "$FILES_MODIFIED" 2>/dev/null)
+       BREAKOUT_RESULT=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" breakout-check --plan "{phase}-{plan}" --declared-files "$FILES_MODIFIED" 2>/dev/null)
      fi
      ```
      - If `BREAKOUT_RESULT` is `warning`: log in wave completion output — "Note: executor modified files outside declared scope: {list}". Continue execution.
-     - If `BREAKOUT_RESULT` is `halt`: present AskUserQuestion (breakout scope escalation) to user:
+     - If `BREAKOUT_RESULT` is `halt`: present {{USER_QUESTION_TOOL}} (breakout scope escalation) to user:
        - Question: "Executor modified {N} files outside declared plan scope. How should we proceed?"
        - Options: "Continue" (proceed to next wave), "Investigate first" (pause — review changes before next wave), "Rollback this plan" (revert plan commits and mark failed)
      - If `ok`: silent — no output needed.
@@ -504,7 +504,7 @@ Skip this step entirely if `$ENTRY_COUNT` is 0 (no test commands were discovered
 
 ```bash
 if [[ "$ENTRY_COUNT" -gt 0 ]]; then
-  node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" test compare-baseline "$DISCOVERED" "$BASELINE_FILE"
+  node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" test compare-baseline "$DISCOVERED" "$BASELINE_FILE"
 fi
 ```
 
@@ -513,7 +513,7 @@ fi
 Parse `NEW_FAILURES` from the node output above. If `NEW_FAILURES=true`:
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Test Triage",
   question: "Tests failed after execution. How should these failures be handled?",
   multiSelect: false,
@@ -926,7 +926,7 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: close todo after pha
 
 **Interactive mode:**
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Close Todo?",
   question: "This phase was started from todo '$ORIGIN_TODO_TITLE'. Phase verification passed. Close it?",
   multiSelect: false,
@@ -982,7 +982,7 @@ Log: `[auto] Closed phase-linked todo: $TODO_TITLE`
 
 **Interactive mode:**
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Phase Todos",
   question: "These pending todos are linked to Phase ${PHASE_NUMBER}. Phase verification passed. Close them?",
   multiSelect: true,
@@ -1069,9 +1069,9 @@ if [[ "$AUTO_CFG" == "true" ]]; then
 fi
 ```
 
-**Interactive mode** — build options list and use AskUserQuestion:
+**Interactive mode** — build options list and use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "Closing '$ORIGIN_TODO_TITLE' — these todos are linked via related:. Close them too?",
   multiSelect: true,

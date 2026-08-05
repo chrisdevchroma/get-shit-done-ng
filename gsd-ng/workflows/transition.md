@@ -99,7 +99,7 @@ Phase [X] has incomplete plans:
 ⚠️ Safety rail: Skipping plans requires confirmation (destructive action)
 ```
 
-Then use AskUserQuestion:
+Then use {{USER_QUESTION_TOOL}}:
 - header: "Incomplete"
 - question: "Phase [X] has [N] incomplete plans. What would you like to do?"
 - options:
@@ -524,7 +524,7 @@ Phase [X] has incomplete plans:
 - {phase}-03-PLAN.md (not executed)
 ```
 
-Then use AskUserQuestion:
+Then use {{USER_QUESTION_TOOL}}:
 - header: "Move On?"
 - question: "Phase [X] has plans that weren't executed. How would you like to proceed?"
 - options:

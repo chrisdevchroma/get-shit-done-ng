@@ -7,6 +7,7 @@ const path = require('path');
 const { execSync, execFileSync, spawnSync } = require('child_process');
 const { MODEL_PROFILES, EFFORT_PROFILES } = require('./model-profiles.cjs');
 const { DEFAULTS, WORKFLOW_DEFAULTS } = require('./defaults.cjs');
+const { RUNTIMES } = require('./template-processor.cjs');
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
@@ -958,10 +959,31 @@ function getEngineRuntime() {
     const val = fs
       .readFileSync(path.join(markerDir, '.runtime'), 'utf-8')
       .trim();
-    return val === 'copilot' ? 'copilot' : 'claude';
+    // Own-property check: a marker naming an unknown runtime — a corrupted file,
+    // or one written by a newer install — must not be interpolated into the
+    // `npx … --runtime <val>` command line that /gsd-update builds from this.
+    return Object.prototype.hasOwnProperty.call(RUNTIMES, val) ? val : 'claude';
   } catch {
     return 'claude'; // marker absent → default to claude
   }
+}
+
+/**
+ * The registry row for the runtime this install belongs to.
+ *
+ * GSD_RUNTIME is honoured as an explicit override for callers outside the
+ * install tree. Nothing in this repository sets it, so the `.runtime` marker the
+ * installer writes is what identifies a real install.
+ *
+ * @returns {object} A RUNTIMES row
+ */
+function resolveRuntimeSpec() {
+  const explicit = process.env.GSD_RUNTIME;
+  const name =
+    explicit && Object.prototype.hasOwnProperty.call(RUNTIMES, explicit)
+      ? explicit
+      : getEngineRuntime();
+  return RUNTIMES[name];
 }
 
 // ─── Git utilities ────────────────────────────────────────────────────────────
@@ -1788,6 +1810,7 @@ module.exports = {
   loadConfig,
   resolveTargetBranch,
   getEngineRuntime,
+  resolveRuntimeSpec,
   isGitIgnored,
   execGit,
   escapeRegex,

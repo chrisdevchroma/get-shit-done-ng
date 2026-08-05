@@ -8,7 +8,7 @@ Plans execute autonomously. Checkpoints formalize interaction points where human
 
 **Core principle:** Claude automates everything with CLI/API. Checkpoints are for verification and decisions, not manual work.
 
-**Golden rules:**
+**Core rules:**
 1. **If Claude can run it, Claude runs it** - Never ask user to execute CLI commands, start servers, or run builds
 2. **Claude sets up the verification environment** - Start dev servers, seed databases, configure env vars
 3. **User only does what requires human judgment** - Visual checks, UX evaluation, "does this feel right?"
@@ -90,7 +90,7 @@ Plans execute autonomously. Checkpoints formalize interaction points where human
 
 Checkpoints formalize human-in-the-loop points for verification and decisions, not manual work.
 
-**The golden rule:** If Claude CAN automate it, Claude MUST automate it.
+**The core rule:** If Claude CAN automate it, Claude MUST automate it.
 
 **Checkpoint priority:**
 1. **checkpoint:human-verify** (90%) - Claude automated everything, human confirms visual/functional correctness

@@ -32,9 +32,9 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 **If no context file:**
 - Present what shipped in last milestone
-- Ask inline (freeform, NOT AskUserQuestion): "What do you want to build next?"
-- Wait for their response, then use AskUserQuestion to probe specifics
-- If user selects "Other" at any point to provide freeform input, ask follow-up as plain text — not another AskUserQuestion
+- Ask inline (freeform, NOT {{USER_QUESTION_TOOL}}): "What do you want to build next?"
+- Wait for their response, then use {{USER_QUESTION_TOOL}} to probe specifics
+- If user selects "Other" at any point to provide freeform input, ask follow-up as plain text — not another {{USER_QUESTION_TOOL}}
 
 ## 3. Determine Milestone Version
 
@@ -119,13 +119,13 @@ Check `research_enabled` from init JSON (loaded from config).
 
 **If `research_enabled` is `true`:**
 
-AskUserQuestion: "Research the domain ecosystem for new features before defining requirements?"
+{{USER_QUESTION_TOOL}}: "Research the domain ecosystem for new features before defining requirements?"
 - "Research first (Recommended)" — Discover patterns, features, architecture for NEW capabilities
 - "Skip research for this milestone" — Go straight to requirements (does not change your default)
 
 **If `research_enabled` is `false`:**
 
-AskUserQuestion: "Research the domain ecosystem for new features before defining requirements?"
+{{USER_QUESTION_TOOL}}: "Research the domain ecosystem for new features before defining requirements?"
 - "Skip research (current default)" — Go straight to requirements
 - "Research first" — Discover patterns, features, architecture for NEW capabilities
 
@@ -240,14 +240,14 @@ Present features by category:
 
 **If no research:** Gather requirements through conversation. Ask: "What are the main things users need to do with [new features]?" Clarify, probe for related capabilities, group into categories.
 
-**Scope each category** via AskUserQuestion (multiSelect: true, header max 12 chars):
+**Scope each category** via {{USER_QUESTION_TOOL}} (multiSelect: true, header max 12 chars):
 - "[Feature 1]" — [brief description]
 - "[Feature 2]" — [brief description]
 - "None for this milestone" — Defer entire category
 
 Track: Selected → this milestone. Unselected table stakes → future. Unselected differentiators → out of scope.
 
-**Identify gaps** via AskUserQuestion:
+**Identify gaps** via {{USER_QUESTION_TOOL}}:
 - "No, research covered it" — Proceed
 - "Yes, let me add some" — Capture additions
 
@@ -353,7 +353,7 @@ Success criteria:
 2. [criterion]
 ```
 
-**Ask for approval** via AskUserQuestion:
+**Ask for approval** via {{USER_QUESTION_TOOL}}:
 - "Approve" — Commit and continue
 - "Adjust phases" — Tell me what to change
 - "Review full file" — Show raw ROADMAP.md

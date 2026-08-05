@@ -32,17 +32,36 @@ if (!cachePathModulePath && !process.env.GSD_TEST_MODE) {
   process.exit(0);
 }
 
-const { resolveUpdateCacheDir, resolveUpdateCacheFile, detectConfigDir: _sharedDetectConfigDir } = cachePathModulePath
+const {
+  resolveUpdateCacheDir,
+  resolveUpdateCacheFile,
+  detectConfigDir: _sharedDetectConfigDir,
+  resolveGlobalConfigDir: sharedResolveGlobalConfigDir,
+  selfLocatedConfigHome: sharedSelfLocatedConfigHome,
+} = cachePathModulePath
   ? require(cachePathModulePath)
-  : { resolveUpdateCacheDir: null, resolveUpdateCacheFile: null, detectConfigDir: null };
+  : { resolveUpdateCacheDir: null, resolveUpdateCacheFile: null, detectConfigDir: null, resolveGlobalConfigDir: null, selfLocatedConfigHome: null };
 // Mutable reference so GSD_TEST_MODE tests can simulate the no-module path.
 let sharedDetectConfigDir = _sharedDetectConfigDir;
+
+// The config home this install belongs to, or null when the hook is not running
+// from an install. Asked of the shared module rather than recomputed here: it
+// locates relative to its own path, so the answer is right whichever file
+// required it, and this hook sits at a different depth from the library.
+const selfConfigHome = sharedSelfLocatedConfigHome
+  ? sharedSelfLocatedConfigHome()
+  : null;
 
 // Detect GSD config directory — used for VERSION file location (project-first).
 // Respects CLAUDE_CONFIG_DIR for custom config directory setups.
 // Delegates the .claude → .github → .copilot variant order to the shared
 // cache-path.cjs detectConfigDir (single source of truth — zero duplication here).
 function detectConfigDir(baseDir) {
+  // An install owns its own VERSION file. Probing the working directory would
+  // find another runtime's local install and compare against its version.
+  if (selfConfigHome) {
+    return selfConfigHome;
+  }
   if (sharedDetectConfigDir) {
     // Primary path: shared module handles env override + variant probing + null on no-match.
     // Wrap its null-on-no-match with the hook's own fallback contract.
@@ -59,7 +78,23 @@ function detectConfigDir(baseDir) {
   return process.env.CLAUDE_CONFIG_DIR || path.join(baseDir, '.claude');
 }
 
-const globalConfigDir = detectConfigDir(homeDir);
+// The global config home is not always <homeDir>/<dir name> — a runtime may keep
+// it under an XDG base — so the global lookup asks the shared resolver rather
+// than joining a directory name onto homeDir.
+function detectGlobalConfigDir() {
+  // Same reason as above: an install that knows where it lives never probes
+  // another runtime's global config home.
+  if (selfConfigHome) {
+    return selfConfigHome;
+  }
+  if (sharedResolveGlobalConfigDir) {
+    const resolved = sharedResolveGlobalConfigDir(homeDir, process.env);
+    if (resolved) return resolved;
+  }
+  return process.env.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
+}
+
+const globalConfigDir = detectGlobalConfigDir();
 const projectConfigDir = detectConfigDir(cwd);
 
 // null only in GSD_TEST_MODE with no helper — guarded above.

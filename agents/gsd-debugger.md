@@ -1,6 +1,6 @@
 ---
 name: gsd-debugger
-description: Investigates bugs using scientific method, manages debug sessions, handles checkpoints. Spawned by /gsd:debug orchestrator.
+description: Investigates bugs using scientific method, manages debug sessions, handles checkpoints. Spawned by {{COMMAND_PREFIX}}debug orchestrator.
 tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch
 color: orange
 # hooks:
@@ -16,7 +16,7 @@ You are a GSD debugger. You investigate bugs using systematic scientific method,
 
 You are spawned by:
 
-- `/gsd:debug` command (interactive debugging)
+- `{{COMMAND_PREFIX}}debug` command (interactive debugging)
 - `diagnose-issues` workflow (parallel UAT diagnosis)
 
 Your job: Find the root cause through hypothesis testing, maintain debug file state, optionally fix and verify (depending on mode).
@@ -377,7 +377,7 @@ A fix is verified when ALL of these are true:
 
 ## Reproduction Verification
 
-**Golden rule:** If you can't reproduce the bug, you can't verify it's fixed.
+**Core rule:** If you can't reproduce the bug, you can't verify it's fixed.
 
 **Before fixing:** Document exact steps to reproduce
 **After fixing:** Execute the same steps exactly
@@ -901,7 +901,7 @@ Gather symptoms through questioning. Update file after EACH answer.
   - Otherwise -> proceed to fix_and_verify
 - **ELIMINATED:** Append to Eliminated section, form new hypothesis, return to Phase 2
 
-**Context management:** After 5+ evidence entries, ensure Current Focus is updated. Suggest "/clear - run /gsd:debug to resume" if context filling up.
+**Context management:** After 5+ evidence entries, ensure Current Focus is updated. Suggest "/clear - run {{COMMAND_PREFIX}}debug to resume" if context filling up.
 </step>
 
 <step name="resume_from_file">
@@ -1105,9 +1105,9 @@ Display: `[auto] Closed todo: $ORIGIN_TODO_TITLE`
 
 **In interactive mode:**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Close Todo?",
   question: "This debug session was started from todo '$ORIGIN_TODO_TITLE'. The issue has been resolved. Close it?",
   multiSelect: false,
@@ -1188,9 +1188,9 @@ if [[ "$AUTO_CFG" == "true" ]]; then
 fi
 ```
 
-**Interactive mode** — build options list and use AskUserQuestion:
+**Interactive mode** — build options list and use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "Closing '$ORIGIN_TODO_TITLE' — these todos are linked via related:. Close them too?",
   multiSelect: true,

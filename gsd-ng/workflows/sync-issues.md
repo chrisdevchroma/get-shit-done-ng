@@ -15,7 +15,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 Detect configured platform:
 
 ```bash
-PLATFORM=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform)
+PLATFORM=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform)
 ```
 
 Parse JSON for `platform`, `cli_installed`, `cli_install_url`.
@@ -37,7 +37,7 @@ Exit.
 Check issue tracker configuration:
 
 ```bash
-AUTO_SYNC=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" config-get issue_tracker.auto_sync --default "true")
+AUTO_SYNC=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" config-get issue_tracker.auto_sync --default "true")
 ```
 
 Read `issue_tracker.default_action` and `issue_tracker.comment_style` too. Display current config.
@@ -47,7 +47,7 @@ Read `issue_tracker.default_action` and `issue_tracker.comment_style` too. Displ
 Scan for external references:
 
 ```bash
-REFS=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" issue-list-refs)
+REFS=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" issue-list-refs)
 ```
 
 If `count` is 0:
@@ -77,7 +77,7 @@ External Issue References:
 Execute sync:
 
 ```bash
-SYNC=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" issue-sync)
+SYNC=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" issue-sync)
 ```
 
 Parse JSON for `synced`, `conflicts`, `skipped`.
@@ -103,7 +103,7 @@ If conflicts exist, display and prompt for each:
 | github:#42 | closed | pending | External issue closed but GSD todo still pending |
 ```
 
-For each conflict, use AskUserQuestion:
+For each conflict, use {{USER_QUESTION_TOOL}}:
 - header: "Conflict Resolution"
 - question: "Issue {ref} is closed externally but pending in GSD. What to do?"
 - options:
@@ -115,7 +115,7 @@ For each conflict, use AskUserQuestion:
 <step name="security_awareness">
 After sync completes, check stderr output for `[security]` warnings.
 If present, inform the user:
-"Security scan detected suspicious content in synced issues. Details logged to .claude/logs/security-events.log. Run {{COMMAND_PREFIX}}health to review."
+"Security scan detected suspicious content in synced issues. Details logged to {{CONFIG_DIR}}/logs/security-events.log. Run {{COMMAND_PREFIX}}health to review."
 </step>
 
 <step name="summary">

@@ -313,9 +313,11 @@ describe('SEC40-RULETWO-WF: the import-issue approval gate', () => {
     const md = fs.readFileSync(workflowPath('import-issue.md'), 'utf8');
     const gate = stepBody(md, 'security_gate');
     assert.ok(gate, 'import-issue.md lost its security_gate step');
+    // The source names the approval tool by registry placeholder, so the gate
+    // survives onto a runtime whose tool is called something else.
     assert.match(
       gate,
-      /AskUserQuestion/,
+      /\{\{USER_QUESTION_TOOL\}\}/,
       'the gate must be presented through the approval tool, not as prose',
     );
     assert.match(
@@ -345,7 +347,7 @@ describe('SEC40-RULETWO-WF: the import-issue approval gate', () => {
   test('RULETWO-03: no override instruction precedes the approval prompt', () => {
     const md = fs.readFileSync(workflowPath('import-issue.md'), 'utf8');
     const gate = stepBody(md, 'security_gate');
-    const askAt = md.indexOf('AskUserQuestion', md.indexOf(gate));
+    const askAt = md.indexOf('{{USER_QUESTION_TOOL}}', md.indexOf(gate));
     const firstOverrideAt = md.indexOf('--force-unsafe');
 
     assert.notEqual(askAt, -1);

@@ -16,7 +16,7 @@ Three subcommands:
 - **list**: Show all notes from project and global scopes.
 - **promote**: Convert a note into a structured todo.
 
-Runs inline — no Task, no AskUserQuestion, no Bash.
+Runs inline — no Task, no {{USER_QUESTION_TOOL}}, no Bash.
 </objective>
 
 <execution_context>

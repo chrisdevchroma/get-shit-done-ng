@@ -10,6 +10,7 @@ const {
   buildContext,
   RUNTIMES,
   fillBetweenMarkers,
+  patternToRemoval,
 } = require('../gsd-ng/bin/lib/template-processor.cjs');
 const { resolveTmpDir, cleanup } = require('./helpers.cjs');
 
@@ -199,6 +200,28 @@ describe('RUNTIMES', () => {
       '.github/copilot-instructions.md',
     );
   });
+
+  test('no runtime carries a TBD placeholder value', () => {
+    const offenders = [];
+    for (const [runtime, entry] of Object.entries(RUNTIMES)) {
+      for (const [key, value] of Object.entries(entry)) {
+        if (value === 'TBD') offenders.push(`${runtime}.${key}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `placeholder 'TBD' still shipped for: ${offenders.join(', ')}`,
+    );
+  });
+
+  test('copilot USER_QUESTION_TOOL is ask_user', () => {
+    assert.equal(RUNTIMES.copilot.USER_QUESTION_TOOL, 'ask_user');
+    assert.equal(
+      processTemplate('Use {{USER_QUESTION_TOOL}}', buildContext('copilot')),
+      'Use ask_user',
+    );
+  });
 });
 
 // --- RUNTIMES extension ---
@@ -283,6 +306,395 @@ describe('RUNTIMES extension', () => {
       if (stash === undefined) delete RUNTIMES._test_runtime;
       else RUNTIMES._test_runtime = stash;
     }
+  });
+});
+
+// --- opencode registry row ---
+
+/** Registry keys prefixed with _ are synthetic test fixtures, not shipped runtimes. */
+function realRuntimes() {
+  return Object.entries(RUNTIMES).filter(([name]) => !name.startsWith('_'));
+}
+
+describe('RUNTIMES.opencode', () => {
+  const contentKeys = [
+    ['PROJECT_RULES_FILE', 'AGENTS.md'],
+    ['USER_QUESTION_TOOL', 'question'],
+    ['COMMAND_PREFIX', '/gsd-'],
+    ['GSD_BLOCK_OPEN', '<!-- GSD Configuration -->'],
+    ['GSD_BLOCK_CLOSE', '<!-- /GSD Configuration -->'],
+    ['MEMORY_DIR', '.opencode/memory/'],
+  ];
+
+  for (const [key, expected] of contentKeys) {
+    test(`opencode ${key} is ${expected}`, () => {
+      assert.equal(RUNTIMES.opencode[key], expected);
+    });
+  }
+
+  test('registry holds exactly claude, copilot, opencode', () => {
+    assert.deepEqual(realRuntimes().map(([name]) => name), [
+      'claude',
+      'copilot',
+      'opencode',
+    ]);
+  });
+
+  test('processTemplate resolves all six content keys for opencode', () => {
+    const corpus = contentKeys.map(([key]) => `{{${key}}}`).join(' | ');
+    const out = processTemplate(corpus, buildContext('opencode'));
+    assert.equal(out, contentKeys.map(([, value]) => value).join(' | '));
+    assert.ok(!out.includes('{{'), 'no unresolved {{VAR}} should remain');
+  });
+
+  test('ONLY:opencode block is kept for opencode', () => {
+    assert.equal(
+      processTemplate(
+        '<!-- ONLY:opencode -->OpenCode text<!-- /ONLY:opencode -->',
+        buildContext('opencode'),
+      ),
+      'OpenCode text',
+    );
+  });
+
+  test('ONLY:opencode block is stripped for claude and copilot', () => {
+    const input = 'a<!-- ONLY:opencode -->OpenCode text<!-- /ONLY:opencode -->b';
+    assert.equal(processTemplate(input, buildContext('claude')), 'ab');
+    assert.equal(processTemplate(input, buildContext('copilot')), 'ab');
+  });
+
+  test('ONLY:claude and ONLY:copilot blocks are stripped for opencode', () => {
+    const input =
+      '<!-- ONLY:claude -->C<!-- /ONLY:claude -->|<!-- ONLY:copilot -->P<!-- /ONLY:copilot -->';
+    assert.equal(processTemplate(input, buildContext('opencode')), '|');
+  });
+});
+
+// --- spec shape parity across runtimes ---
+
+describe('RUNTIMES spec parity', () => {
+  for (const spec of ['configHome', 'layout', 'TOOL_MAP']) {
+    test(`every runtime carries a ${spec} spec`, () => {
+      const missing = realRuntimes()
+        .filter(
+          ([, entry]) =>
+            !Object.prototype.hasOwnProperty.call(entry, spec) ||
+            (spec !== 'TOOL_MAP' && !entry[spec]),
+        )
+        .map(([name]) => name);
+      assert.deepEqual(missing, [], `runtimes missing ${spec}: ${missing}`);
+    });
+  }
+
+  test('every runtime carries RUNTIME_LABEL and PROJECT_DIR_ENV', () => {
+    for (const [name, entry] of realRuntimes()) {
+      assert.equal(typeof entry.RUNTIME_LABEL, 'string', `${name}.RUNTIME_LABEL`);
+      assert.equal(
+        typeof entry.PROJECT_DIR_ENV,
+        'string',
+        `${name}.PROJECT_DIR_ENV`,
+      );
+    }
+  });
+
+  test('RUNTIME_LABEL reproduces getRuntimeLabel output', () => {
+    assert.equal(RUNTIMES.claude.RUNTIME_LABEL, 'Claude Code');
+    assert.equal(RUNTIMES.copilot.RUNTIME_LABEL, 'Copilot CLI');
+    assert.equal(RUNTIMES.opencode.RUNTIME_LABEL, 'OpenCode');
+  });
+
+  test('CONFIG_DIR equals configHome.localDirName on every runtime', () => {
+    const drifted = realRuntimes()
+      .filter(([, entry]) => entry.CONFIG_DIR !== entry.configHome.localDirName)
+      .map(
+        ([name, entry]) =>
+          `${name}: ${entry.CONFIG_DIR} !== ${entry.configHome.localDirName}`,
+      );
+    assert.deepEqual(drifted, [], `CONFIG_DIR drifted: ${drifted.join(', ')}`);
+  });
+
+  test('processTemplate resolves {{CONFIG_DIR}} to each runtime local dir', () => {
+    assert.equal(
+      processTemplate('{{CONFIG_DIR}}/skills/', buildContext('opencode')),
+      '.opencode/skills/',
+    );
+    assert.equal(
+      processTemplate('{{CONFIG_DIR}}/skills/', buildContext('claude')),
+      '.claude/skills/',
+    );
+    assert.equal(
+      processTemplate('{{CONFIG_DIR}}/skills/', buildContext('copilot')),
+      '.github/skills/',
+    );
+  });
+});
+
+// --- configHome spec ---
+
+describe('RUNTIMES configHome', () => {
+  const cases = [
+    {
+      runtime: 'claude',
+      envVar: 'CLAUDE_CONFIG_DIR',
+      xdg: null,
+      globalDirName: '.claude',
+      localDirName: '.claude',
+      configDirLiteral: { global: "'.claude'", local: "'.claude'" },
+    },
+    {
+      runtime: 'copilot',
+      envVar: 'COPILOT_CONFIG_DIR',
+      xdg: null,
+      globalDirName: '.copilot',
+      localDirName: '.github',
+      configDirLiteral: { global: "'.copilot'", local: "'.github'" },
+    },
+    {
+      runtime: 'opencode',
+      envVar: 'OPENCODE_CONFIG_DIR',
+      xdg: {
+        varName: 'XDG_CONFIG_HOME',
+        fallback: '~/.config',
+        suffix: 'opencode',
+      },
+      globalDirName: null,
+      localDirName: '.opencode',
+      configDirLiteral: { global: "'.opencode'", local: "'.opencode'" },
+    },
+  ];
+
+  for (const c of cases) {
+    test(`${c.runtime} configHome reproduces today's resolver values`, () => {
+      const { runtime, ...expected } = c;
+      assert.deepEqual(RUNTIMES[runtime].configHome, expected);
+    });
+  }
+});
+
+// --- layout spec ---
+
+describe('RUNTIMES layout', () => {
+  test('claude layout describes the commands and agents it writes today', () => {
+    const { commands, agents } = RUNTIMES.claude.layout;
+    assert.equal(commands.dir, 'commands/gsd');
+    assert.equal(commands.pattern, '<name>.md');
+    assert.equal(commands.converter, 'identity');
+    assert.equal(agents.dir, 'agents');
+    assert.equal(agents.pattern, 'gsd-<name>.md');
+    assert.equal(agents.converter, 'identity');
+  });
+
+  test('claude layout lists the seven shipped hook files', () => {
+    assert.deepEqual(RUNTIMES.claude.layout.hooks.files, [
+      'bash-safety-hook.cjs',
+      'gsd-check-update.js',
+      'gsd-context-monitor.js',
+      'gsd-guardrail.js',
+      'gsd-hook-stdin.cjs',
+      'gsd-sandbox-detect.js',
+      'gsd-statusline.js',
+    ]);
+    assert.equal(RUNTIMES.claude.layout.hooks.dir, 'hooks');
+    assert.equal(RUNTIMES.claude.layout.hooks.rewriteConfigDirLiteral, true);
+  });
+
+  test('claude layout enables the CommonJS marker, settings and six post-pass dirs', () => {
+    const layout = RUNTIMES.claude.layout;
+    assert.equal(layout.writeCommonJsMarker, true);
+    assert.equal(layout.settings, true);
+    assert.deepEqual(layout.templatePassDirs, [
+      'gsd-ng/workflows',
+      'gsd-ng/references',
+      'gsd-ng/bin/lib',
+      'gsd-ng/templates',
+      'commands/gsd',
+      'agents',
+    ]);
+    assert.equal(layout.rulesFile, null);
+  });
+
+  test('copilot layout describes skills, agent suffix and the hook descriptor', () => {
+    const layout = RUNTIMES.copilot.layout;
+    assert.equal(layout.commands.dir, 'skills');
+    assert.equal(layout.commands.pattern, 'gsd-<name>/SKILL.md');
+    assert.equal(layout.commands.converter, 'copilotCommand');
+    assert.deepEqual(layout.commands.skip, ['set-profile.md']);
+    assert.equal(layout.agents.dir, 'agents');
+    assert.equal(layout.agents.pattern, 'gsd-<name>.agent.md');
+    assert.equal(layout.agents.converter, 'copilotAgent');
+    assert.deepEqual(layout.hooks.files, ['gsd-hooks.json']);
+    assert.equal(layout.hooks.localOnly, true);
+  });
+
+  test('copilot layout disables the CommonJS marker and settings but has a post-pass', () => {
+    const layout = RUNTIMES.copilot.layout;
+    assert.equal(layout.writeCommonJsMarker, false);
+    assert.equal(layout.settings, false);
+    assert.deepEqual(layout.templatePassDirs, [
+      'gsd-ng/workflows',
+      'gsd-ng/references',
+      'gsd-ng/bin/lib',
+      'gsd-ng/templates',
+    ]);
+    assert.deepEqual(layout.rulesFile, {
+      base: 'targetDir',
+      name: 'copilot-instructions.md',
+      template: 'project-rules-block.md',
+    });
+  });
+
+  test('opencode layout describes command/, agent/ and the plugin file rename', () => {
+    const layout = RUNTIMES.opencode.layout;
+    assert.equal(layout.commands.dir, 'command');
+    assert.equal(layout.commands.pattern, 'gsd-<name>.md');
+    assert.equal(layout.commands.converter, 'opencodeCommand');
+    assert.equal(layout.agents.dir, 'agent');
+    assert.equal(layout.agents.pattern, 'gsd-<name>.md');
+    assert.equal(layout.agents.converter, 'opencodeAgent');
+    assert.equal(layout.plugin.dir, 'plugin');
+    assert.deepEqual(layout.plugin.files, [
+      { from: 'hooks/gsd-opencode-plugin.js', to: 'gsd-core.js' },
+    ]);
+  });
+
+  test('opencode layout copies three hook payload files into the engine tree', () => {
+    assert.deepEqual(RUNTIMES.opencode.layout.hooksPayload, {
+      dir: 'gsd-ng/hooks',
+      from: 'hooks',
+      files: [
+        'bash-safety-hook.cjs',
+        'gsd-hook-stdin.cjs',
+        'gsd-check-update.js',
+      ],
+    });
+  });
+
+  test('opencode layout disables the CommonJS marker and bases its rules file on cwd, for local installs only', () => {
+    const layout = RUNTIMES.opencode.layout;
+    assert.equal(layout.writeCommonJsMarker, false);
+    assert.equal(layout.settings, false);
+    assert.deepEqual(layout.rulesFile, {
+      base: 'cwd',
+      name: 'AGENTS.md',
+      template: 'project-rules-block.md',
+      localOnly: true,
+    });
+    assert.deepEqual(layout.templatePassDirs, [
+      'gsd-ng/workflows',
+      'gsd-ng/references',
+      'gsd-ng/bin/lib',
+      'gsd-ng/templates',
+    ]);
+    assert.deepEqual(layout.configSeed, {
+      file: 'opencode.json',
+      contents: { $schema: 'https://opencode.ai/config.json' },
+    });
+  });
+
+  test('every runtime layout carries the same set of keys', () => {
+    const claudeKeys = Object.keys(RUNTIMES.claude.layout).sort();
+    for (const [name, entry] of realRuntimes()) {
+      assert.deepEqual(
+        Object.keys(entry.layout).sort(),
+        claudeKeys,
+        `${name}.layout key set diverges from claude`,
+      );
+    }
+  });
+});
+
+// --- removal predicate derived from the write pattern ---
+
+describe('patternToRemoval', () => {
+  const cases = [
+    {
+      pattern: 'gsd-<name>.md',
+      expected: { prefix: 'gsd-', suffix: '.md', entryType: 'file' },
+    },
+    {
+      pattern: 'gsd-<name>.agent.md',
+      expected: { prefix: 'gsd-', suffix: '.agent.md', entryType: 'file' },
+    },
+    {
+      pattern: 'gsd-<name>/SKILL.md',
+      expected: { prefix: 'gsd-', suffix: '', entryType: 'dir' },
+    },
+    {
+      pattern: '<name>.md',
+      expected: { prefix: '', suffix: '.md', entryType: 'file' },
+    },
+  ];
+
+  for (const c of cases) {
+    test(`derives removal predicate from ${c.pattern}`, () => {
+      assert.deepEqual(patternToRemoval(c.pattern), c.expected);
+    });
+  }
+
+  test('throws when the pattern has no <name> placeholder', () => {
+    assert.throws(() => patternToRemoval('SKILL.md'), /<name>/);
+  });
+
+  test('every layout write pattern yields a usable removal predicate', () => {
+    for (const [name, entry] of realRuntimes()) {
+      for (const kind of ['commands', 'agents']) {
+        const { prefix, suffix, entryType } = patternToRemoval(
+          entry.layout[kind].pattern,
+        );
+        assert.ok(
+          ['file', 'dir'].includes(entryType),
+          `${name}.${kind} entryType`,
+        );
+        assert.equal(typeof prefix, 'string');
+        assert.equal(typeof suffix, 'string');
+      }
+    }
+  });
+});
+
+// --- TOOL_MAP ---
+
+describe('RUNTIMES TOOL_MAP', () => {
+  test('claude TOOL_MAP is null, meaning the identity map', () => {
+    assert.equal(RUNTIMES.claude.TOOL_MAP, null);
+  });
+
+  test('copilot TOOL_MAP is the installer map verbatim', () => {
+    assert.deepEqual(RUNTIMES.copilot.TOOL_MAP, {
+      Read: 'read',
+      Write: 'edit',
+      Edit: 'edit',
+      Bash: 'execute',
+      Grep: 'search',
+      Glob: 'search',
+      Task: 'agent',
+      WebSearch: 'web',
+      WebFetch: 'web',
+      TodoWrite: 'todo',
+      AskUserQuestion: 'ask_user',
+      SlashCommand: 'skill',
+    });
+  });
+
+  test('opencode TOOL_MAP uses the canonical opencode tool ids', () => {
+    assert.deepEqual(RUNTIMES.opencode.TOOL_MAP, {
+      Read: 'read',
+      Write: 'write',
+      Edit: 'edit',
+      Bash: 'bash',
+      Glob: 'glob',
+      Grep: 'grep',
+      WebFetch: 'webfetch',
+      WebSearch: 'websearch',
+      TodoWrite: 'todowrite',
+      AskUserQuestion: 'question',
+      Task: 'task',
+      Agent: 'task',
+    });
+  });
+
+  test('opencode TOOL_MAP omits names with no opencode equivalent', () => {
+    assert.equal(RUNTIMES.opencode.TOOL_MAP.SlashCommand, undefined);
   });
 });
 

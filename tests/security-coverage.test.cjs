@@ -563,3 +563,69 @@ describe('Phase 50 dataset coverage (SEC50-COVERAGE)', () => {
 
 // Export the loader for plans 02-04 to import (kept here as the canonical helper).
 module.exports = { loadFixtures, FIXTURE_DIR, describeFixture };
+
+// ─── logSecurityEvent runtime-aware log dir ───────────────────────────────────
+
+describe('logSecurityEvent resolves its log dir from the installed runtime', () => {
+  function withMarker(value, fn) {
+    const markerDir = fs.mkdtempSync(
+      path.join(resolveTmpDir(), 'gsd-sec-marker-'),
+    );
+    const cwd = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-sec-cwd-'));
+    if (value !== null) {
+      fs.writeFileSync(path.join(markerDir, '.runtime'), value + '\n', 'utf-8');
+    }
+    process.env.GSD_TEST_RUNTIME_MARKER_DIR = markerDir;
+    try {
+      fn(cwd);
+    } finally {
+      delete process.env.GSD_TEST_RUNTIME_MARKER_DIR;
+      cleanup(markerDir);
+      cleanup(cwd);
+    }
+  }
+
+  function logAndRead(cwd, relDir) {
+    logSecurityEvent(cwd, { source: 'test', tier: 'high' });
+    const logFile = path.join(cwd, relDir, 'logs', 'security-events.log');
+    return fs.existsSync(logFile);
+  }
+
+  test('RUNTIME-LOG-01: an opencode marker puts the log under .opencode/logs', () => {
+    withMarker('opencode', (cwd) => {
+      assert.ok(logAndRead(cwd, '.opencode'), 'expected .opencode/logs');
+      assert.ok(
+        !fs.existsSync(path.join(cwd, '.claude')),
+        'nothing should be written under .claude',
+      );
+    });
+  });
+
+  test('RUNTIME-LOG-02: a copilot marker puts the log under .github/logs', () => {
+    withMarker('copilot', (cwd) => {
+      assert.ok(logAndRead(cwd, '.github'), 'expected .github/logs');
+    });
+  });
+
+  test('RUNTIME-LOG-03: no marker puts the log under .claude/logs', () => {
+    withMarker(null, (cwd) => {
+      assert.ok(logAndRead(cwd, '.claude'), 'expected .claude/logs');
+    });
+  });
+
+  test('RUNTIME-LOG-04: GSD_SECURITY_LOG_DIR still wins over the marker', () => {
+    withMarker('opencode', (cwd) => {
+      const override = path.join(cwd, 'override');
+      process.env.GSD_SECURITY_LOG_DIR = override;
+      try {
+        logSecurityEvent(cwd, { source: 'test', tier: 'high' });
+        assert.ok(
+          fs.existsSync(path.join(override, 'security-events.log')),
+          'expected the override dir to be used',
+        );
+      } finally {
+        delete process.env.GSD_SECURITY_LOG_DIR;
+      }
+    });
+  });
+});

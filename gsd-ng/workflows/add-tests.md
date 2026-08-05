@@ -117,7 +117,7 @@ Read each file to verify classification. Don't classify based on filename alone.
 Present the classification to the user for confirmation before proceeding:
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Test Classification",
   question: |
     ## Files classified for testing
@@ -165,7 +165,7 @@ Identify:
 
 If test structure is ambiguous, ask the user:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Test Structure",
   question: "I found multiple test locations. Where should I create tests?",
   options: [list discovered locations]
@@ -189,7 +189,7 @@ For each approved file, create a detailed test plan.
 Present the complete test plan:
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Test Plan",
   question: |
     ## Test Generation Plan

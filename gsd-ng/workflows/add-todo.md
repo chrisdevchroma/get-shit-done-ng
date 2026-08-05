@@ -78,9 +78,9 @@ If potential duplicate found:
 1. Read the existing todo
 2. Compare scope
 
-If overlapping, use AskUserQuestion:
+If overlapping, use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Duplicate?",
   question: "Similar todo exists: [title]. What would you like to do?",
   multiSelect: false,
@@ -180,7 +180,7 @@ Todo saved: .planning/todos/pending/$NEW_TODO_FILE
   Files: [count] referenced
 ```
 
-Then use AskUserQuestion:
+Then use {{USER_QUESTION_TOOL}}:
 - header: "Todo saved"
 - question: "[title] captured. What would you like to do next?"
 - options:
