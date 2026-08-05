@@ -14,6 +14,7 @@ const { resolveTmpDir, cleanup } = require('./helpers.cjs');
 
 const { parseDuration, isRecurringDue, cmdTodoComplete, cmdRecurringDue, syncSingleRef } = require('../gsd-ng/bin/lib/commands.cjs');
 const { setJsonMode } = require('../gsd-ng/bin/lib/core.cjs');
+const { cmdFrontmatterValidate } = require('../gsd-ng/bin/lib/frontmatter.cjs');
 
 function withJsonMode(fn) {
   setJsonMode(true);
@@ -490,5 +491,52 @@ describe('cmdTodoComplete - inline issue sync', () => {
     } finally {
       delete process.env.GSD_TEST_MODE;
     }
+  });
+});
+
+// ─── recurring todo frontmatter against the todo schema ────────────────────────
+
+describe('recurring todo frontmatter validates', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-recurring-schema-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'todos', 'pending'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'todos', 'completed'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  it('a recurring todo with an interval and last_completed is valid', () => {
+    const filename = 'test-recurring-schema.md';
+    const todoPath = path.join(tmpDir, '.planning', 'todos', 'pending', filename);
+    const todoContent = [
+      '---',
+      'created: 2026-01-01T00:00:00.000Z',
+      'title: Check upstream for cherry-picks',
+      'area: tooling',
+      'recurring: true',
+      'interval: 30d',
+      '---',
+      '',
+      '## Problem',
+      '',
+      'Recurring reminder.',
+      '',
+    ].join('\n');
+    fs.writeFileSync(todoPath, todoContent, 'utf-8');
+
+    // completion is what writes last_completed, so validate the post-completion shape
+    cmdTodoComplete(tmpDir, filename);
+    assert.match(fs.readFileSync(todoPath, 'utf-8'), /^last_completed: /m);
+
+    const result = JSON.parse(
+      captureOutput(() => withJsonMode(() => cmdFrontmatterValidate(tmpDir, todoPath, 'todo')))
+    );
+    assert.strictEqual(result.valid, true, `not valid: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.missing, []);
+    assert.strictEqual(result.schema, 'todo');
   });
 });

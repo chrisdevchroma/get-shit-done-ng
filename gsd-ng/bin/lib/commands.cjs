@@ -811,6 +811,8 @@ function cmdTodoAdd(cwd, opts = {}) {
   if (opts.phase) lines.push(`phase: ${yamlScalar(opts.phase)}`);
   if (files.length) {
     lines.push('files:', ...files.map((f) => `  - ${yamlScalar(f)}`));
+  } else {
+    lines.push('files: []');
   }
   if (related.length) {
     lines.push('related:', ...related.map((r) => `  - ${yamlScalar(r)}`));

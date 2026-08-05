@@ -296,6 +296,11 @@ const FRONTMATTER_SCHEMAS = {
     required: ['phase', 'plan', 'subsystem', 'tags', 'duration', 'completed'],
   },
   verification: { required: ['phase', 'verified', 'status', 'score'] },
+  // Required-presence only, matching the other schemas. Recognised optional
+  // keys, each with a reader in this codebase: files, phase, related,
+  // recurring, interval, last_completed, external_ref, untrusted_title,
+  // completed. Not adopted: status, priority, updated.
+  todo: { required: ['title', 'created', 'area'] },
 };
 
 function cmdFrontmatterGet(cwd, filePath, field, format, defaultValue) {

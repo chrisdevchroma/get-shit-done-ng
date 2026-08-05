@@ -12,7 +12,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
 
 // ─── Dispatcher Error Paths ──────────────────────────────────────────────────
 
@@ -573,4 +573,108 @@ describe('did-you-mean suggestions scoped to current namespace', () => {
       `F-DYM-SCOPE: Must not suggest "phase add" when user types "todo add", got: ${result.error}`,
     );
   });
+});
+
+// ─── Command group invoked with no subcommand ────────────────────────────────
+
+// Read the subcommand registry out of the source text. gsd-tools.cjs runs its
+// dispatcher on import with no require.main guard, so it cannot be required to
+// get at SUBCOMMANDS. Parsing the source keeps this suite covering every group
+// the registry declares, including groups added after this test was written.
+function parseSubcommandRegistry() {
+  const src = fs.readFileSync(TOOLS_PATH, 'utf-8');
+  const start = src.indexOf('const SUBCOMMANDS = {');
+  assert.ok(start !== -1, 'SUBCOMMANDS block not found in gsd-tools.cjs');
+  const end = src.indexOf('\n};', start);
+  assert.ok(end !== -1, 'SUBCOMMANDS block is not closed');
+  const block = src.slice(start, end);
+  const groups = {};
+  let current = null;
+  for (const line of block.split('\n')) {
+    // Group keys sit at two-space indent, their entries at four, so this anchor
+    // separates them. A single-line group such as `template: ['select', 'fill'],`
+    // yields its key and both entries from the same line, which is why the entry
+    // scan below runs on every line including the key line.
+    const key = /^ {2}([a-z][a-z-]*):/.exec(line);
+    if (key) {
+      current = key[1];
+      groups[current] = [];
+    }
+    if (!current) continue;
+    for (const m of line.matchAll(/'([a-z][a-z0-9-]*)'/g)) {
+      if (m[1] !== current) groups[current].push(m[1]);
+    }
+  }
+  return groups;
+}
+
+describe('command group invoked with no subcommand', () => {
+  const REGISTRY = parseSubcommandRegistry();
+  // Bare `state` is an established alias for `state load` and is deliberately
+  // exempt from the requires-a-subcommand guard.
+  const BARE_EXEMPT = new Set(['state']);
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('the parsed registry names at least 14 command groups', () => {
+    const groups = Object.keys(REGISTRY);
+    assert.ok(
+      groups.length >= 14,
+      `registry parser should find at least 14 groups, found ${groups.length}: ${groups.join(', ')}`,
+    );
+    for (const [group, subs] of Object.entries(REGISTRY)) {
+      assert.ok(subs.length > 0, `group '${group}' parsed with no subcommands`);
+    }
+  });
+
+  test('every exempt group exists in the parsed registry', () => {
+    for (const group of BARE_EXEMPT) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(REGISTRY, group),
+        `'${group}' is exempt from the bare-invocation guard but is no longer a command group`,
+      );
+    }
+  });
+
+  test('state invoked with no subcommand still means state load', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n## Current Position\n\nPhase: 1 of 1 (Test)\n',
+    );
+    const bare = runGsdTools(['state'], tmpDir);
+    const load = runGsdTools(['state', 'load'], tmpDir);
+    assert.equal(bare.success, true, `bare state should exit 0, got: ${bare.error || bare.output}`);
+    assert.equal(load.success, true, `state load should exit 0, got: ${load.error || load.output}`);
+    assert.deepStrictEqual(
+      JSON.parse(bare.output),
+      JSON.parse(load.output),
+      'bare state should return the same payload as state load',
+    );
+  });
+
+  for (const [group, subs] of Object.entries(REGISTRY)) {
+    if (BARE_EXEMPT.has(group)) continue;
+    test(`${group} invoked with no subcommand prints usage instead of throwing`, () => {
+      const r = runGsdTools([group], tmpDir);
+      const combined = `${r.output || ''}\n${r.stderr || r.error || ''}`;
+      assert.equal(r.success, false, `${group} should exit non-zero: ${combined}`);
+      assert.doesNotMatch(
+        combined,
+        /Cannot read properties of undefined/,
+        `${group} threw instead of printing usage: ${combined}`,
+      );
+      assert.ok(
+        subs.some((s) => combined.includes(s)),
+        `${group} usage should name at least one of its subcommands, got: ${combined}`,
+      );
+    });
+  }
 });

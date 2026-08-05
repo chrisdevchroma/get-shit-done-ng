@@ -143,7 +143,16 @@ Report final status.
 | W012 | warning | `{{PROJECT_RULES_FILE}}` references non-existent memory files | Yes |
 | W013 | warning | MEMORY.md out of sync with {{MEMORY_DIR}} contents | Yes |
 | W014 | warning | Workspace topology detected but no structural memory seeded | No |
+| W017 | warning | Todo references a phase that does not exist in ROADMAP.md | Yes |
+| W018 | warning | Phase is complete but pending todos still reference it | Yes |
+| W020 | warning | security-events.log records high-confidence injection events | No |
+| W021 | warning | Todo has a `related:` reference that exists in neither pending/ nor completed/ | Yes |
+| W022 | warning | Asymmetric related link — a todo references another that does not reference it back | Yes |
+| W025 | warning | STATE.md missing fields its template declares | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
+
+W015 and W016 are named only in comments inside the issue-tracker link check, which
+accepts `addIssue` and never calls it, so neither code can be raised today.
 
 </error_codes>
 

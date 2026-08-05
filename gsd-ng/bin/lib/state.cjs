@@ -449,6 +449,25 @@ function countCompletedPlansOnDisk(cwd, phaseRef) {
 }
 
 /**
+ * Count the plans a phase holds by counting PLAN files on disk.
+ *
+ * Same null-means-cannot-locate contract as countCompletedPlansOnDisk, and the
+ * same directory resolution, so the two counts cannot disagree about which
+ * directory they read. The stored total in STATE.md is written once at phase
+ * start and nothing updates it when plans are added mid-phase.
+ */
+function countPlansOnDisk(cwd, phaseRef) {
+  if (!phaseRef) return null;
+  try {
+    const info = findPhaseInternal(cwd, phaseRef);
+    if (!info || !info.found) return null;
+    return info.plans.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Render a plan position using the same shape as the value already in STATE.md:
  * ("02-08", 9) -> "02-09", ("08", 9) -> "09", ("8", 9) -> "9".
  * Returns null when the existing value is not a recognized numeric form.
@@ -514,12 +533,34 @@ function cmdStateAdvancePlan(cwd) {
     const completedOnDisk = countCompletedPlansOnDisk(cwd, phaseRef);
     const derivedFromDisk = completedOnDisk !== null;
 
+    // Compare like with like: a disk-derived completed count against a stored
+    // total goes stale the moment a plan is added, and reads as a finished
+    // phase. A falsy count covers both "phase not locatable" and "no plan
+    // files", either of which leaves the stored value as the only number there is.
+    const totalOnDisk = countPlansOnDisk(cwd, phaseRef);
+    if (totalOnDisk) {
+      totalPlans = totalOnDisk;
+    }
+
     // A finished plan writes its SUMMARY before calling this, so the count already
     // includes the caller's own plan.
     const nextPlan = derivedFromDisk ? completedOnDisk + 1 : currentPlan + 1;
     const atEndOfPhase = derivedFromDisk
       ? completedOnDisk >= totalPlans
       : currentPlan >= totalPlans;
+
+    // Persist the corrected total on both output paths: readers such as
+    // state-snapshot take it from the file, not from this command's output.
+    // The compound "Plan: X of Y" form carries the total inside the Plan line
+    // the branches below already rewrite, so a separate field would compete
+    // with it.
+    if (!useCompoundFormat) {
+      content = stateReplaceFieldWithFallback(
+        content,
+        'Total Plans in Phase',
+        String(totalPlans),
+      );
+    }
 
     if (atEndOfPhase) {
       content = stateReplaceFieldWithFallback(

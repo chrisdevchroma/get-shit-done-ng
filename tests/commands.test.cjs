@@ -1324,6 +1324,40 @@ describe('todo add command', () => {
       'utf-8',
     );
     assert.match(content, /^files:\n {2}- a\.js\n {2}- b\.js$/m, 'YAML list');
+    assert.ok(
+      !content.includes('files: []'),
+      'the list form must not also emit the empty list',
+    );
+  });
+
+  test('omitting --files writes an explicit empty list', () => {
+    const result = runGsdTools('todo add --title "Touches nothing"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      pendingPath(tmpDir, `${today()}-touches-nothing.md`),
+      'utf-8',
+    );
+    assert.match(content, /^files: \[\]$/m, 'explicit empty list');
+    assert.deepStrictEqual(extractFrontmatter(content).files, []);
+  });
+
+  test('the todo it writes validates against the todo schema', () => {
+    const added = runGsdTools(
+      'todo add --title "Schema conformant" --area tooling --json',
+      tmpDir,
+    );
+    assert.ok(added.success, `Add failed: ${added.error}`);
+    const { path: relPath } = JSON.parse(added.output);
+
+    const validated = runGsdTools(
+      ['frontmatter', 'validate', relPath, '--schema', 'todo', '--json'],
+      tmpDir,
+    );
+    assert.ok(validated.success, `Validate failed: ${validated.error}`);
+    const parsed = JSON.parse(validated.output);
+    assert.strictEqual(parsed.valid, true, `not valid: ${validated.output}`);
+    assert.deepStrictEqual(parsed.missing, []);
   });
 
   test('--related writes only the new file own related list', () => {
