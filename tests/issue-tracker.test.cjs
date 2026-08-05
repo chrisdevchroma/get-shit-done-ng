@@ -395,6 +395,32 @@ describe('cmdIssueImport', () => {
     }
   });
 
+  test('the imported todo validates against the todo schema', () => {
+    process.env.GSD_TEST_MODE = '1';
+    try {
+      cmdIssueImport(tmpDir, 'github', 42, null, true);
+      const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+      const files = fs.readdirSync(pendingDir);
+      assert.strictEqual(files.length, 1, 'Expected 1 todo file created');
+      const todoPath = path.join(pendingDir, files[0]);
+
+      const result = runGsdTools(
+        ['frontmatter', 'validate', todoPath, '--schema', 'todo', '--json'],
+        tmpDir,
+      );
+      assert.ok(result.success, `Validate failed: ${result.error}`);
+      const parsed = JSON.parse(result.output);
+      assert.strictEqual(parsed.valid, true, `not valid: ${result.output}`);
+      assert.deepStrictEqual(parsed.missing, []);
+
+      const content = fs.readFileSync(todoPath, 'utf-8');
+      assert.match(content, /^untrusted_title: true$/m, 'security marker survives');
+      assert.match(content, /^external_ref: /m, 'tracker link survives');
+    } finally {
+      delete process.env.GSD_TEST_MODE;
+    }
+  });
+
   test('returns result object with imported: true, todo_file, title, external_ref', () => {
     process.env.GSD_TEST_MODE = '1';
     try {

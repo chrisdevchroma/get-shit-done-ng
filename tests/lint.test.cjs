@@ -492,3 +492,55 @@ describe('lint: docs invoking a missed-target command surface the field', () => 
     );
   });
 });
+
+// ── Rule 10: create-pr.md resolves the CLI from the same repo as the platform ─
+//
+// A bare `detect-platform` call runs against the workspace root. In a submodule
+// workspace that is a different repository from the one the PR is pushed to, so
+// the CLI name, its installed flag and its install URL must come from $INIT —
+// which carries the submodule-resolved values. A bare call may remain as the
+// empty-value fallback, but it may not be the first assignment.
+
+describe('lint: create-pr.md resolves the CLI from the same repo as the platform', () => {
+  const FIELDS = [
+    ['CLI', 'cli'],
+    ['CLI_INSTALLED', 'cli_installed'],
+    ['CLI_INSTALL_URL', 'cli_install_url'],
+  ];
+
+  const source = () =>
+    fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'workflows', 'create-pr.md'),
+      'utf-8'
+    );
+
+  test('the first CLI assignment reads from $INIT, not from detect-platform', () => {
+    const lines = source().split('\n');
+    // `^CLI=` does not match `CLI_INSTALLED=`, so this is the CLI lookup alone.
+    // The fallback assignments live inside the `if` and are indented, so the
+    // first column-0 assignment is the one that decides which repo answers.
+    const first = lines.find(l => /^CLI=/.test(l));
+    assert.ok(first, 'CLI is never assigned at column 0 in create-pr.md');
+    assert.match(
+      first,
+      /init-get "\$INIT" cli\b/,
+      'first CLI assignment must read $INIT (submodule-resolved), got: ' + first
+    );
+  });
+
+  test('each of the three CLI values has an $INIT read', () => {
+    const lines = source().split('\n');
+    for (const [v, field] of FIELDS) {
+      const read = lines.find(l =>
+        new RegExp('^\\s*' + v + '=.*init-get "\\$INIT" ' + field + '\\b').test(l)
+      );
+      assert.ok(
+        read,
+        v +
+          ' is never assigned from `init-get "$INIT" ' +
+          field +
+          '` — a bare detect-platform call resolves the workspace root, not the submodule'
+      );
+    }
+  });
+});

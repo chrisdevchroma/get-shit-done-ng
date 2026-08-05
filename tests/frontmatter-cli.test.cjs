@@ -253,12 +253,45 @@ body`;
     assert.strictEqual(parsed.schema, 'verification');
   });
 
+  test('validates against todo schema', () => {
+    const content = `---
+created: "2026-08-05T14:25:41.134Z"
+title: A conformant todo
+area: tooling
+files: [gsd-ng/gsd-ng/bin/lib/state.cjs]
+phase: "68"
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'todo', '--json'], resolveTmpDir());
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'Should be valid for todo schema');
+    assert.deepStrictEqual(parsed.missing, [], 'No fields should be missing');
+    assert.strictEqual(parsed.schema, 'todo');
+  });
+
+  test('reports a todo missing area as invalid, naming only area', () => {
+    const content = `---
+created: 2026-03-25
+title: A todo predating the convention
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'todo', '--json'], resolveTmpDir());
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false, 'Should be invalid');
+    assert.deepStrictEqual(parsed.missing, ['area'], 'area should be the only missing field');
+  });
+
   test('returns error for unknown schema', () => {
     const file = writeTempFile('---\nphase: 01\n---\n');
     const result = runGsdTools(`frontmatter validate ${file} --schema unknown`);
     // cmdFrontmatterValidate calls error() which exits with code 1
     assert.ok(!result.success, 'Command should fail with non-zero exit code');
     assert.ok(result.error.includes('Unknown schema'), 'Error should mention unknown schema');
+    assert.match(result.error, /Available:[^\n]*\btodo\b/, 'Available list should include todo');
   });
 
   test('returns error for missing file', () => {

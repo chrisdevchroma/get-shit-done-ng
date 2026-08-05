@@ -135,9 +135,17 @@ PLATFORM=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" platfo
 if [ -z "$PLATFORM" ]; then
   PLATFORM=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field platform)
 fi
-CLI=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli)
-CLI_INSTALLED=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli_installed)
-CLI_INSTALL_URL=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli_install_url)
+# CLI: read from $INIT (submodule-resolved, per-submodule override applies),
+# fall back to detect-platform when init carries no CLI (non-submodule workspace)
+CLI=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" cli 2>/dev/null)
+if [ -z "$CLI" ]; then
+  CLI=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli)
+  CLI_INSTALLED=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli_installed)
+  CLI_INSTALL_URL=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform --field cli_install_url)
+else
+  CLI_INSTALLED=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" cli_installed 2>/dev/null)
+  CLI_INSTALL_URL=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" cli_install_url 2>/dev/null)
+fi
 ```
 
 Use `$PUSH_REMOTE`, `$PUSH_TARGET`, and `$GIT_CWD` for all git and platform operations below instead of `$REMOTE` and `$TARGET_BRANCH`.
@@ -168,7 +176,7 @@ fi
 </step>
 
 <step name="detect_platform">
-Platform, CLI, and CLI availability are already extracted from the detect-platform calls above (`$PLATFORM`, `$CLI`, `$CLI_INSTALLED`, `$CLI_INSTALL_URL`). No additional call is needed.
+Platform, CLI, and CLI availability are already resolved above (`$PLATFORM`, `$CLI`, `$CLI_INSTALLED`, `$CLI_INSTALL_URL`). No additional call is needed.
 
 **If `$PLATFORM` is empty:**
 

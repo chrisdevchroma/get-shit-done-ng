@@ -4565,10 +4565,17 @@ describe('cmdStateAdvancePlan derives position from disk', () => {
 
   // Mirrors a real multi-plan phase: a phase directory holding one PLAN.md per
   // plan, and a STATE.md still pointing at the first plan.
-  function seedPhase(currentPlan = '64-01') {
+  //
+  // opts.planIds sets which plan files are written; opts.storedTotal sets the
+  // number STATE.md carries. They default to agreeing, which is what a phase
+  // looks like before gap-closure plans are added to it.
+  function seedPhase(currentPlan = '64-01', opts = {}) {
+    const planIds = opts.planIds || PLAN_IDS;
+    const storedTotal =
+      opts.storedTotal === undefined ? planIds.length : opts.storedTotal;
     phaseDir = path.join(tmpDir, '.planning', 'phases', '64-parallel-waves');
     fs.mkdirSync(phaseDir, { recursive: true });
-    for (const id of PLAN_IDS) {
+    for (const id of planIds) {
       fs.writeFileSync(
         path.join(phaseDir, `${id}-PLAN.md`),
         `# Plan ${id}\n`,
@@ -4584,13 +4591,18 @@ describe('cmdStateAdvancePlan derives position from disk', () => {
         '**Current Phase:** 64',
         '**Current Phase Name:** Parallel Waves',
         `**Current Plan:** ${currentPlan}`,
-        '**Total Plans in Phase:** 5',
+        `**Total Plans in Phase:** ${storedTotal}`,
         '**Status:** Executing',
         '**Last Activity:** 2024-01-10',
       ].join('\n') + '\n',
       'utf-8',
     );
   }
+
+  const GREW_BEYOND_STORED_TOTAL = {
+    planIds: ['64-01', '64-02', '64-03', '64-04', '64-05', '64-06', '64-07'],
+    storedTotal: 5,
+  };
 
   function completePlans(ids) {
     for (const id of ids) {
@@ -4804,6 +4816,83 @@ describe('cmdStateAdvancePlan derives position from disk', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.derived_from_disk, true);
     assert.strictEqual(currentPlanInState(), '3');
+  });
+
+  test('keeps advancing when the phase gained plans past its stored total', () => {
+    // Gap-closure plans added mid-phase: seven plan files against a stored
+    // total of five, five of them done. The phase is not finished.
+    seedPhase('64-05', GREW_BEYOND_STORED_TOTAL);
+    completePlans(['64-01', '64-02', '64-03', '64-04', '64-05']);
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.current_plan, 6);
+    assert.strictEqual(
+      output.total_plans,
+      7,
+      'the total must be the plan files on disk, not the number STATE.md was seeded with',
+    );
+    assert.strictEqual(output.completed_plans, 5);
+    assert.strictEqual(output.derived_from_disk, true);
+    assert.strictEqual(
+      output.reason,
+      undefined,
+      'a forward advance carries no reason',
+    );
+    assert.ok(
+      fs.readFileSync(statePath, 'utf-8').includes('**Current Plan:** 64-06'),
+      'STATE.md should record 64-06',
+    );
+  });
+
+  test('writes the corrected total back so snapshot reports it too', () => {
+    seedPhase('64-05', GREW_BEYOND_STORED_TOTAL);
+    completePlans(['64-01', '64-02', '64-03', '64-04', '64-05']);
+
+    runGsdTools('state advance-plan --json', tmpDir);
+
+    assert.ok(
+      fs
+        .readFileSync(statePath, 'utf-8')
+        .includes('**Total Plans in Phase:** 7'),
+      'the stored total should be repaired in place',
+    );
+
+    const snapshot = runGsdTools('state-snapshot --json', tmpDir);
+    assert.ok(snapshot.success, `Command failed: ${snapshot.error}`);
+    assert.strictEqual(JSON.parse(snapshot.output).total_plans_in_phase, 7);
+  });
+
+  test('uses the stored total when no phase directory exists on disk', () => {
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 88',
+        '**Current Plan:** 3',
+        '**Total Plans in Phase:** 6',
+        '**Status:** Executing',
+        '**Last Activity:** 2024-01-10',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
+
+    const result = runGsdTools('state advance-plan --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.derived_from_disk, false);
+    assert.strictEqual(
+      output.total_plans,
+      6,
+      'a project with no phase directory still advances off the stored total',
+    );
+    assert.strictEqual(output.current_plan, 4);
   });
 });
 

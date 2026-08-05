@@ -933,6 +933,45 @@ function buildRepairedState(cwd) {
 }
 
 /**
+ * The field labels the state template declares, read from its fenced File
+ * Template block. Scoped to the fence because the prose below it documents
+ * itself in the same bold form, and those labels are not STATE.md fields.
+ *
+ * The path is a parameter so the no-fence and missing-file outcomes are
+ * reachable from a test without an environment override.
+ */
+function readTemplateStateFields(templatePath) {
+  let content;
+  try {
+    content = fs.readFileSync(templatePath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const fence = content.match(/```markdown\n([\s\S]*?)\n```/);
+  if (!fence) return [];
+  const seen = new Set();
+  for (const m of fence[1].matchAll(/^\*\*([^*]+?):\*\*/gm)) seen.add(m[1]);
+  return [...seen];
+}
+
+/**
+ * Whether a STATE.md body carries a field, in any of the three spellings
+ * stateExtractField accepts: the colon inside the bold markers, outside them,
+ * or the plain `Label: value` form. Frontmatter is stripped first, so a
+ * frontmatter key sharing a field's name does not read as the field.
+ *
+ * Inlined rather than imported to keep this check off state.cjs's field readers.
+ */
+function stateBodyHasField(stateContent, fieldName) {
+  const body = stateContent.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '');
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^\\*\\*${escaped}:\\*\\*|^\\*\\*${escaped}\\*\\*:|^${escaped}:`,
+    'im',
+  ).test(body);
+}
+
+/**
  * Health check, and the repairs it decides on.
  *
  * In repair mode the whole run is one section — see cmdValidateHealth — because
@@ -1049,6 +1088,23 @@ function runHealth(cwd, options) {
     repairs.push('regenerateState');
   } else {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+    // Fields the template declares that this STATE.md never gained. Nothing
+    // migrates the file when the template grows one, so the commands that write
+    // to the new field go quiet until someone adds it by hand.
+    const templateFields = readTemplateStateFields(
+      path.join(__dirname, '..', '..', 'templates', 'state.md'),
+    );
+    const missingTemplateFields = templateFields.filter(
+      (f) => !stateBodyHasField(stateContent, f),
+    );
+    if (missingTemplateFields.length > 0) {
+      addIssue(
+        'warning',
+        'W025',
+        `STATE.md is missing ${missingTemplateFields.length} field(s) its template declares: ${missingTemplateFields.join(', ')}`,
+        'Add the missing fields to .planning/STATE.md by hand — this is reported, not repaired, because several belong in a specific section rather than at the end of the file',
+      );
+    }
     // Extract phase references from STATE.md
     const phaseRefs = [
       ...stateContent.matchAll(/[Pp]hase\s+(\d+(?:\.\d+)*)/g),
@@ -1950,4 +2006,5 @@ module.exports = {
   cmdValidateConsistency,
   cmdValidateHealth,
   checkVerifyIssueTrackerLinks,
+  readTemplateStateFields,
 };

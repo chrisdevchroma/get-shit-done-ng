@@ -1054,6 +1054,20 @@ async function main() {
     // If not a known command, fall through to switch default (typo detection handles it)
   }
 
+  // A group invoked with no subcommand reaches its own else branch and passes
+  // undefined into the fuzzy matcher, which dereferences it. Answer with the
+  // group's own subcommand list instead. `state` is exempt: a bare invocation
+  // is an established alias for `state load`.
+  if (
+    command !== 'state' &&
+    Object.prototype.hasOwnProperty.call(SUBCOMMANDS, command) &&
+    args[1] === undefined
+  ) {
+    error(
+      `${command} requires a subcommand. Available: ${SUBCOMMANDS[command].join(', ')}`,
+    );
+  }
+
   switch (command) {
     case 'state': {
       const subcommand = args[1];

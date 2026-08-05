@@ -1076,3 +1076,122 @@ describe('cmdFrontmatterArrayAppend', () => {
   });
 });
 
+
+// ─── todo schema ────────────────────────────────────────────────────────────
+
+describe('FRONTMATTER_SCHEMAS.todo', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'fm-todo-schema-'));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeTodo(name, content) {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  function validate(filePath) {
+    const libPath = path.resolve(
+      __dirname, '../gsd-ng/bin/lib/frontmatter.cjs',
+    );
+    const code =
+      'require(' +
+      JSON.stringify(libPath) +
+      ').cmdFrontmatterValidate(' +
+      JSON.stringify(tmpDir) +
+      ', ' +
+      JSON.stringify(filePath) +
+      ', "todo");';
+    return require('child_process').spawnSync(
+      process.execPath,
+      ['-e', code],
+      { encoding: 'utf-8' },
+    );
+  }
+
+  test('is registered with title, created and area required', () => {
+    assert.ok(FRONTMATTER_SCHEMAS.todo, 'todo schema should exist');
+    assert.deepStrictEqual(FRONTMATTER_SCHEMAS.todo.required, [
+      'title',
+      'created',
+      'area',
+    ]);
+  });
+
+  test('a todo carrying the required fields validates', () => {
+    const p = writeTodo(
+      'ok.md',
+      '---\ncreated: "2026-08-05T14:25:41.134Z"\ntitle: A todo\narea: tooling\n---\n\nBody\n',
+    );
+    const r = validate(p);
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(r.stdout, 'valid');
+  });
+
+  test('a todo missing area is invalid and names only area', () => {
+    const p = writeTodo(
+      'no-area.md',
+      '---\ncreated: 2026-03-25\ntitle: A todo\n---\n\nBody\n',
+    );
+    const r = validate(p);
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(r.stdout, 'invalid');
+
+    const missing = FRONTMATTER_SCHEMAS.todo.required.filter(
+      (f) => extractFrontmatter(fs.readFileSync(p, 'utf-8'))[f] === undefined,
+    );
+    assert.deepStrictEqual(missing, ['area']);
+  });
+
+  test('the recognised optional keys do not make a todo invalid', () => {
+    const p = writeTodo(
+      'optional.md',
+      '---\n' +
+        'created: "2026-08-05T14:25:41.134Z"\n' +
+        'title: Everything at once\n' +
+        'area: tooling\n' +
+        'files: [a.js, b.js]\n' +
+        'phase: "68"\n' +
+        'related:\n  - other.md\n' +
+        'recurring: true\n' +
+        'interval: 30d\n' +
+        'last_completed: "2026-07-01T00:00:00.000Z"\n' +
+        'external_ref: "github:o/r#14"\n' +
+        'untrusted_title: true\n' +
+        'completed: "2026-08-01T00:00:00.000Z"\n' +
+        '---\n\nBody\n',
+    );
+    const r = validate(p);
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(r.stdout, 'valid');
+  });
+
+  test('the unknown-schema error lists todo as available', () => {
+    const p = writeTodo('any.md', '---\ntitle: A todo\n---\n');
+    const libPath = path.resolve(
+      __dirname, '../gsd-ng/bin/lib/frontmatter.cjs',
+    );
+    const code =
+      'require(' +
+      JSON.stringify(libPath) +
+      ').cmdFrontmatterValidate(' +
+      JSON.stringify(tmpDir) +
+      ', ' +
+      JSON.stringify(p) +
+      ', "nope");';
+    const r = require('child_process').spawnSync(
+      process.execPath,
+      ['-e', code],
+      { encoding: 'utf-8' },
+    );
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /Unknown schema: nope/);
+    assert.match(r.stderr, /Available:[^\n]*\btodo\b/);
+  });
+});

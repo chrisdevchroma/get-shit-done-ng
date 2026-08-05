@@ -47,6 +47,87 @@ function writeMinimalStateMd(tmpDir, content) {
   fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), defaultContent);
 }
 
+// Every field the state template's fenced block declares, in template order.
+const TEMPLATE_STATE_FIELDS = [
+  'Core value',
+  'Current focus',
+  'Current Phase',
+  'Current Phase Name',
+  'Total Phases',
+  'Current Plan',
+  'Total Plans in Phase',
+  'Status',
+  'Last Activity',
+  'Last Activity Description',
+  'Progress',
+  'Velocity',
+  'By Phase',
+  'Recent Trend',
+  'Last session',
+  'Stopped at',
+  'Resume file',
+];
+
+// A STATE.md body carrying all of them. `omit` drops the named fields so a test
+// can ask for a file that has fallen behind the template.
+function templateConformantStateMd(omit = []) {
+  const lines = [
+    '# Project State',
+    '',
+    '## Project Reference',
+    '',
+    'See: .planning/PROJECT.md (updated 2026-01-01)',
+    '',
+    '**Core value:** The one thing that matters.',
+    '**Current focus:** The current phase.',
+    '',
+    '## Current Position',
+    '',
+    '**Current Phase:** 01',
+    '**Current Phase Name:** a',
+    '**Total Phases:** 1',
+    '**Current Plan:** 01-01',
+    '**Total Plans in Phase:** 1',
+    '**Status:** In progress',
+    '**Last Activity:** 2026-01-01',
+    '**Last Activity Description:** Wrote a plan.',
+    '**Progress:** [██████████] 100%',
+    '',
+    '## Performance Metrics',
+    '',
+    '**Velocity:**',
+    '- Total plans completed: 1',
+    '',
+    '**By Phase:**',
+    '',
+    '| Phase | Plans | Total | Avg/Plan |',
+    '|-------|-------|-------|----------|',
+    '| - | - | - | - |',
+    '',
+    '**Recent Trend:**',
+    '- Trend: Stable',
+    '',
+    '## Session Continuity',
+    '',
+    '**Last session:** 2026-01-01 10:00',
+    '**Stopped at:** Nothing yet.',
+    '**Resume file:** None',
+    '',
+  ];
+  return (
+    lines
+      .filter((l) => !omit.some((f) => l.startsWith(`**${f}:**`)))
+      .join('\n') + '\n'
+  );
+}
+
+function writeTemplateConformantStateMd(tmpDir, omit = [], frontmatter = '') {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'STATE.md'),
+    frontmatter + templateConformantStateMd(omit),
+  );
+}
+
 function writeValidConfigJson(tmpDir) {
   fs.writeFileSync(
     path.join(tmpDir, '.planning', 'config.json'),
@@ -503,7 +584,8 @@ describe('validate health command', () => {
   test("returns 'healthy' when all checks pass", () => {
     writeMinimalProjectMd(tmpDir);
     writeMinimalRoadmap(tmpDir, ['1']);
-    writeMinimalStateMd(tmpDir, '# Session State\n\nPhase 1 in progress.\n');
+    // A project that passes every check carries the fields its template declares.
+    writeTemplateConformantStateMd(tmpDir);
     writeValidConfigJson(tmpDir);
     // Create CLAUDE.md so W010 doesn't fire
     fs.writeFileSync(
@@ -3556,6 +3638,170 @@ describe('validate health — runtime identity comes from the install marker', (
     assert.ok(
       !output.warnings.some((w) => w.code === 'W011'),
       `A claude memory dir belongs to no opencode install: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — STATE.md against the fields its template declares (W025)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('validate health — STATE.md fields the template declares (W025)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalRoadmap(tmpDir, ['1']);
+    writeValidConfigJson(tmpDir);
+    // Present so W010 does not raise the repairable count this suite asserts on.
+    fs.writeFileSync(
+      path.join(tmpDir, 'CLAUDE.md'),
+      '# Project\n\nProject instructions.\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), {
+      recursive: true,
+    });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function runHealth() {
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  function w025(output) {
+    return output.warnings.filter((w) => w.code === 'W025');
+  }
+
+  test('reads the real template and returns only its fenced-block fields', () => {
+    const {
+      readTemplateStateFields,
+    } = require('../gsd-ng/bin/lib/verify.cjs');
+    const fields = readTemplateStateFields(
+      path.join(__dirname, '..', 'gsd-ng', 'templates', 'state.md'),
+    );
+    assert.deepStrictEqual(
+      [...fields].sort(),
+      [...TEMPLATE_STATE_FIELDS].sort(),
+      `unexpected field set: ${JSON.stringify(fields)}`,
+    );
+    for (const prose of [
+      'Problem it solves',
+      'Solution',
+      'Creation',
+      'Reading',
+      'Writing',
+      'Decisions',
+      'Pending Todos',
+      'Blockers/Concerns',
+    ]) {
+      assert.ok(
+        !fields.includes(prose),
+        `"${prose}" is the template's documentation prose, not a STATE.md field`,
+      );
+    }
+  });
+
+  test('returns an empty list for a template with no fenced block', () => {
+    const {
+      readTemplateStateFields,
+    } = require('../gsd-ng/bin/lib/verify.cjs');
+    const templatePath = path.join(tmpDir, 'no-fence.md');
+    fs.writeFileSync(templatePath, '# State Template\n\n**Progress:** none\n');
+    assert.deepStrictEqual(readTemplateStateFields(templatePath), []);
+  });
+
+  test('returns an empty list for a template that does not exist', () => {
+    const {
+      readTemplateStateFields,
+    } = require('../gsd-ng/bin/lib/verify.cjs');
+    assert.deepStrictEqual(
+      readTemplateStateFields(path.join(tmpDir, 'absent.md')),
+      [],
+    );
+  });
+
+  test('picks up a field added to the template, so the list is not hardcoded', () => {
+    const {
+      readTemplateStateFields,
+    } = require('../gsd-ng/bin/lib/verify.cjs');
+    const templatePath = path.join(tmpDir, 'grown.md');
+    fs.writeFileSync(
+      templatePath,
+      '# State Template\n\n```markdown\n# Project State\n\n**Progress:** [░░░░░░░░░░] 0%\n**Freshly Added:** [value]\n```\n',
+    );
+    const fields = readTemplateStateFields(templatePath);
+    assert.ok(
+      fields.includes('Freshly Added'),
+      `the new template field should be read: ${JSON.stringify(fields)}`,
+    );
+  });
+
+  test('reports no W025 for a STATE.md carrying every template field', () => {
+    writeTemplateConformantStateMd(tmpDir);
+    const output = runHealth();
+    assert.deepStrictEqual(
+      w025(output),
+      [],
+      `nothing should be missing: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('names each missing field, and does not offer to repair it', () => {
+    writeTemplateConformantStateMd(tmpDir, ['Progress', 'Status']);
+    const output = runHealth();
+    const warnings = w025(output);
+    assert.strictEqual(
+      warnings.length,
+      1,
+      `expected one W025: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.match(warnings[0].message, /Progress/, warnings[0].message);
+    assert.match(warnings[0].message, /Status/, warnings[0].message);
+    assert.strictEqual(
+      warnings[0].repairable,
+      false,
+      'W025 is reported, not repaired',
+    );
+    assert.strictEqual(
+      output.repairable_count,
+      0,
+      `W025 must not raise the repairable count: ${JSON.stringify(output)}`,
+    );
+  });
+
+  test('a frontmatter key of the same name does not count as the field', () => {
+    writeTemplateConformantStateMd(
+      tmpDir,
+      ['Status'],
+      '---\nstatus: Milestone complete\n---\n\n',
+    );
+    const output = runHealth();
+    const warnings = w025(output);
+    assert.strictEqual(
+      warnings.length,
+      1,
+      `expected one W025: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.match(warnings[0].message, /Status/, warnings[0].message);
+  });
+
+  test('the plain Label: value form counts as present', () => {
+    const body = templateConformantStateMd(['Status']).replace(
+      '## Current Position\n',
+      '## Current Position\n\nStatus: In progress\n',
+    );
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), body);
+    const output = runHealth();
+    assert.deepStrictEqual(
+      w025(output),
+      [],
+      `the plain form is a form gsd-tools reads: ${JSON.stringify(output.warnings)}`,
     );
   });
 });

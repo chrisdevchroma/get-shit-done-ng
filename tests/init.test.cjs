@@ -1451,6 +1451,7 @@ describe('init phase-op validates phase number', () => {
 
 describe('init execute-phase submodule fields', () => {
   const { createSubmoduleWorkspace } = require('./helpers.cjs');
+  const { execSync } = require('child_process');
   const cleanupDir = (dir) => {
     try {
       cleanup(dir);
@@ -1570,6 +1571,94 @@ describe('init execute-phase submodule fields', () => {
         Array.isArray(parsed.ambiguous_paths),
         `ambiguous_paths should be an array, got: ${typeof parsed.ambiguous_paths}`,
       );
+    } finally {
+      cleanupDir(workspaceDir);
+    }
+  });
+
+  test('init execute-phase resolves the CLI from the submodule, not the workspace root', () => {
+    const { workspaceDir } = createSubmoduleWorkspace(
+      [
+        {
+          name: 'mylib',
+          path: 'mylib',
+          remoteUrl: 'https://github.com/user/mylib.git',
+        },
+      ],
+      { roadmap: true, state: true, phaseDir: '01-test' },
+    );
+    try {
+      // Root remote on a host the platform map does not know — the CLI must
+      // still come from the submodule remote.
+      execSync(
+        'git remote set-url origin "ssh://git@git.example.invalid:3022/team/root.git"',
+        { cwd: workspaceDir, stdio: 'pipe' },
+      );
+      const result = runGsdTools(
+        ['init', 'execute-phase', '1', '--json'],
+        workspaceDir,
+      );
+      assert.ok(result.success, `init should succeed: ${result.error}`);
+      const parsed = JSON.parse(result.output);
+
+      assert.strictEqual(
+        parsed.platform,
+        'github',
+        `platform should come from the submodule remote, got: ${parsed.platform}`,
+      );
+      assert.strictEqual(
+        parsed.cli,
+        'gh',
+        `cli should come from the submodule remote, got: ${parsed.cli}`,
+      );
+      // Whether gh is on PATH varies by machine — assert the shape, not the value.
+      assert.strictEqual(
+        typeof parsed.cli_installed,
+        'boolean',
+        `cli_installed should be a boolean, got: ${typeof parsed.cli_installed}`,
+      );
+      assert.ok('cli_install_url' in parsed, 'missing cli_install_url field');
+      assert.strictEqual(
+        parsed.cli_install_url,
+        'https://cli.github.com/',
+        `cli_install_url should match the gh CLI, got: ${parsed.cli_install_url}`,
+      );
+    } finally {
+      cleanupDir(workspaceDir);
+    }
+  });
+
+  test('init milestone-op carries the same submodule CLI fields', () => {
+    const { workspaceDir } = createSubmoduleWorkspace(
+      [
+        {
+          name: 'mylib',
+          path: 'mylib',
+          remoteUrl: 'https://github.com/user/mylib.git',
+        },
+      ],
+      { roadmap: true, state: true, phaseDir: '01-test' },
+    );
+    try {
+      execSync(
+        'git remote set-url origin "ssh://git@git.example.invalid:3022/team/root.git"',
+        { cwd: workspaceDir, stdio: 'pipe' },
+      );
+      const result = runGsdTools(['init', 'milestone-op', '--json'], workspaceDir);
+      assert.ok(result.success, `init should succeed: ${result.error}`);
+      const parsed = JSON.parse(result.output);
+
+      assert.strictEqual(
+        parsed.cli,
+        'gh',
+        `cli should come from the submodule remote, got: ${parsed.cli}`,
+      );
+      assert.strictEqual(
+        typeof parsed.cli_installed,
+        'boolean',
+        `cli_installed should be a boolean, got: ${typeof parsed.cli_installed}`,
+      );
+      assert.ok('cli_install_url' in parsed, 'missing cli_install_url field');
     } finally {
       cleanupDir(workspaceDir);
     }
