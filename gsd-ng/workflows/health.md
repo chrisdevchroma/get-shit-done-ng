@@ -129,6 +129,7 @@ Report final status.
 | E003 | error | ROADMAP.md not found | No |
 | E004 | error | STATE.md not found | Yes |
 | E005 | error | config.json parse error | Yes |
+| E010 | error | CWD is the home directory — the check would read the wrong .planning/ directory | No |
 | W001 | warning | PROJECT.md missing required section | No |
 | W002 | warning | STATE.md references invalid phase | Yes |
 | W003 | warning | config.json not found | Yes |
@@ -150,6 +151,10 @@ Report final status.
 | W022 | warning | Asymmetric related link — a todo references another that does not reference it back | Yes |
 | W025 | warning | STATE.md missing fields its template declares | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
+| I010 | info | The resolved CWD, reported alongside E010 | No |
+
+E010 and I010 come from the home-directory guard, which returns before any other check
+runs — a report carrying them carries nothing else.
 
 W015 and W016 are named only in comments inside the issue-tracker link check, which
 accepts `addIssue` and never calls it, so neither code can be raised today.
