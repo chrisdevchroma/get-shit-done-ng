@@ -73,7 +73,7 @@ git init
 
 **If `needs_codebase_map` is true** (from init — existing code detected but no codebase map):
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Codebase"
 - question: "I detected existing code in this directory. Would you like to map the codebase first?"
 - options:
@@ -97,7 +97,7 @@ YOLO mode is implicit (auto = YOLO). Ask remaining config questions:
 **Round 1 — Core settings (3 questions, no Mode question):**
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     header: "Granularity",
     question: "How finely should scope be sliced into phases?",
@@ -132,7 +132,7 @@ AskUserQuestion([
 **Round 2 — Workflow agents (same as Step 5):**
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     header: "Research",
     question: "Research before planning each phase? (adds tokens/time)",
@@ -223,7 +223,7 @@ Proceed to Step 4 (skip Steps 3 and 5).
 
 **Open the conversation:**
 
-Ask inline (freeform, NOT AskUserQuestion):
+Ask inline (freeform, NOT {{USER_QUESTION_TOOL}}):
 
 "What do you want to build?"
 
@@ -231,7 +231,7 @@ Wait for their response. This gives you the context needed to ask intelligent fo
 
 **Follow the thread:**
 
-Based on what they said, ask follow-up questions that dig into their response. Use AskUserQuestion with options that probe what they mentioned — interpretations, clarifications, concrete examples.
+Based on what they said, ask follow-up questions that dig into their response. Use {{USER_QUESTION_TOOL}} with options that probe what they mentioned — interpretations, clarifications, concrete examples.
 
 Keep following threads. Each answer opens new threads to explore. Ask about:
 - What excited them
@@ -253,7 +253,7 @@ As you go, mentally check the context checklist from `questioning.md`. If gaps r
 
 **Decision gate:**
 
-When you could write a clear PROJECT.md, use AskUserQuestion:
+When you could write a clear PROJECT.md, use {{USER_QUESTION_TOOL}}:
 
 - header: "Ready?"
 - question: "I think I understand what you're after. Ready to create PROJECT.md?"
@@ -358,7 +358,7 @@ node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" commit "docs: initialize project" 
 **Check for global defaults** at `~/.gsd/defaults.json`. If the file exists, offer to use saved defaults:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Use your saved default settings? (from ~/.gsd/defaults.json)",
     header: "Defaults",
@@ -514,7 +514,7 @@ Use models from init: `researcher_model`, `synthesizer_model`, `roadmapper_model
 
 **If auto mode:** Default to "Research first" without asking.
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Research"
 - question: "Research the domain ecosystem before defining requirements?"
 - options:
@@ -770,7 +770,7 @@ Read PROJECT.md and extract:
 - Auto-include all table stakes features (users expect these)
 - Include features explicitly mentioned in provided document
 - Auto-defer differentiators not mentioned in document
-- Skip per-category AskUserQuestion loops
+- Skip per-category {{USER_QUESTION_TOOL}} loops
 - Skip "Any additions?" question
 - Skip requirements approval gate
 - Generate REQUIREMENTS.md and commit directly
@@ -811,7 +811,7 @@ For each capability mentioned:
 
 **Scope each category:**
 
-For each category, use AskUserQuestion:
+For each category, use {{USER_QUESTION_TOOL}}:
 
 - header: "[Category]" (max 12 chars)
 - question: "Which [category] features are in v1?"
@@ -829,7 +829,7 @@ Track responses:
 
 **Identify gaps:**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Additions"
 - question: "Any requirements research missed? (Features specific to your vision)"
 - options:
@@ -984,7 +984,7 @@ Success criteria:
 
 **CRITICAL: Ask for approval before committing (interactive mode only):**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Roadmap"
 - question: "Does this roadmap structure work for you?"
 - options:
@@ -1060,7 +1060,7 @@ Seeding structural memory: project_commit-boundary.md
 — "This repo has multiple code boundaries — commit changes in the right sub-directory"
 ```
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Memory"
 - question: "Seed this structural guardrail memory?"
 - options:

@@ -1,6 +1,6 @@
 <purpose>
 Zero-friction idea capture. One Write call, one confirmation line. No questions, no prompts.
-Runs inline — no Task, no AskUserQuestion. Capture and list use no Bash; promote shells out to
+Runs inline — no Task, no {{USER_QUESTION_TOOL}}. Capture and list use no Bash; promote shells out to
 `gsd-tools todo add` so the promoted todo matches every other todo on disk.
 </purpose>
 

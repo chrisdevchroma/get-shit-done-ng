@@ -21,7 +21,7 @@ Routes to the sync-issues workflow which handles:
 </objective>
 
 <execution_context>
-@${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/workflows/sync-issues.md
+@~/.claude/gsd-ng/workflows/sync-issues.md
 </execution_context>
 
 <context>
@@ -55,7 +55,7 @@ Key constraints:
 </tool_usage>
 
 <process>
-**Follow the sync-issues workflow** from `@${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/workflows/sync-issues.md`.
+**Follow the sync-issues workflow** from `@~/.claude/gsd-ng/workflows/sync-issues.md`.
 
 The workflow handles all logic including:
 1. Platform and CLI detection

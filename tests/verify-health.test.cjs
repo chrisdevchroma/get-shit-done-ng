@@ -15,6 +15,7 @@ const {
   cleanup,
   cleanupSubdir,
   waitForReadyFlag,
+  resolveTmpDir,
 } = require('./helpers.cjs');
 
 // ─── Helpers for setting up minimal valid projects ────────────────────────────
@@ -3462,6 +3463,99 @@ describe('validate health --repair waits for the STATE.md lock', () => {
       backups,
       [],
       `a repair that had nothing to repair should leave no backup: ${backups.join(', ')}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate health — runtime identity comes from the install marker
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('validate health — runtime identity comes from the install marker', () => {
+  let tmpDir;
+  let markerDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalRoadmap(tmpDir, ['1']);
+    writeMinimalStateMd(tmpDir, '# Session State\n\nPhase 1 in progress.\n');
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), {
+      recursive: true,
+    });
+    markerDir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-hm-marker-'));
+    fs.writeFileSync(path.join(markerDir, '.runtime'), 'opencode\n', 'utf-8');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(markerDir);
+  });
+
+  function runHealth(args = 'validate health') {
+    const result = runGsdTools(args, tmpDir, {
+      GSD_TEST_RUNTIME_MARKER_DIR: markerDir,
+    });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test('RUNTIME-RULES-01: W010 names AGENTS.md on an opencode install', () => {
+    const output = runHealth();
+    const w010 = output.warnings.find((w) => w.code === 'W010');
+    assert.ok(w010, `Expected W010: ${JSON.stringify(output.warnings)}`);
+    assert.match(w010.message, /AGENTS\.md/);
+    assert.doesNotMatch(w010.message, /CLAUDE\.md/);
+  });
+
+  test('RUNTIME-RULES-02: AGENTS.md satisfies W010 on an opencode install', () => {
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Project\n\nRules.\n');
+    const output = runHealth();
+    assert.ok(
+      !output.warnings.some((w) => w.code === 'W010'),
+      `Should not have W010: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('RUNTIME-RULES-03: the repair writes AGENTS.md on an opencode install', () => {
+    const output = runHealth('validate health --repair');
+    const action = (output.repairs_performed || []).find(
+      (r) => r.action === 'writeCLAUDEmd',
+    );
+    assert.ok(action, `Expected the rules-file repair: ${JSON.stringify(output)}`);
+    assert.strictEqual(action.path, 'AGENTS.md');
+    assert.ok(fs.existsSync(path.join(tmpDir, 'AGENTS.md')));
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'CLAUDE.md')));
+  });
+
+  test('RUNTIME-RULES-04: the memory dir checked is the opencode one', () => {
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Project\n\nRules.\n');
+    const memDir = path.join(tmpDir, '.opencode', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(memDir, 'orphan_feedback.md'),
+      '---\nname: Test\ndescription: An orphan\ntype: feedback\n---\n\nContent.\n',
+    );
+    const output = runHealth();
+    assert.ok(
+      output.warnings.some((w) => w.code === 'W011'),
+      `Expected W011 from the opencode memory dir: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('RUNTIME-RULES-05: a claude memory dir is not read on an opencode install', () => {
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Project\n\nRules.\n');
+    const memDir = path.join(tmpDir, '.claude', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(memDir, 'orphan_feedback.md'),
+      '---\nname: Test\ndescription: An orphan\ntype: feedback\n---\n\nContent.\n',
+    );
+    const output = runHealth();
+    assert.ok(
+      !output.warnings.some((w) => w.code === 'W011'),
+      `A claude memory dir belongs to no opencode install: ${JSON.stringify(output.warnings)}`,
     );
   });
 });

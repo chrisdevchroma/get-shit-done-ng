@@ -136,7 +136,7 @@ This IS the execution instructions. Follow exactly. If plan references CONTEXT.m
 node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" phases list --type summaries
 # Extract the second-to-last summary from the JSON result
 ```
-If previous SUMMARY has unresolved "Issues Encountered" or "Next Phase Readiness" blockers: AskUserQuestion(header="Previous Issues", options: "Proceed anyway" | "Address first" | "Review previous").
+If previous SUMMARY has unresolved "Issues Encountered" or "Next Phase Readiness" blockers: {{USER_QUESTION_TOOL}}(header="Previous Issues", options: "Proceed anyway" | "Address first" | "Review previous").
 </step>
 
 <step name="execute">
@@ -332,7 +332,7 @@ If verification fails:
 NODE_REPAIR=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" config-get workflow.node_repair --default "true")
 ```
 
-If `NODE_REPAIR` is `true`: invoke `@./.claude/gsd-ng/workflows/node-repair.md` with:
+If `NODE_REPAIR` is `true`: invoke `@~/.claude/gsd-ng/workflows/node-repair.md` with:
 - FAILED_TASK: task number, name, done-criteria
 - ERROR: expected vs actual result
 - PLAN_CONTEXT: adjacent task names + phase goal

@@ -85,7 +85,7 @@ No gaps → skip to Step 6, set `nyquist_compliant: true`.
 
 ## 4. Present Gap Plan
 
-Call AskUserQuestion with gap table and options:
+Call {{USER_QUESTION_TOOL}} with gap table and options:
 1. "Fix all gaps" → Step 5
 2. "Skip — mark manual-only" → add to Manual-Only, Step 6
 3. "Cancel" → exit
@@ -93,8 +93,8 @@ Call AskUserQuestion with gap table and options:
 ## 5. Spawn gsd-nyquist-auditor
 
 ```bash
-WORKSPACE_TYPE=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
-WORKSPACE_JSON=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
+WORKSPACE_TYPE=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
+WORKSPACE_JSON=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
 SUBMODULE_PATHS=$(node -e "try{const w=JSON.parse(process.argv[1]);const p=w.submodule_paths||[];process.stdout.write(p.join(', ')||'none')}catch{process.stdout.write('none')}" "$WORKSPACE_JSON")
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 ```
@@ -112,7 +112,7 @@ Submodule paths: {SUBMODULE_PATHS}
 
 CRITICAL: Always commit to the source location. Your working directory is {PROJECT_ROOT}.
 If workspace type is 'submodule', source code lives in the submodule directories listed above.
-Do NOT modify deployed copies (e.g., .claude/gsd-ng/) — always edit source first.
+Do NOT modify deployed copies (e.g., {{CONFIG_DIR}}/gsd-ng/) — always edit source first.
 </workspace_context>
 
 <gaps>{gap list}</gaps>

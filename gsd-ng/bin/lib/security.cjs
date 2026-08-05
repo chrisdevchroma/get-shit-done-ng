@@ -1133,8 +1133,10 @@ function stripUntrustedWrappers(content) {
  *
  * Log path determination (in priority order):
  *   1. GSD_SECURITY_LOG_DIR env var — override for testing and CI
- *   2. GSD_RUNTIME=copilot → {cwd}/.github/logs/security-events.log
- *   3. Default/GSD_RUNTIME=claude → {cwd}/.claude/logs/security-events.log
+ *   2. The local config dir of the installed runtime — the `.runtime` marker the
+ *      installer writes, or GSD_RUNTIME when a caller sets it explicitly:
+ *      {cwd}/.claude, {cwd}/.github or {cwd}/.opencode, + /logs
+ *   3. Neither → {cwd}/.claude/logs/security-events.log
  *
  * Always fails silently — log failures must never propagate to callers.
  *
@@ -1152,16 +1154,18 @@ function stripUntrustedWrappers(content) {
  */
 function logSecurityEvent(cwd, eventData) {
   try {
-    // Runtime-aware log path: .claude/logs/ for Claude Code, .github/logs/ for Copilot CLI
-    // GSD_SECURITY_LOG_DIR env var overrides for testing
-    // GSD_RUNTIME env var determines runtime directory (set during install)
     let logDir;
     if (process.env.GSD_SECURITY_LOG_DIR) {
       logDir = process.env.GSD_SECURITY_LOG_DIR;
     } else {
-      const runtimeDir =
-        process.env.GSD_RUNTIME === 'copilot' ? '.github' : '.claude';
-      logDir = path.join(cwd, runtimeDir, 'logs');
+      // Required lazily: this module sits below core in the dependency order and
+      // is reached from frontmatter.cjs, so a top-level edge would invert that.
+      const { resolveRuntimeSpec } = require('./core.cjs');
+      logDir = path.join(
+        cwd,
+        resolveRuntimeSpec().configHome.localDirName,
+        'logs',
+      );
     }
     fs.mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, 'security-events.log');

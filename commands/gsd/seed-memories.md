@@ -19,7 +19,7 @@ This skill is re-runnable; runtime topology may have changed since install. All 
 **Steps:**
 1. Run `node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace` to determine workspace type.
 2. **Skip detection** (skip if `--force` flag is set):
-   Before seeding each template, check for keyword overlap with existing memory files in the active runtime's memory directory (Claude: `.claude/memory/*.md`; Copilot: `.github/memory/*.md`):
+   Before seeding each template, check for keyword overlap with existing memory files in the active runtime's memory directory (the active runtime's directory is `{{MEMORY_DIR}}`):
    - For the `multi-boundary` template: scan each existing memory file body for the keywords "submodule", "boundary", "commit". If any single memory file contains 2 or more of these keywords, skip seeding this template.
    - Print advisory when skipping: "Found existing memory covering [template concept]: [matching-filename] — skipping [template-name]. Use --force to overwrite."
    - If no overlap is detected, proceed to seed the template normally.
@@ -29,10 +29,15 @@ This skill is re-runnable; runtime topology may have changed since install. All 
 5. **Detect the active runtime and target paths (skill-execution time).**
 
    Check workspace topology:
+<!-- ONLY:claude -->
    - If `.claude/` directory exists at workspace root → runtime is Claude.
+<!-- /ONLY:claude -->
 <!-- ONLY:copilot -->
    - If `{{PROJECT_RULES_FILE}}` exists at workspace root → runtime is Copilot.
 <!-- /ONLY:copilot -->
+<!-- ONLY:opencode -->
+   - If `.opencode/` directory exists at workspace root → runtime is OpenCode.
+<!-- /ONLY:opencode -->
 
    Per detected runtime, use the correct paths:
 
@@ -40,7 +45,7 @@ This skill is re-runnable; runtime topology may have changed since install. All 
    |----------------|----------------------------|--------------------|-----------------------------------------------------------------------------|
    | Active runtime | `{{PROJECT_RULES_FILE}}`   | `{{MEMORY_DIR}}`   | `{{GSD_BLOCK_OPEN}}` / `{{GSD_BLOCK_CLOSE}}` delimiters                    |
 
-   Scan the runtime's memory directory (`.claude/memory/*.md` for Claude, `.github/memory/*.md` for Copilot) and regenerate the project rules file's Memories section (append if file exists, create if not). Also write/update the `## GSD` metadata section above the Memories section using the workspace type from Step 1:
+   Scan the runtime's memory directory (`{{MEMORY_DIR}}`) and regenerate the project rules file's Memories section (append if file exists, create if not). Also write/update the `## GSD` metadata section above the Memories section using the workspace type from Step 1:
    - For non-standalone workspaces: `## GSD\n\n**Workspace type:** {type}\n**Detection signal:** {signal}`
    - For standalone workspaces: `## GSD\n\n**Workspace type:** standalone`
 <!-- ONLY:claude -->

@@ -108,7 +108,7 @@ Phase: "API documentation"
 @~/.claude/gsd-ng/references/ask-user-question.md
 
 <answer_validation>
-**IMPORTANT: Answer validation** — After every AskUserQuestion call, check if the response is empty or whitespace-only. If so:
+**IMPORTANT: Answer validation** — After every {{USER_QUESTION_TOOL}} call, check if the response is empty or whitespace-only. If so:
 1. Retry the question once with the same parameters
 2. If still empty, present the options as a plain-text numbered list and ask the user to type their choice number
 Never proceed with an empty answer.
@@ -147,7 +147,7 @@ Exit workflow.
 **Auto mode** — If `--auto` is present in ARGUMENTS:
 - In `check_existing`: auto-select "Skip" (if context exists) or continue without prompting (if no context/plans)
 - In `present_gray_areas`: auto-select ALL gray areas without asking the user
-- In `discuss_areas`: for each discussion question, choose the recommended option (first option, or the one marked "recommended") without using AskUserQuestion
+- In `discuss_areas`: for each discussion question, choose the recommended option (first option, or the one marked "recommended") without using {{USER_QUESTION_TOOL}}
 - Log each auto-selected choice inline so the user can review decisions in the context file
 - After discussion completes, auto-advance to plan-phase (existing behavior)
 </step>
@@ -163,7 +163,7 @@ ls ${phase_dir}/*-CONTEXT.md 2>/dev/null
 
 **If `--auto`:** Auto-select "Update it" — load existing context and continue to analyze_phase. Log: `[auto] Context exists — updating with auto-selected decisions.`
 
-**Otherwise:** Use AskUserQuestion:
+**Otherwise:** Use {{USER_QUESTION_TOOL}}:
 - header: "Context"
 - question: "Phase [X] already has context. What do you want to do?"
 - options:
@@ -181,7 +181,7 @@ Check `has_plans` and `plan_count` from init. **If `has_plans` is true:**
 
 **If `--auto`:** Auto-select "Continue and replan after". Log: `[auto] Plans exist — continuing with context capture, will replan after.`
 
-**Otherwise:** Use AskUserQuestion:
+**Otherwise:** Use {{USER_QUESTION_TOOL}}:
 - header: "Plans exist"
 - question: "Phase [X] already has {plan_count} plan(s) created without user context. Your decisions here won't affect existing plans unless you replan."
 - options:
@@ -226,7 +226,7 @@ Cap at 3 candidates maximum. If more than 3 match, skip the scan entirely (too n
 
 **If 1-3 candidates and NOT --auto:**
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "These pending todos may relate to Phase ${PHASE}. Link them to this phase?",
   multiSelect: true,
@@ -277,7 +277,7 @@ EXISTING_RELATED_RAW=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" frontmatter
 
 4. If 1-3 such candidates exist:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "These pending todos may be related to the source todo for Phase ${PHASE}. Link them via related: field?",
   multiSelect: true,
@@ -510,7 +510,7 @@ Gray areas:
 <step name="present_gray_areas">
 Present the domain boundary, prior decisions, and gray areas to user.
 
-**UI rendering constraint:** Do NOT output a long text block before the AskUserQuestion call — the Claude Code dialog can occlude preceding text. Instead, embed context summary directly in the `question` string. Keep any preceding output to one short line maximum (e.g., `Phase [X]: [Name]`).
+**UI rendering constraint:** Do NOT output a long text block before the {{USER_QUESTION_TOOL}} call — the Claude Code dialog can occlude preceding text. Instead, embed context summary directly in the `question` string. Keep any preceding output to one short line maximum (e.g., `Phase [X]: [Name]`).
 
 **Build the question string** by combining domain and prior decisions:
 
@@ -526,9 +526,9 @@ question: "Phase [X] ([Name]) — [one-sentence domain statement]. Carrying forw
 
 Keep the question string under ~200 characters so it stays readable in the dialog.
 
-**If `--auto`:** Auto-select ALL gray areas. Log: `[auto] Selected all gray areas: [list area names].` Skip the AskUserQuestion below and continue directly to discuss_areas with all areas selected.
+**If `--auto`:** Auto-select ALL gray areas. Log: `[auto] Selected all gray areas: [list area names].` Skip the {{USER_QUESTION_TOOL}} below and continue directly to discuss_areas with all areas selected.
 
-**Otherwise, use AskUserQuestion (multiSelect: true):**
+**Otherwise, use {{USER_QUESTION_TOOL}} (multiSelect: true):**
 - header: "Discuss"
 - question: "[question string built above]"
 - options: Generate 3-4 phase-specific gray areas, each with:
@@ -600,7 +600,7 @@ For each selected area, conduct a focused discussion loop.
 
 Each answer (or answer set, in batch mode) should reveal the next question or next batch.
 
-**Auto mode (`--auto`):** For each area, Claude selects the recommended option (first option, or the one explicitly marked "recommended") for every question without using AskUserQuestion. Log each auto-selected choice:
+**Auto mode (`--auto`):** For each area, Claude selects the recommended option (first option, or the one explicitly marked "recommended") for every question without using {{USER_QUESTION_TOOL}}. Log each auto-selected choice:
 ```
 [auto] [Area] — Q: "[question text]" → Selected: "[chosen option]" (recommended default)
 ```
@@ -617,10 +617,10 @@ After all areas are auto-resolved, skip the "Explore more gray areas" prompt and
 
 2. **Ask questions using the selected pacing:**
 
-   **Default (no `--batch`): Ask 4 questions using AskUserQuestion**
+   **Default (no `--batch`): Ask 4 questions using {{USER_QUESTION_TOOL}}**
    - header: "[Area]" (max 12 chars — abbreviate if needed)
    - question: Specific decision for this area
-   - options: 2-3 concrete choices (AskUserQuestion adds "Other" automatically), with the recommended choice highlighted and brief explanation why
+   - options: 2-3 concrete choices ({{USER_QUESTION_TOOL}} adds "Other" automatically), with the recommended choice highlighted and brief explanation why
    - **Annotate options with code context** when relevant:
      ```
      "How should posts be displayed?"
@@ -634,7 +634,7 @@ After all areas are auto-resolved, skip the "Explore more gray areas" prompt and
    **Batch mode (`--batch`): Ask 2-5 numbered questions in one plain-text turn**
    - Group closely related questions for the current area into a single message
    - Keep each question concrete and answerable in one reply
-   - When options are helpful, include short inline choices per question rather than a separate AskUserQuestion for every item
+   - When options are helpful, include short inline choices per question rather than a separate {{USER_QUESTION_TOOL}} for every item
    - After the user replies, reflect back the captured decisions, note any unanswered items, and ask only the minimum follow-up needed before moving on
    - Preserve adaptiveness between batches: use the full set of answers to decide the next batch or whether the area is sufficiently clear
 
@@ -651,7 +651,7 @@ After all areas are auto-resolved, skip the "Explore more gray areas" prompt and
 
 4. **After all initially-selected areas complete:**
    - Summarize what was captured from the discussion so far
-   - AskUserQuestion:
+   - {{USER_QUESTION_TOOL}}:
      - header: "Done"
      - question: "We've discussed [list areas]. Which gray areas remain unclear?"
      - options: "Explore more gray areas" / "I'm ready for context"
@@ -672,7 +672,7 @@ These user-referenced docs are often MORE important than ROADMAP.md refs because
 **Question design:**
 - Options should be concrete, not abstract ("Cards" not "Option A")
 - Each answer should inform the next question or next batch
-- If user picks "Other" to provide freeform input (e.g., "let me describe it", "something else", or an open-ended reply), ask your follow-up as plain text — NOT another AskUserQuestion. Wait for them to type at the normal prompt, then reflect their input back and confirm before resuming AskUserQuestion or the next numbered batch.
+- If user picks "Other" to provide freeform input (e.g., "let me describe it", "something else", or an open-ended reply), ask your follow-up as plain text — NOT another {{USER_QUESTION_TOOL}}. Wait for them to type at the normal prompt, then reflect their input back and confirm before resuming {{USER_QUESTION_TOOL}} or the next numbered batch.
 
 **Scope creep handling:**
 If user mentions something outside the phase domain:

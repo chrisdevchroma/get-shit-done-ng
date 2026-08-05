@@ -141,7 +141,7 @@ Report final status.
 | W010 | warning | `{{PROJECT_RULES_FILE}}` not found — agents missing project instructions | Yes |
 | W011 | warning | Memory files not referenced in `{{PROJECT_RULES_FILE}}` | Yes |
 | W012 | warning | `{{PROJECT_RULES_FILE}}` references non-existent memory files | Yes |
-| W013 | warning | MEMORY.md out of sync with .claude/memory/ contents | Yes |
+| W013 | warning | MEMORY.md out of sync with {{MEMORY_DIR}} contents | Yes |
 | W014 | warning | Workspace topology detected but no structural memory seeded | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
 
@@ -155,9 +155,9 @@ Report final status.
 | resetConfig | Delete + recreate config.json | Loses custom settings |
 | regenerateState | Create STATE.md from ROADMAP structure | Loses session history |
 | addNyquistKey | Add workflow.nyquist_validation: true to config.json | None — matches existing default |
-| writeCLAUDEmd | Create `{{PROJECT_RULES_FILE}}` with Memories section from .claude/memory/ | None — generates from existing files |
-| syncCLAUDEmdMemories | Update `{{PROJECT_RULES_FILE}}` Memories section to match .claude/memory/ | Replaces Memories section in-place |
-| syncMemoryMd | Regenerate .claude/memory/MEMORY.md from .claude/memory/ files | Overwrites MEMORY.md |
+| writeCLAUDEmd | Create `{{PROJECT_RULES_FILE}}` with Memories section from {{MEMORY_DIR}} | None — generates from existing files |
+| syncCLAUDEmdMemories | Update `{{PROJECT_RULES_FILE}}` Memories section to match {{MEMORY_DIR}} | Replaces Memories section in-place |
+| syncMemoryMd | Regenerate {{MEMORY_DIR}}MEMORY.md from {{MEMORY_DIR}} files | Overwrites MEMORY.md |
 
 **Not repairable (too risky):**
 - PROJECT.md, ROADMAP.md content

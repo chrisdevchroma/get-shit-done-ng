@@ -1,6 +1,6 @@
 # Memory Templates
 
-Templates seeded into `.claude/memory/` during project initialization based on detected workspace topology.
+Templates seeded into `{{MEMORY_DIR}}` during project initialization based on detected workspace topology.
 
 ## Category Mapping
 
@@ -21,7 +21,7 @@ Future templates should follow the frontmatter format:
 ```yaml
 ---
 name: Short display name
-description: One-line description (used in CLAUDE.md Memories section)
+description: One-line description (used in {{PROJECT_RULES_FILE}} Memories section)
 type: feedback
 ---
 ```

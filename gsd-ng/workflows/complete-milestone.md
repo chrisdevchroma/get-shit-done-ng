@@ -388,7 +388,7 @@ Verify: `✅ Milestone archived to .planning/milestones/`
 
 **Phase archival (optional):** After archival completes, ask the user:
 
-AskUserQuestion(header="Archive Phases", question="Archive phase directories to milestones/?", options: "Yes — move to milestones/v[X.Y]-phases/" | "Skip — keep phases in place")
+{{USER_QUESTION_TOOL}}(header="Archive Phases", question="Archive phase directories to milestones/?", options: "Yes — move to milestones/v[X.Y]-phases/" | "Skip — keep phases in place")
 
 If "Yes": move phase directories to the milestone archive:
 ```bash
@@ -570,7 +570,7 @@ if [ "$SUBMODULE_AMBIGUOUS" = "true" ]; then
   if [ "$AMBIGUOUS_COUNT" -le 2 ] && [ "$AMBIGUOUS_COUNT" -gt 0 ]; then
     PATH1=$(echo "$AMBIGUOUS_PATHS" | jq -r '.[0] // ""' 2>/dev/null)
     PATH2=$(echo "$AMBIGUOUS_PATHS" | jq -r '.[1] // ""' 2>/dev/null)
-    AskUserQuestion(
+    {{USER_QUESTION_TOOL}}(
       question="Multiple submodules have changes. Which submodule(s) should be branched?",
       options=["$PATH1", "$PATH2", "All of them", "Skip branching"]
     )
@@ -580,7 +580,7 @@ if [ "$SUBMODULE_AMBIGUOUS" = "true" ]; then
     # 3+ ambiguous paths: text list + binary choice
     echo "Multiple submodules have changes:"
     echo "$AMBIGUOUS_PATHS" | jq -r '.[] | "  - " + .' 2>/dev/null
-    AskUserQuestion(
+    {{USER_QUESTION_TOOL}}(
       question="Multiple submodules have uncommitted changes. How should branching proceed?",
       options=["Branch all of them", "Skip branching"]
     )
@@ -646,7 +646,7 @@ Options:
 3. **Keep branches** — Leave for manual handling
 ```
 
-AskUserQuestion with options: Squash merge (Recommended), Merge with history, Delete without merging, Keep branches.
+{{USER_QUESTION_TOOL}} with options: Squash merge (Recommended), Merge with history, Delete without merging, Keep branches.
 
 **Squash merge:**
 

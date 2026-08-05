@@ -23,6 +23,20 @@ try {
 } catch (e) {
   // Silent fail — statusline must never crash; banner simply won't show
 }
+
+// The config home this install belongs to, or null when the statusline is not
+// running from an install. Asked of the shared module rather than recomputed
+// here: it locates relative to its own path, so the answer is right whichever
+// file required it, and this hook sits at a different depth from the library.
+let _selfConfigHome = null;
+try {
+  _selfConfigHome =
+    _cachePathLib && typeof _cachePathLib.selfLocatedConfigHome === 'function'
+      ? _cachePathLib.selfLocatedConfigHome()
+      : null;
+} catch (e) {
+  // Silent fail — degrades to the probe below, which is today's behaviour
+}
 const { execSync } = require('child_process');
 const { readStdinWithTimeout } = require('./gsd-hook-stdin.cjs');
 
@@ -143,6 +157,8 @@ function renderCrossModelWarning(data, config) {
  * so it reads the same cache the writer wrote and a stale global cache is never read for a
  * local install. Suppresses the banner when cache.installed differs from the live local
  * VERSION — guards the within-session gap after /gsd:update before the next TTL refresh.
+ * That comparison reads the VERSION of the install this hook ships inside; the probe is
+ * the fallback for a caller that is not running from one.
  *
  * @param {object} opts - cwd (project dir), homeDir, env, and fs are all injectable for tests.
  * @returns {string}
@@ -166,7 +182,10 @@ function renderUpdateBanner({ cwd, homeDir, env, fs: fsArg }) {
     }
     if (!cache.update_available) return '';
 
-    const localConfigDir = detectConfigDir(cwd, e);
+    // An install owns the VERSION file it must compare against. Probing the
+    // working directory finds another runtime's local install and reads that
+    // one's version, which silently suppresses this install's own banner.
+    const localConfigDir = _selfConfigHome || detectConfigDir(cwd, e);
     if (localConfigDir) {
       try {
         const liveVersion = fsLib

@@ -82,7 +82,7 @@ Continue (non-blocking).
 UI_SPEC_FILE=$(ls "${PHASE_DIR}"/*-UI-SPEC.md 2>/dev/null | head -1)
 ```
 
-**If exists:** Use AskUserQuestion:
+**If exists:** Use {{USER_QUESTION_TOOL}}:
 - header: "Existing UI-SPEC"
 - question: "UI-SPEC.md already exists for Phase {N}. What would you like to do?"
 - options:

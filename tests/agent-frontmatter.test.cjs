@@ -171,3 +171,105 @@ describe('AGENT: required frontmatter fields', () => {
     });
   }
 });
+
+// ─── Converted Agent Colours (opencode) ──────────────────────────────────────
+
+const { spawnSync } = require('child_process');
+const { resolveTmpDir, cleanup } = require('./helpers.cjs');
+
+const INSTALLER = path.join(__dirname, '..', 'bin', 'install.js');
+const BASE_TMPDIR = resolveTmpDir();
+
+/**
+ * The colours opencode's agent schema accepts, written out rather than read
+ * from the registry: a test that derives its expectation from the thing under
+ * test cannot fail when that thing is wrong.
+ */
+const OPENCODE_COLOR_LITERALS = [
+  'primary',
+  'secondary',
+  'accent',
+  'success',
+  'warning',
+  'error',
+  'info',
+];
+const OPENCODE_HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * The plugin source the opencode layout declares does not exist yet, so the
+ * installer reports that one artifact as failed. The agent files are written
+ * either way; any other failure is a real one.
+ */
+const OPENCODE_PENDING_ARTIFACT = 'plugin';
+
+describe('AGENT: converted agent colours pass opencode schema', () => {
+  test('OPENCODE-AGT-COLOR-01: every installed agent colour is a hex or a theme literal', () => {
+    const tmpDir = fs.mkdtempSync(path.join(BASE_TMPDIR, 'gsd-oc-color-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          INSTALLER,
+          '--runtime',
+          'opencode',
+          '--local',
+          '--no-seed-permissions-config',
+          '--no-seed-sandbox-config',
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 60000,
+          cwd: tmpDir,
+          env: Object.assign({}, process.env, { HOME: tmpDir }),
+        },
+      );
+      if (result.status !== 0) {
+        const failed = (result.stderr || '').match(/Failed: (.+)/);
+        assert.ok(
+          failed && failed[1].trim() === OPENCODE_PENDING_ARTIFACT,
+          'opencode install may only fail on ' +
+            OPENCODE_PENDING_ARTIFACT +
+            '\nstderr: ' +
+            (result.stderr || ''),
+        );
+      }
+
+      const agentDir = path.join(tmpDir, '.opencode', 'agent');
+      const files = fs
+        .readdirSync(agentDir)
+        .filter((f) => f.startsWith('gsd-') && f.endsWith('.md'))
+        .sort();
+      assert.strictEqual(
+        files.length,
+        ALL_AGENTS.length,
+        'one converted agent per source agent (OPENCODE-AGT-COLOR-01)',
+      );
+
+      const offenders = [];
+      for (const file of files) {
+        const text = fs.readFileSync(path.join(agentDir, file), 'utf-8');
+        const match = text.match(/^color:[ \t]*(.+)$/m);
+        if (!match) {
+          offenders.push(`${file}: no color`);
+          continue;
+        }
+        const value = match[1].trim().replace(/^['"]|['"]$/g, '');
+        if (!OPENCODE_HEX_COLOR.test(value) && !OPENCODE_COLOR_LITERALS.includes(value)) {
+          offenders.push(`${file}: ${value}`);
+        }
+      }
+
+      assert.deepStrictEqual(
+        offenders,
+        [],
+        'opencode accepts #RRGGBB or one of ' +
+          OPENCODE_COLOR_LITERALS.join(', ') +
+          ' — one rejected value stops the whole agent surface from loading ' +
+          '(OPENCODE-AGT-COLOR-01)',
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});

@@ -212,7 +212,7 @@ Display using checkpoint box format:
 ──────────────────────────────────────────────────────────────
 ```
 
-Wait for user response (plain text, no AskUserQuestion).
+Wait for user response (plain text, no {{USER_QUESTION_TOOL}}).
 </step>
 
 <step name="process_response">

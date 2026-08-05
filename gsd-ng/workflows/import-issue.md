@@ -15,7 +15,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 Detect configured platform:
 
 ```bash
-PLATFORM=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform)
+PLATFORM=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-platform)
 ```
 
 Parse JSON. If platform unavailable or CLI not installed, display warning and exit (same as sync-issues):
@@ -31,7 +31,7 @@ Configure platform via {{COMMAND_PREFIX}}settings or install the CLI tool.
 </step>
 
 <step name="choose_mode">
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Import Mode"
 - question: "How would you like to import issues?"
 - options:
@@ -46,7 +46,7 @@ Ask for issue number:
 - "Enter the issue number to import (e.g., 42):"
 
 ```bash
-RESULT=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" issue-import {platform} {number})
+RESULT=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" issue-import {platform} {number})
 IMPORT_EXIT=$?
 ```
 
@@ -65,7 +65,7 @@ Comment posted: {yes/no}
 If the import command failed with a `[SECURITY]` error:
 
 1. Display the error message to the user — it contains the detected pattern details
-2. Use AskUserQuestion to present the Rule of Two gate:
+2. Use {{USER_QUESTION_TOOL}} to present the Rule of Two gate:
    ```json
    {
      "questions": [{
@@ -103,7 +103,7 @@ glab issue list --label "{label}" --milestone "{milestone}" --per-page {limit} -
 fj issue list --label "{label}" --milestone "{milestone}" --limit {limit}
 ```
 
-Display matching issues as a numbered list. Use AskUserQuestion to confirm:
+Display matching issues as a numbered list. Use {{USER_QUESTION_TOOL}} to confirm:
 - header: "Import Confirmation"
 - question: "Import these {N} issues as GSD todos?"
 - options:
@@ -113,7 +113,7 @@ Display matching issues as a numbered list. Use AskUserQuestion to confirm:
 
 For each selected issue, call:
 ```bash
-node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" issue-import {platform} {number}
+node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" issue-import {platform} {number}
 ```
 
 If any import fails with `[SECURITY]`, pause bulk import and present the `security_gate` step for that issue. User may choose "Review and override" (re-run with `--force-unsafe`) or "Cancel import" to skip that issue and continue with the rest.

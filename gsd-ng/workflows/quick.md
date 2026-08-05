@@ -54,7 +54,7 @@ fi
 If `$DESCRIPTION` is empty after parsing, prompt user interactively:
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Quick Task",
   question: "What do you want to do?",
   followUp: null
@@ -218,7 +218,7 @@ Each gray area should be a concrete decision point, not a vague category. Exampl
 **4.5b. Present gray areas**
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Gray Areas",
   question: "Which areas need clarification before planning?",
   options: [
@@ -235,10 +235,10 @@ If user selects "All clear" → skip to Step 5 (no CONTEXT.md written).
 
 **4.5c. Discuss selected areas**
 
-For each selected area, ask 1-2 focused questions via AskUserQuestion:
+For each selected area, ask 1-2 focused questions via {{USER_QUESTION_TOOL}}:
 
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "${area_name}",
   question: "${specific_question_about_this_area}",
   options: [
@@ -401,7 +401,7 @@ ${DISCUSS_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-CONTEXT.md (User decision
 ${RESEARCH_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-RESEARCH.md (Research findings — use to inform implementation choices)' : ''}
 </files_to_read>
 
-**Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
+**Project skills:** Check {{CONFIG_DIR}}/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
 
 </planning_context>
 
@@ -545,8 +545,8 @@ Offer: 1) Force proceed, 2) Abort
 Spawn gsd-executor with plan reference:
 
 ```bash
-WORKSPACE_TYPE=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
-WORKSPACE_JSON=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
+WORKSPACE_TYPE=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace --field type)
+WORKSPACE_JSON=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" detect-workspace)
 SUBMODULE_PATHS=$(node -e "try{const w=JSON.parse(process.argv[1]);const p=w.submodule_paths||[];process.stdout.write(p.join(', ')||'none')}catch{process.stdout.write('none')}" "$WORKSPACE_JSON")
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 ```
@@ -563,14 +563,14 @@ Submodule paths: ${SUBMODULE_PATHS}
 
 CRITICAL: Always commit to the source location. Your working directory is ${PROJECT_ROOT}.
 If workspace type is 'submodule', source code lives in the submodule directories listed above.
-Do NOT modify deployed copies (e.g., .claude/gsd-ng/) — always edit source first.
+Do NOT modify deployed copies (e.g., {{CONFIG_DIR}}/gsd-ng/) — always edit source first.
 </workspace_context>
 
 <files_to_read>
 - ${QUICK_DIR}/${quick_id}-PLAN.md (Plan)
 - .planning/STATE.md (Project state)
 - ./{{PROJECT_RULES_FILE}} (Project instructions, if exists)
-- .claude/skills/ or .agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
+- {{CONFIG_DIR}}/skills/ or .agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
 </files_to_read>
 
 <constraints>
@@ -792,9 +792,9 @@ If `$AUTO_CFG` is `"true"`:
 
 **In interactive mode:**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Close Todo?",
   question: "This task was started from todo '$ORIGIN_TODO_TITLE'. Close it?",
   multiSelect: false,
@@ -882,9 +882,9 @@ if [[ "$AUTO_CFG" == "true" ]]; then
 fi
 ```
 
-**Interactive mode** — build options list and use AskUserQuestion:
+**Interactive mode** — build options list and use {{USER_QUESTION_TOOL}}:
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "Closing '$ORIGIN_TODO_TITLE' — these todos are linked via related:. Close them too?",
   multiSelect: true,

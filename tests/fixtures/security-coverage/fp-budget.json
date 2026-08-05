@@ -66,11 +66,12 @@
         "examples": ["gsd-ng/bin/lib/security.cjs"]
       },
       "HTML-COMMENT-INJECT": {
-        "files": 4,
+        "files": 5,
         "class": "ordinary-prose",
-        "justification": "The only genuine over-trigger in the walk. The pattern is dotall and non-greedy, so any document containing an HTML comment plus one of ignore/override/system/instructions/execute matches across the whole file. Trips two ordinary templates (templates/phase-prompt.md, templates/project.md) and references/checkpoints-deep.md, none of which discuss this rule. Medium tier, so it is advisory only and cannot block. Recorded, deliberately not retuned in this plan.",
+        "justification": "The only genuine over-trigger in the walk. The pattern is dotall and non-greedy, so any document containing an HTML comment plus one of ignore/override/system/instructions/execute matches across the whole file. Trips two ordinary templates (templates/phase-prompt.md, templates/project.md) and references/checkpoints-deep.md, none of which discuss this rule. Medium tier, so it is advisory only and cannot block. Recorded, deliberately not retuned in this plan. Raised from 4 to 5 when the runtime registry gained its config-home, layout and tool-map specs: bin/lib/template-processor.cjs holds the GSD block markers as literal HTML comments and now also holds the strings 'copilot-instructions.md' and the Copilot tool id 'execute' between them, so the dotall match closes. Both strings are runtime data the registry exists to carry, so the co-location cannot be removed without splitting the table for the benefit of an advisory rule.",
         "examples": [
           "gsd-ng/bin/lib/security.cjs",
+          "gsd-ng/bin/lib/template-processor.cjs",
           "gsd-ng/references/checkpoints-deep.md",
           "gsd-ng/templates/phase-prompt.md"
         ]

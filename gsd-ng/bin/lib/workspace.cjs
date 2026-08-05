@@ -11,6 +11,7 @@ const {
   loadConfig,
   resolveTargetBranch,
   planningPaths,
+  resolveRuntimeSpec,
 } = require('./core.cjs');
 const { DEFAULTS } = require('./defaults.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
@@ -115,7 +116,23 @@ function detectWorkspaceType(cwd) {
 // ─── Memory section generation ────────────────────────────────────────────────
 
 /**
- * Generate the CLAUDE.md Memories section string from .claude/memory/ files.
+ * The memory directory of the runtime this install belongs to, without its
+ * trailing slash — `.claude/memory` on claude, `.github/memory` on copilot.
+ *
+ * Reading the registry rather than naming claude's directory is what lets the
+ * two generators below run on a non-claude install at all: they were writing a
+ * runtime-correct destination from a claude-only source, so on any other runtime
+ * they found nothing and produced nothing.
+ *
+ * @returns {string} Memory directory relative to the project root
+ */
+function memoryDirRelative() {
+  return resolveRuntimeSpec().MEMORY_DIR.replace(/\/+$/, '');
+}
+
+/**
+ * Generate the project rules file's Memories section from the runtime's memory
+ * directory.
  *
  * Reads all .md files (except MEMORY.md), extracts frontmatter description/name,
  * and builds the bullet list section.
@@ -124,7 +141,8 @@ function detectWorkspaceType(cwd) {
  * @returns {string} Markdown section string, or '' if no memory directory
  */
 function generateMemoriesSection(cwd) {
-  const memoryDir = path.join(cwd, '.claude', 'memory');
+  const memoryRel = memoryDirRelative();
+  const memoryDir = path.join(cwd, ...memoryRel.split('/'));
 
   if (!fs.existsSync(memoryDir)) {
     return '';
@@ -158,20 +176,20 @@ function generateMemoriesSection(cwd) {
     } catch {
       // Use fallback description
     }
-    return `- [.claude/memory/${filename}](.claude/memory/${filename}) — ${description}`;
+    return `- [${memoryRel}/${filename}](${memoryRel}/${filename}) — ${description}`;
   });
 
   return [
     '## Memories',
     '',
-    'Read `.claude/memory/` for persistent feedback and project context. Key entries:',
+    `Read \`${memoryRel}/\` for persistent feedback and project context. Key entries:`,
     '',
     ...bullets,
   ].join('\n');
 }
 
 /**
- * Generate the MEMORY.md content string from .claude/memory/ files.
+ * Generate the MEMORY.md content string from the runtime's memory directory.
  *
  * Groups files by their frontmatter `type` field. Capitalizes group headings.
  * Filters out MEMORY.md itself.
@@ -180,7 +198,7 @@ function generateMemoriesSection(cwd) {
  * @returns {string} MEMORY.md content string, or '' if no qualifying files
  */
 function generateMemoryMd(cwd) {
-  const memoryDir = path.join(cwd, '.claude', 'memory');
+  const memoryDir = path.join(cwd, ...memoryDirRelative().split('/'));
 
   if (!fs.existsSync(memoryDir)) {
     return '';

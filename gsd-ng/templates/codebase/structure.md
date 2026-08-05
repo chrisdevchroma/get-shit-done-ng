@@ -186,7 +186,7 @@ gsd-ng/
 
 **Documentation:**
 - `README.md` - User-facing installation and usage guide
-- `CLAUDE.md` - Instructions for Claude Code when working in this repo
+- `{{PROJECT_RULES_FILE}}` - Instructions for {{RUNTIME_LABEL}} when working in this repo
 
 ## Naming Conventions
 

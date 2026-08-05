@@ -68,7 +68,7 @@ Use these as inspiration, not a checklist. Pick what's relevant to the thread.
 
 <using_askuserquestion>
 
-Use AskUserQuestion to help users think by presenting concrete options to react to.
+Use {{USER_QUESTION_TOOL}} to help users think by presenting concrete options to react to.
 
 **Good options:**
 - Interpretations of what they might mean
@@ -83,9 +83,9 @@ Use AskUserQuestion to help users think by presenting concrete options to react 
 
 **UI rendering constraint — keep preceding text minimal:**
 
-The Claude Code UI renders the AskUserQuestion dialog in a way that can occlude preceding text when that text is long. This means users may not see analysis or context you wrote immediately before the tool call.
+The Claude Code UI renders the {{USER_QUESTION_TOOL}} dialog in a way that can occlude preceding text when that text is long. This means users may not see analysis or context you wrote immediately before the tool call.
 
-Rule: Output at most 2-3 short lines of plain text before an AskUserQuestion call. If you need to convey more context, embed it in the `question` string or in option `description` fields — not as separate preceding output.
+Rule: Output at most 2-3 short lines of plain text before an {{USER_QUESTION_TOOL}} call. If you need to convey more context, embed it in the `question` string or in option `description` fields — not as separate preceding output.
 
 ```
 // Bad: long analysis block before the question
@@ -99,10 +99,10 @@ Carrying forward from earlier phases:
 - User prefers minimal UI (Phase 2)
 - Ctrl+C exit shortcut only (Phase 5)
 
-AskUserQuestion("Which areas?", ...)
+{{USER_QUESTION_TOOL}}("Which areas?", ...)
 
 // Good: context embedded in the question
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   question: "Phase 33 (Auth). Carrying forward: minimal UI, Ctrl+C exits. Which areas to clarify?",
   ...
 )
@@ -129,17 +129,17 @@ Users who want a slightly modified version of an option can select "Other" and r
 
 <freeform_rule>
 
-**When the user wants to explain freely, STOP using AskUserQuestion.**
+**When the user wants to explain freely, STOP using {{USER_QUESTION_TOOL}}.**
 
 If a user selects "Other" and their response signals they want to describe something in their own words (e.g., "let me describe it", "I'll explain", "something else", or any open-ended reply that isn't choosing/modifying an existing option), you MUST:
 
-1. **Ask your follow-up as plain text** — NOT via AskUserQuestion
+1. **Ask your follow-up as plain text** — NOT via {{USER_QUESTION_TOOL}}
 2. **Wait for them to type at the normal prompt**
-3. **Resume AskUserQuestion** only after processing their freeform response
+3. **Resume {{USER_QUESTION_TOOL}}** only after processing their freeform response
 
 The same applies if YOU include a freeform-indicating option (like "Let me explain" or "Describe in detail") and the user selects it.
 
-**Wrong:** User says "let me describe it" → AskUserQuestion("What feature?", ["Feature A", "Feature B", "Describe in detail"])
+**Wrong:** User says "let me describe it" → {{USER_QUESTION_TOOL}}("What feature?", ["Feature A", "Feature B", "Describe in detail"])
 **Right:** User says "let me describe it" → "Go ahead — what are you thinking?"
 
 </freeform_rule>

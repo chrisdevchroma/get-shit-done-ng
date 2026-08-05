@@ -71,7 +71,7 @@ ls -la .planning/codebase/
 
 Display: `.planning/codebase/ already exists with: [list files found]`
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Codebase map"
 - question: ".planning/codebase/ already exists. What would you like to do?"
 - options:

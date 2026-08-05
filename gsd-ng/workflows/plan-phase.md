@@ -170,7 +170,7 @@ If `context_path` is not null, display: `Using phase context from: ${context_pat
 
 **If `context_path` is null (no CONTEXT.md exists):**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "No context"
 - question: "No CONTEXT.md found for Phase {X}. Plans will use research and requirements only — your design preferences won't be included. Continue or capture context first?"
 - options:
@@ -206,7 +206,7 @@ Scan pending todos for candidates using keyword overlap:
 
 **If 1-3 candidates and NOT --auto:**
 ```
-AskUserQuestion(
+{{USER_QUESTION_TOOL}}(
   header: "Related Todos",
   question: "These pending todos may relate to Phase ${PHASE}. Link them? (discuss-phase was skipped, so this is your chance)",
   multiSelect: true,
@@ -278,7 +278,7 @@ Do NOT re-research the full phase scope.
 **Phase description:** {phase_description}
 
 **Project instructions:** Read ./{{PROJECT_RULES_FILE}} if exists — follow project-specific guidelines
-**Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, research should account for project skill patterns
+**Project skills:** Check {{CONFIG_DIR}}/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, research should account for project skill patterns
 </additional_context>
 
 <output>
@@ -307,7 +307,7 @@ Continue to step 6 (skip normal research — gap research replaces it in this pa
 Ask the user whether to research, with a contextual recommendation based on the phase:
 
 ```
-AskUserQuestion([
+{{USER_QUESTION_TOOL}}([
   {
     question: "Research before planning Phase {X}: {phase_name}?",
     header: "Research",
@@ -358,7 +358,7 @@ Answer: "What do I need to know to PLAN this phase well?"
 **Phase requirement IDs (MUST address):** {phase_req_ids}
 
 **Project instructions:** Read ./{{PROJECT_RULES_FILE}} if exists — follow project-specific guidelines
-**Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, research should account for project skill patterns
+**Project skills:** Check {{CONFIG_DIR}}/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, research should account for project skill patterns
 </additional_context>
 
 <output>
@@ -423,14 +423,14 @@ ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null
 Extract from INIT JSON:
 
 ```bash
-STATE_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" state_path)
-ROADMAP_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" roadmap_path)
-REQUIREMENTS_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" requirements_path)
-RESEARCH_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" research_path)
-VERIFICATION_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" verification_path)
-UAT_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" uat_path)
-CONTEXT_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" context_path)
-GAP_RESEARCH_PATH=$(node "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" gap_research_path)
+STATE_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" state_path)
+ROADMAP_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" roadmap_path)
+REQUIREMENTS_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" requirements_path)
+RESEARCH_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" research_path)
+VERIFICATION_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" verification_path)
+UAT_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" uat_path)
+CONTEXT_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" context_path)
+GAP_RESEARCH_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INIT" gap_research_path)
 ```
 
 ## 7.5. Verify Nyquist Artifacts
@@ -488,7 +488,7 @@ Planner prompt:
 **Phase requirement IDs (every ID MUST appear in a plan's `requirements` field):** {phase_req_ids}
 
 **Project instructions:** Read ./{{PROJECT_RULES_FILE}} if exists — follow project-specific guidelines
-**Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
+**Project skills:** Check {{CONFIG_DIR}}/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
 </planning_context>
 
 <downstream_consumer>
@@ -585,7 +585,7 @@ Checker prompt:
 **Phase requirement IDs (MUST ALL be covered):** {phase_req_ids}
 
 **Project instructions:** Read ./{{PROJECT_RULES_FILE}} if exists — verify plans honor project guidelines
-**Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — verify plans account for project skill rules
+**Project skills:** Check {{CONFIG_DIR}}/skills/ or .agents/skills/ directory (if either exists) — verify plans account for project skill rules
 </verification_context>
 
 <expected_output>

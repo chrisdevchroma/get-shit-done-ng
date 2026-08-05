@@ -97,7 +97,7 @@ Read the todo file completely. Display:
 
 If `files` field has entries, read and briefly summarize each.
 
-**UI rendering note:** The AskUserQuestion dialog that follows (offer_actions) can occlude preceding text in the Claude Code UI when the preceding text is long. If the Problem or Solution content is more than ~4-5 lines, truncate to a 2-3 sentence summary rather than reproducing the full text. The user already knows what the todo is — keep the display concise.
+**UI rendering note:** The {{USER_QUESTION_TOOL}} dialog that follows (offer_actions) can occlude preceding text in the Claude Code UI when the preceding text is long. If the Problem or Solution content is more than ~4-5 lines, truncate to a 2-3 sentence summary rather than reproducing the full text. The user already knows what the todo is — keep the display concise.
 </step>
 
 <step name="check_roadmap">
@@ -139,7 +139,7 @@ Note: `CONTEXT_PCT` represents used percentage (0-100). If bridge file unavailab
 
 **If todo maps to a roadmap phase:**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Action"
 - question: "This todo relates to Phase [N]: [name]. What would you like to do?"
 - options (always show ALL, place recommended option FIRST):
@@ -153,7 +153,7 @@ Use AskUserQuestion:
 
 **If no roadmap match:**
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Action"
 - question: "What would you like to do with this todo?"
 - options (always show ALL, place recommended option FIRST):
@@ -207,7 +207,7 @@ If `CONTEXT_PCT` > 85:
 Launch now? (Current context: {CONTEXT_PCT}% used — strongly recommended: /clear first, or switch to Opus/higher context model. Quality degrades significantly above 85%.)
 ```
 
-Use AskUserQuestion:
+Use {{USER_QUESTION_TOOL}}:
 - header: "Launch"
 - question: "{context-aware message from above}"
 - options:
