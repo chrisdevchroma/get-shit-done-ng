@@ -544,3 +544,105 @@ describe('lint: create-pr.md resolves the CLI from the same repo as the platform
     }
   });
 });
+
+// ── Rule: health.md's code table matches the codes runHealth can raise ────────
+//
+// The table exists so a user reading unfamiliar health output can look a code
+// up. A code that fires with no row sends them to the source; a row for a code
+// that cannot fire misleads the same way. Both directions are checked.
+//
+// Codes reach a report two ways: through `addIssue(severity, code, ...)`, and
+// through the home-directory guard, which builds its own report literal and
+// returns before addIssue exists. W015 and W016 are named only in comments
+// inside a check that accepts `addIssue` and ends `void addIssue;` — they are
+// deliberately absent from both sides and are excluded here.
+
+describe('lint: health.md documents exactly the codes runHealth can raise', () => {
+  const STUB_ONLY = new Set(['W015', 'W016']);
+
+  const verifySrc = () =>
+    fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'bin', 'lib', 'verify.cjs'),
+      'utf-8'
+    );
+
+  const healthDoc = () =>
+    fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-ng', 'workflows', 'health.md'),
+      'utf-8'
+    );
+
+  // Every code the source can put in a report, with the severity it carries.
+  function raisedCodes() {
+    const src = verifySrc();
+    const found = new Map();
+
+    // addIssue(severity, code, ...) — the call spans lines, so match across them.
+    const viaAddIssue = /addIssue\(\s*'([a-z]+)'\s*,\s*'([EWI]\d{3})'/g;
+    let m;
+    while ((m = viaAddIssue.exec(src))) found.set(m[2], m[1]);
+
+    // The home-directory guard writes its own report: errors: [{ code: 'E010' }]
+    // and info: [{ code: 'I010' }]. Attribute severity from the array it sits in.
+    const guard = src.slice(src.indexOf('function runHealth'));
+    const guardEnd = guard.indexOf('planningPaths(cwd)');
+    const guardBody = guardEnd === -1 ? guard : guard.slice(0, guardEnd);
+    for (const [key, severity] of [
+      ['errors', 'error'],
+      ['warnings', 'warning'],
+      ['info', 'info'],
+    ]) {
+      const at = guardBody.indexOf(key + ':');
+      if (at === -1) continue;
+      const segment = guardBody.slice(at, guardBody.indexOf('\n    ]', at) + 1 || undefined);
+      const codes = segment.match(/code: '([EWI]\d{3})'/g) || [];
+      for (const c of codes) found.set(c.match(/[EWI]\d{3}/)[0], severity);
+    }
+
+    for (const c of STUB_ONLY) found.delete(c);
+    return found;
+  }
+
+  // Every code the table lists, with the severity column it claims.
+  function documentedCodes() {
+    const rows = healthDoc().split('\n')
+      .filter(l => /^\|\s*[EWI]\d{3}\s*\|/.test(l));
+    const found = new Map();
+    for (const row of rows) {
+      const cells = row.split('|').map(c => c.trim());
+      found.set(cells[1], cells[2]);
+    }
+    return found;
+  }
+
+  test('every code runHealth can raise has a row', () => {
+    const documented = documentedCodes();
+    const missing = [...raisedCodes().keys()].filter(c => !documented.has(c));
+    assert.deepEqual(
+      missing,
+      [],
+      'health.md has no row for: ' + missing.join(', ')
+    );
+  });
+
+  test('every documented code can actually be raised', () => {
+    const raised = raisedCodes();
+    const phantom = [...documentedCodes().keys()].filter(c => !raised.has(c));
+    assert.deepEqual(
+      phantom,
+      [],
+      'health.md documents codes verify.cjs never raises: ' + phantom.join(', ')
+    );
+  });
+
+  test('the severity column matches the severity the source assigns', () => {
+    const raised = raisedCodes();
+    const wrong = [];
+    for (const [code, severity] of documentedCodes()) {
+      if (raised.has(code) && raised.get(code) !== severity) {
+        wrong.push(code + ' documented as ' + severity + ', raised as ' + raised.get(code));
+      }
+    }
+    assert.deepEqual(wrong, [], wrong.join('; '));
+  });
+});
