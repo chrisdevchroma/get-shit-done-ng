@@ -477,3 +477,341 @@ describe('nyquist gate: the validation workflow keeps its auditor and audit trai
     );
   });
 });
+
+// ─── Health-check fixtures ───────────────────────────────────────────────────
+//
+// The three checks below are conditions, not strings, so they are driven
+// against real .planning/ trees in temp dirs. Nothing here reads the
+// repository's own planning data — the suite has to pass in a fresh clone, and
+// a detector coupled to live planning content stops guarding the moment real
+// work lands.
+
+const { makePlanning, cleanupAll } = createPlanningFixture();
+
+afterEach(cleanupAll);
+
+const { PROJECT_MD, CONSISTENT_ROADMAP, QUIET_STATE } = PLANNING_FIXTURE_DOCS;
+
+const BASE_DOCS = {
+  'PROJECT.md': PROJECT_MD,
+  'ROADMAP.md': CONSISTENT_ROADMAP,
+  'STATE.md': QUIET_STATE,
+};
+
+function writeInto(dir, rel, body) {
+  const abs = path.join(dir, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, body);
+}
+
+// Give a fixture a HEAD to resolve evidence against, then drop in whatever must
+// exist on disk without being in the tree. A file present only as an untracked
+// local artifact is not evidence anyone else can reproduce, so the two cases
+// have to be distinguishable in a fixture.
+function commitTree(dir, { tracked = {}, untracked = {} } = {}) {
+  for (const [rel, body] of Object.entries(tracked)) writeInto(dir, rel, body);
+  const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  git('init', '-q');
+  git('config', 'user.email', 'test@test.com');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture');
+  for (const [rel, body] of Object.entries(untracked)) writeInto(dir, rel, body);
+  return dir;
+}
+
+const VALIDATION_MAP_HEADER = [
+  '## Per-Task Verification Map',
+  '',
+  '| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |',
+  '|---------|------|------|-------------|-----------|-------------------|-------------|--------|',
+];
+
+// The template ships this literal as a sign-off checklist item, which is why a
+// naive count over the string returns four times the real number of promoted
+// phases. A check that anchors inside the frontmatter block is immune; one that
+// does not is wrong on every file that carries the template's sign-off.
+const SIGN_OFF_CHECKLIST = [
+  '## Validation Sign-Off',
+  '',
+  '- [ ] All tasks have `<automated>` verify or Wave 0 dependencies',
+  '- [ ] `nyquist_compliant: true` set in frontmatter',
+  '',
+  '**Approval:** pending',
+  '',
+];
+
+const AUDIT_TRAIL = [
+  '## Validation Audit 2026-01-01',
+  '',
+  '| Metric | Count |',
+  '|--------|-------|',
+  '| Gaps found | 0 |',
+  '| Resolved | 0 |',
+  '| Escalated | 0 |',
+  '',
+];
+
+function validationMd({ compliant = false, rows = [], sections = [] } = {}) {
+  return [
+    '---',
+    'phase: 1',
+    'slug: alpha',
+    'status: draft',
+    `nyquist_compliant: ${compliant}`,
+    'wave_0_complete: false',
+    'created: 2026-01-01',
+    '---',
+    '',
+    '# Validation Strategy',
+    '',
+    ...VALIDATION_MAP_HEADER,
+    ...rows,
+    '',
+    ...sections,
+  ].join('\n');
+}
+
+const mapRow = (requirement, command, type = 'unit') =>
+  `| 01-01-01 | 01 | 1 | ${requirement} | ${type} | ${command} | ✅ | ✅ green |`;
+
+// ─── Executed phase with no validation strategy ──────────────────────────────
+
+const VALIDATION_ARCHITECTURE_RESEARCH = [
+  '# Research',
+  '',
+  '## Validation Architecture',
+  '',
+  'Test infrastructure notes.',
+  '',
+].join('\n');
+
+describe('validate health W009: an executed phase carries a validation strategy', () => {
+  test('fires on a phase with a plan and a summary and no validation strategy', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/02-beta/02-01-PLAN.md': '# Plan\n',
+      'phases/02-beta/02-01-SUMMARY.md': '# Summary\n',
+    });
+
+    const hits = planningIssuesWithCode(dir, 'W009');
+    assert.ok(
+      hits.length >= 1,
+      `an executed phase with no validation strategy is the shape that actually occurs, got ${planningCodes(dir)}`,
+    );
+    assert.ok(
+      hits.some((h) => h.message.includes('02-beta')),
+      `the message must name the phase directory: ${JSON.stringify(hits)}`,
+    );
+  });
+
+  test('stays quiet on a planned phase that has not executed yet', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/02-beta/02-01-PLAN.md': '# Plan\n',
+    });
+
+    assert.strictEqual(
+      countPlanningCode(dir, 'W009'),
+      0,
+      'a freshly planned phase has nothing to validate yet — without this arm the check trips on every new phase and gets muted within a week',
+    );
+  });
+
+  test('still fires on the older shape it already caught', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/02-beta/02-RESEARCH.md': VALIDATION_ARCHITECTURE_RESEARCH,
+      'phases/02-beta/02-01-PLAN.md': '# Plan\n',
+    });
+
+    assert.ok(
+      countPlanningCode(dir, 'W009') >= 1,
+      'widening the check must not narrow it — research naming a validation architecture with no strategy file still counts',
+    );
+  });
+});
+
+// ─── Phantom evidence ────────────────────────────────────────────────────────
+
+describe('validate health W026: cited test files resolve in the tree', () => {
+  test('fires on a row citing a test file that does not exist', () => {
+    const dir = commitTree(
+      makePlanning({
+        ...BASE_DOCS,
+        'phases/01-alpha/01-VALIDATION.md': validationMd({
+          rows: [mapRow('REQ-GHOST', '`node --test tests/does-not-exist.test.cjs`')],
+        }),
+      }),
+    );
+
+    const hits = planningIssuesWithCode(dir, 'W026');
+    assert.ok(
+      hits.length >= 1,
+      `a row naming a green test that does not exist is a false negative in the release-readiness signal, got ${planningCodes(dir)}`,
+    );
+    assert.ok(
+      hits.some((h) => h.message.includes('REQ-GHOST')),
+      `the message must name the row's requirement: ${JSON.stringify(hits)}`,
+    );
+    assert.ok(
+      hits.some((h) => h.message.includes('tests/does-not-exist.test.cjs')),
+      `the message must name the missing path: ${JSON.stringify(hits)}`,
+    );
+  });
+
+  test('stays quiet when the cited test file is in the tree', () => {
+    const dir = commitTree(
+      makePlanning({
+        ...BASE_DOCS,
+        'phases/01-alpha/01-VALIDATION.md': validationMd({
+          rows: [mapRow('REQ-REAL', '`node --test tests/real.test.cjs`')],
+        }),
+      }),
+      { tracked: { 'tests/real.test.cjs': "require('node:test');\n" } },
+    );
+
+    assert.strictEqual(
+      countPlanningCode(dir, 'W026'),
+      0,
+      'evidence that resolves is not a defect',
+    );
+  });
+
+  test('stays quiet on rows that cite no test file at all', () => {
+    const dir = commitTree(
+      makePlanning({
+        ...BASE_DOCS,
+        'phases/01-alpha/01-VALIDATION.md': validationMd({
+          rows: [
+            mapRow('REQ-MANUAL', '—', 'manual'),
+            mapRow('REQ-ANCHOR', 'workflows/validate-phase.md#validation-audit', 'manual'),
+          ],
+        }),
+      }),
+    );
+
+    assert.strictEqual(
+      countPlanningCode(dir, 'W026'),
+      0,
+      'a row that correctly claims nothing must not be punished — the check is about test-file citations, not about every path a row mentions',
+    );
+  });
+
+  test('fires when the cited file exists only as an untracked local artifact', () => {
+    const dir = commitTree(
+      makePlanning({
+        ...BASE_DOCS,
+        'phases/01-alpha/01-VALIDATION.md': validationMd({
+          rows: [mapRow('REQ-LOCAL', '`node --test tests/untracked.test.cjs`')],
+        }),
+      }),
+      { untracked: { 'tests/untracked.test.cjs': "require('node:test');\n" } },
+    );
+
+    assert.ok(
+      fs.existsSync(path.join(dir, 'tests', 'untracked.test.cjs')),
+      'the fixture must actually put the file on disk, or the case is untested',
+    );
+    const hits = planningIssuesWithCode(dir, 'W026');
+    assert.ok(
+      hits.length >= 1,
+      `resolution is against git ls-tree HEAD, not the working directory — a file nobody else can check out is not reproducible evidence, got ${planningCodes(dir)}`,
+    );
+    assert.ok(
+      hits.some((h) => h.message.includes('tests/untracked.test.cjs')),
+      `the message must name the unreachable path: ${JSON.stringify(hits)}`,
+    );
+  });
+});
+
+// ─── Forged compliance flag ──────────────────────────────────────────────────
+
+describe('validate health W027: a promoted phase carries an audit trail', () => {
+  test('fires as an error on a promoted phase with no audit trail', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': validationMd({
+        compliant: true,
+        rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+        sections: SIGN_OFF_CHECKLIST,
+      }),
+    });
+
+    const report = planningHealth(dir);
+    const errors = (report.errors || []).filter((i) => i.code === 'W027');
+    assert.ok(
+      errors.length >= 1,
+      `a claim of release readiness with no evidence behind it is an error, not untidiness — got errors ${JSON.stringify(report.errors)} warnings ${JSON.stringify(report.warnings)}`,
+    );
+    assert.ok(
+      errors.some((e) => e.message.includes('01-alpha')),
+      `the message must name the phase directory: ${JSON.stringify(errors)}`,
+    );
+    assert.strictEqual(
+      (report.warnings || []).filter((i) => i.code === 'W027').length,
+      0,
+      'the severity is part of the contract — a warning is dismissible and this is not',
+    );
+  });
+
+  test('stays quiet on a promoted phase that has an audit trail', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': validationMd({
+        compliant: true,
+        rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+        sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+      }),
+    });
+
+    assert.strictEqual(
+      countPlanningCode(dir, 'W027'),
+      0,
+      'a flag earned against a dated audit trail is the shape the check exists to permit',
+    );
+  });
+
+  test('stays quiet on an audited phase that was correctly not promoted', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': validationMd({
+        compliant: false,
+        rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+        sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+      }),
+    });
+
+    assert.strictEqual(
+      countPlanningCode(dir, 'W027'),
+      0,
+      'validated, gaps found, correctly left unpromoted — the check measures evidence, not optimism, and a naive implementation flags exactly the one phase that behaved correctly',
+    );
+  });
+
+  test('stays quiet when the promoted string appears only in the sign-off checklist', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': validationMd({
+        compliant: false,
+        rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+        sections: SIGN_OFF_CHECKLIST,
+      }),
+    });
+
+    const body = fs.readFileSync(
+      path.join(dir, '.planning', 'phases', '01-alpha', '01-VALIDATION.md'),
+      'utf8',
+    );
+    assert.ok(
+      body.includes('`nyquist_compliant: true` set in frontmatter'),
+      'the fixture must actually carry the checklist line, or the case is untested',
+    );
+    assert.strictEqual(
+      countPlanningCode(dir, 'W027'),
+      0,
+      'the check must anchor on the frontmatter block — an unanchored match reads the sign-off checklist as a promotion and reports four times the real count',
+    );
+  });
+});
