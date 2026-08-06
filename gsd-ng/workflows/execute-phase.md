@@ -814,7 +814,8 @@ Parse `--no-transition` flag from $ARGUMENTS.
 **If `--no-transition` flag present:**
 
 Execute-phase was spawned by plan-phase's auto-advance. Do NOT run transition.md.
-After verification passes and roadmap is updated, return completion status to parent:
+After verification passes and roadmap is updated, run the Nyquist promotion below, then
+return completion status to parent:
 
 ```
 ## PHASE COMPLETE
@@ -822,11 +823,63 @@ After verification passes and roadmap is updated, return completion status to pa
 Phase: ${PHASE_NUMBER} - ${PHASE_NAME}
 Plans: ${completed_count}/${total_count}
 Verification: {Passed | Gaps Found}
+Nyquist: {PROMOTED | HELD | QUEUED | not run — reason}
 
 [Include aggregate_results output]
 ```
 
 STOP. Do not proceed to auto-advance or transition.
+
+**Nyquist validation promotion:**
+
+Applies to both branches of this step — run it before emitting the report above, and
+before any auto-advance below. This is the only point at which the lifecycle reaches
+`{{COMMAND_PREFIX}}validate-phase`, so a phase that does not pass through here never
+earns `nyquist_compliant` at all.
+
+```bash
+NYQUIST_CFG=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" config-get workflow.nyquist_validation --default "true")
+VERIFY_STATUS=$(grep "^status:" "$PHASE_DIR"/*-VERIFICATION.md 2>/dev/null | tail -1 | cut -d: -f2 | tr -d ' ')
+```
+
+Any value other than `false` counts as enabled, so an absent key defaults on.
+
+If `[ "$NYQUIST_CFG" = "false" ]`: skip validation and say so in one line —
+
+```
+Nyquist validation: skipped (workflow.nyquist_validation is false)
+```
+
+Then continue. Do not skip silently: a disabled gate nobody is told about is
+indistinguishable from a gate that was never built.
+
+If `$VERIFY_STATUS` is anything other than `passed` — `gaps_found`, `halted`, or empty —
+do not run validation, and report `Nyquist validation: not run (verification:
+{VERIFY_STATUS})`. This is the same invariant the todo-closure gate enforces further
+down: a phase with open gaps is not promotable, and validating one would either record a
+compliance claim over unfinished work or bury the gaps under a second report.
+
+If `[ "$NYQUIST_CFG" != "false" ]` AND `$VERIFY_STATUS` is `passed`: read and follow
+`~/.claude/gsd-ng/workflows/validate-phase.md` inline for `${PHASE_NUMBER}` — the same
+inline convention this step uses for transition.md, and for the same reason: the phase
+completion data is in context already and a spawned agent would re-derive all of it. The
+equivalent command surface is `{{COMMAND_PREFIX}}validate-phase ${PHASE_NUMBER}`.
+
+When `--auto`, `AUTO_CHAIN` or `AUTO_CFG` is in effect, pass `--batch` so the run is
+non-interactive. Batch mode never waives and never promotes on a judgement call, so an
+unattended chain cannot manufacture a `true` — it queues what it cannot close.
+
+Report the outcome:
+
+| Outcome | VALIDATION.md state | Report line |
+|---------|---------------------|-------------|
+| PROMOTED | `nyquist_compliant: true` with a `## Validation Audit` trail | `Nyquist validation: PROMOTED — {phase_dir}/{padded_phase}-VALIDATION.md` |
+| HELD | `nyquist_compliant: false`, gaps the auditor could not close | `Nyquist validation: HELD — {phase_dir}/{padded_phase}-VALIDATION.md` |
+| QUEUED | `nyquist_compliant: false`, rows in `.planning/nyquist-adjudication.md` | `Nyquist validation: QUEUED — {N} rows await adjudication` |
+
+Put that line in the completion report — the `## PHASE COMPLETE` block above and the
+`## ✓ Phase {X}: {Name} Complete` block below both carry it. Compliance state that can
+only be found by opening frontmatter is compliance state nobody checks.
 
 **Create PR suggestion (when applicable):**
 
@@ -867,6 +920,8 @@ Read and follow `~/.claude/gsd-ng/workflows/transition.md`, passing through the 
 
 ```
 ## ✓ Phase {X}: {Name} Complete
+
+Nyquist validation: {PROMOTED | HELD | QUEUED | skipped — reason}
 
 {{COMMAND_PREFIX}}progress — see updated roadmap
 {{COMMAND_PREFIX}}discuss-phase {next} — discuss next phase before planning
