@@ -1400,14 +1400,46 @@ const PROMOTED_FLAG = /^nyquist_compliant:\s*true\s*$/m;
 const AUDIT_TRAIL_SECTION = /^## Validation Audit\b/m;
 
 /**
- * Whether a VALIDATION.md's frontmatter claims the phase is Nyquist-compliant.
+ * A VALIDATION.md's frontmatter block, or null when it has none.
  *
  * @param {string} content - VALIDATION.md contents
- * @returns {boolean}
+ * @returns {string|null}
  */
-function claimsNyquistCompliant(content) {
+function frontmatterBlock(content) {
   const fm = String(content || '').match(FRONTMATTER_BLOCK);
-  return fm ? PROMOTED_FLAG.test(fm[1]) : false;
+  return fm ? fm[1] : null;
+}
+
+const MANUAL_ONLY_FIELD = /^manual_only_count:\s*"?(\d+)"?\s*$/m;
+const EVIDENCE_TIERS_FIELD = /^evidence_tiers:\s*(.+?)\s*$/m;
+
+/**
+ * The decomposition behind one phase's compliance claim: how many behaviors it
+ * carved out as manual, and how its evidence splits across the tiers.
+ *
+ * Read with anchored patterns rather than a YAML parse because the field
+ * survives in two shapes — the template ships `{ automated: 0, tier_m: 0,
+ * manual: 0 }` as a flow mapping and `frontmatter set` rewrites it as a quoted
+ * string when it promotes a phase. Both carry the same three numbers, and a
+ * reader that accepts only one of them reports zeros for precisely the phases
+ * the gate has promoted.
+ *
+ * @param {string} block - the frontmatter block, as returned by frontmatterBlock
+ * @returns {{manualOnlyCount: number, tierA: number, tierM: number, manualRows: number}}
+ */
+function readEvidenceClaim(block) {
+  const manualOnly = block.match(MANUAL_ONLY_FIELD);
+  const tiers = (block.match(EVIDENCE_TIERS_FIELD) || [])[1] || '';
+  const tier = (pattern) => {
+    const m = tiers.match(pattern);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  return {
+    manualOnlyCount: manualOnly ? parseInt(manualOnly[1], 10) : 0,
+    tierA: tier(/\bautomated:\s*(\d+)/),
+    tierM: tier(/\btier_m:\s*(\d+)/),
+    manualRows: tier(/\bmanual:\s*(\d+)/),
+  };
 }
 
 /**
@@ -1709,6 +1741,25 @@ function runHealth(cwd, options) {
     if (!trackedPaths.index) trackedPaths.index = buildTrackedPathIndex(cwd);
     return trackedPaths.index;
   };
+  // The standing compliance signal. The gate decayed from a genuine 7-of-7 to
+  // an effective 7-of-83 over 76 phases because nothing ever reported the
+  // ratio: every individual forgery was invisible and the aggregate was never
+  // computed at all. It is published here so a second decay is a number that
+  // moves rather than a silence.
+  //
+  // The tier split is what keeps the headline honest. "N compliant" where most
+  // of the evidence is grep contracts proxying over prompt text is a materially
+  // different claim from one backed by executable tests, and an aggregate that
+  // hides the difference will eventually be quoted as if it did not.
+  const nyquist = {
+    total: 0,
+    compliant: 0,
+    forged: 0,
+    held: 0,
+    manual_only_count: 0,
+    evidence_tiers: { tier_a: 0, tier_m: 0, manual: 0 },
+    tiers_declared_by: 0,
+  };
   try {
     const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
     for (const e of phaseEntries) {
@@ -1769,10 +1820,38 @@ function runHealth(cwd, options) {
           }
         }
 
+        // The three terminal states a phase can be in, counted once. A promoted
+        // phase with no trail is neither compliant nor merely held: it is the
+        // forgery W027 reports, and folding it into either bucket is how the
+        // ratio stopped meaning anything the first time.
+        const block = frontmatterBlock(body);
+        const promoted = block !== null && PROMOTED_FLAG.test(block);
+        const audited = AUDIT_TRAIL_SECTION.test(body);
+        nyquist.total += 1;
+        if (promoted && audited) {
+          nyquist.compliant += 1;
+          const claim = readEvidenceClaim(block);
+          nyquist.manual_only_count += claim.manualOnlyCount;
+          nyquist.evidence_tiers.tier_a += claim.tierA;
+          nyquist.evidence_tiers.tier_m += claim.tierM;
+          nyquist.evidence_tiers.manual += claim.manualRows;
+          // The split is a sum over what the compliant phases declare, and the
+          // field postdates the phases that earned the flag first. Publishing
+          // how many of them declared it is what stops the sum being read as a
+          // census of all of them.
+          if (claim.tierA || claim.tierM || claim.manualRows) {
+            nyquist.tiers_declared_by += 1;
+          }
+        } else if (promoted) {
+          nyquist.forged += 1;
+        } else {
+          nyquist.held += 1;
+        }
+
         // W027 — an error, not a warning. A phase claiming compliance with no
         // audit trail is a false statement about release readiness, and a
         // warning is dismissible.
-        if (claimsNyquistCompliant(body) && !AUDIT_TRAIL_SECTION.test(body)) {
+        if (promoted && !audited) {
           addIssue(
             'error',
             'W027',
@@ -2520,6 +2599,7 @@ function runHealth(cwd, options) {
     errors,
     warnings,
     info,
+    nyquist,
     repairable_count: repairableCount,
     repairs_performed: repairActions.length > 0 ? repairActions : undefined,
   });

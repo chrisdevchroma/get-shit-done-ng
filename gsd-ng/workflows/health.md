@@ -33,8 +33,29 @@ Parse JSON output:
 - `errors[]`: Critical issues (code, message, fix, repairable)
 - `warnings[]`: Non-critical issues
 - `info[]`: Informational notes
+- `nyquist`: The standing compliance signal — see below
 - `repairable_count`: Number of auto-fixable issues
 - `repairs_performed[]`: Actions taken if --repair was used
+
+The `nyquist` object is a census of every `*-VALIDATION.md` in `.planning/phases/`, reported
+whether or not any of W009/W026/W027 fired:
+
+| Key | Meaning |
+|-----|---------|
+| `total` | VALIDATION.md files found |
+| `compliant` | `nyquist_compliant: true` **and** a `## Validation Audit` section |
+| `forged` | promoted with no audit trail — the same files W027 reports as errors |
+| `held` | not promoted: validated with gaps, or never validated |
+| `manual_only_count` | carve-outs summed across the compliant phases |
+| `evidence_tiers` | `tier_a` / `tier_m` / `manual` rows, summed across the compliant phases |
+| `tiers_declared_by` | how many compliant phases declared a tier split at all |
+
+`compliant + forged + held == total`. A forgery is counted on its own rather than folded into
+either neighbour: it is not evidence of compliance and it is not an honest hold.
+
+`tiers_declared_by` qualifies the split. `evidence_tiers` sums the `evidence_tiers` frontmatter
+field, which postdates any phase promoted before it existed, so a compliant phase that declares
+nothing contributes zero and the split is a floor rather than a census.
 </step>
 
 <step name="format_output">
@@ -47,7 +68,12 @@ Parse JSON output:
 
 Status: HEALTHY | DEGRADED | BROKEN
 Errors: N | Warnings: N | Info: N
+Nyquist: N/M phases compliant (K held, F forged) — evidence A TIER-A / B TIER-M, C manual-only, declared by D of N
 ```
+
+Always print the Nyquist line, including when it reads `0/M`. The gate decayed from a genuine
+7-of-7 to an effective 7-of-83 because nothing ever reported the ratio; a signal shown only when
+it looks interesting is the same silence with extra steps.
 
 **If repairs were performed:**
 ```

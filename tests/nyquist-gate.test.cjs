@@ -872,13 +872,19 @@ const AUDIT_TRAIL = [
   '',
 ];
 
-function validationMd({ compliant = false, rows = [], sections = [] } = {}) {
+function validationMd({
+  compliant = false,
+  rows = [],
+  sections = [],
+  fields = [],
+} = {}) {
   return [
     '---',
     'phase: 1',
     'slug: alpha',
     'status: draft',
     `nyquist_compliant: ${compliant}`,
+    ...fields,
     'wave_0_complete: false',
     'created: 2026-01-01',
     '---',
@@ -1131,6 +1137,305 @@ describe('validate health W027: a promoted phase carries an audit trail', () => 
       countPlanningCode(dir, 'W027'),
       0,
       'the check must anchor on the frontmatter block — an unanchored match reads the sign-off checklist as a promotion and reports four times the real count',
+    );
+  });
+});
+
+// ─── The standing compliance census ──────────────────────────────────────────
+//
+// The ratio is the measurement whose absence let the gate decay: every forgery
+// was individually invisible and the aggregate was never computed at all. What
+// makes it worth publishing is that it decomposes — a census that reported one
+// number would be quoted as if the evidence behind it were uniform.
+
+const TIER_FIELDS = [
+  'manual_only_count: 2',
+  'evidence_tiers: { automated: 7, tier_m: 3, manual: 2 }',
+];
+// What `gsd-tools frontmatter set` leaves behind when it promotes a phase: the
+// flow mapping comes back as a quoted scalar. A reader that accepts only the
+// template's shape reports zeros for precisely the phases the gate promoted.
+const QUOTED_TIER_FIELDS = [
+  'manual_only_count: "1"',
+  'evidence_tiers: "{ automated: 4, tier_m: 1, manual: 1 }"',
+];
+
+const compliantMd = (fields = []) =>
+  validationMd({
+    compliant: true,
+    fields,
+    rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+    sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+  });
+
+describe('validate health: the compliance census decomposes', () => {
+  test('compliant, forged and held are counted apart', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': compliantMd(),
+      'phases/02-beta/02-VALIDATION.md': validationMd({
+        compliant: true,
+        rows: [mapRow('REQ-TWO', '`node --test tests/real.test.cjs`')],
+        sections: SIGN_OFF_CHECKLIST,
+      }),
+      'phases/03-gamma/03-VALIDATION.md': validationMd({
+        rows: [mapRow('REQ-THREE', '`node --test tests/real.test.cjs`')],
+        sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+      }),
+    });
+
+    const { nyquist } = planningHealth(dir);
+    assert.deepStrictEqual(
+      {
+        total: nyquist.total,
+        compliant: nyquist.compliant,
+        forged: nyquist.forged,
+        held: nyquist.held,
+      },
+      { total: 3, compliant: 1, forged: 1, held: 1 },
+      'a promoted phase with no audit trail is neither compliant nor an honest hold — folding it into either bucket is how the ratio stopped meaning anything',
+    );
+    assert.strictEqual(
+      nyquist.compliant + nyquist.forged + nyquist.held,
+      nyquist.total,
+      'the three states must partition the population, or the ratio is unreadable',
+    );
+  });
+
+  test('the split sums what the compliant phases declare, and says how many did', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': compliantMd(TIER_FIELDS),
+      'phases/02-beta/02-VALIDATION.md': compliantMd(),
+      'phases/03-gamma/03-VALIDATION.md': validationMd({
+        fields: TIER_FIELDS,
+        rows: [mapRow('REQ-HELD', '`node --test tests/real.test.cjs`')],
+        sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+      }),
+    });
+
+    const { nyquist } = planningHealth(dir);
+    assert.deepStrictEqual(
+      nyquist.evidence_tiers,
+      { tier_a: 7, tier_m: 3, manual: 2 },
+      'the third phase declares the same numbers and is held — evidence that has not been accepted is not evidence the census may quote',
+    );
+    assert.strictEqual(nyquist.manual_only_count, 2);
+    assert.strictEqual(
+      nyquist.compliant,
+      2,
+      'the fixture must have two compliant phases, or the qualifier below is measuring nothing',
+    );
+    assert.strictEqual(
+      nyquist.tiers_declared_by,
+      1,
+      'one of the two declared a split; publishing the ratio without that is how a sum over some phases gets read as a census of all of them',
+    );
+  });
+
+  test('a promoted phase declaring nothing contributes zeros, not noise', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': compliantMd(),
+    });
+
+    const { nyquist } = planningHealth(dir);
+    assert.strictEqual(nyquist.compliant, 1);
+    assert.deepStrictEqual(nyquist.evidence_tiers, {
+      tier_a: 0,
+      tier_m: 0,
+      manual: 0,
+    });
+    assert.strictEqual(nyquist.manual_only_count, 0);
+    assert.strictEqual(
+      nyquist.tiers_declared_by,
+      0,
+      'the field postdates the phases that earned the flag first — an absent declaration is zero declared, not zero evidence',
+    );
+  });
+
+  test('the quoted rewrite the promotion path leaves behind is read too', () => {
+    const dir = makePlanning({
+      ...BASE_DOCS,
+      'phases/01-alpha/01-VALIDATION.md': compliantMd(QUOTED_TIER_FIELDS),
+    });
+
+    const { nyquist } = planningHealth(dir);
+    assert.deepStrictEqual(
+      nyquist.evidence_tiers,
+      { tier_a: 4, tier_m: 1, manual: 1 },
+      'the field survives in two shapes and only one of them is the template — a reader that accepts one reports zeros for every phase the gate has actually promoted',
+    );
+    assert.strictEqual(nyquist.manual_only_count, 1);
+    assert.strictEqual(nyquist.tiers_declared_by, 1);
+  });
+
+  test('the census is reported on a tree with nothing to count', () => {
+    const dir = makePlanning({ ...BASE_DOCS });
+
+    const { nyquist } = planningHealth(dir);
+    assert.deepStrictEqual(
+      nyquist,
+      {
+        total: 0,
+        compliant: 0,
+        forged: 0,
+        held: 0,
+        manual_only_count: 0,
+        evidence_tiers: { tier_a: 0, tier_m: 0, manual: 0 },
+        tiers_declared_by: 0,
+      },
+      'a signal shown only when it looks interesting is the same silence with extra steps — 0/0 is a reading, not an absence',
+    );
+  });
+});
+
+// ─── The rot guard, over the live planning tree ──────────────────────────────
+//
+// Everything above builds its own .planning/ tree in a temp dir, on purpose.
+// This section does the opposite and reads the repository's real one, also on
+// purpose: it is a repo-state guard, not a unit test. **Do not delete it for
+// consistency with the convention around it** — the convention is right for a
+// detector, and wrong for the one assertion whose whole subject is the state of
+// this repository's own planning documents.
+//
+// What it guards. Twelve phases carried `nyquist_compliant: true` with nothing
+// recording the flag ever being earned, the earliest for the better part of a
+// year, and every one of them would have failed this assertion on the day it
+// landed. Nothing measured it, so nothing said so. The assertion costs a
+// directory walk.
+//
+// Two limits, stated rather than implied:
+//
+//   - The planning tree lives in the workspace above this submodule, so a bare
+//     clone of this repository has none and the sweep skips. In CI it is inert.
+//     What guards a consumer's tree is health check W027, which runs against
+//     whatever `.planning/` the CLI is pointed at; this is the dogfooding half,
+//     and it fires on `cd gsd-ng && npm test` — the command this workspace runs
+//     constantly.
+//   - The predicates are written out here rather than imported from verify.cjs.
+//     A contract that asks the checker whether the checker is right cannot fail
+//     when the checker is wrong, which is the case that matters.
+
+function findPlanningRoot(start) {
+  let dir = path.resolve(start);
+  for (;;) {
+    const candidate = path.join(dir, '.planning');
+    if (fs.existsSync(path.join(candidate, 'phases'))) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+const PLANNING_ROOT = findPlanningRoot(REPO_ROOT);
+const NO_LIVE_TREE =
+  'no .planning/phases tree above the repository — the guard is inert in a bare clone, and W027 covers the consumer case';
+
+// Anchored inside the frontmatter block. Validation files carry the literal
+// `nyquist_compliant: true` in their sign-off checklist, so an unanchored match
+// reads a blank checkbox as a promotion and returns roughly four times the real
+// number. That miscount has already misled one audit of this tree.
+const LIVE_FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
+const LIVE_PROMOTED_FLAG = /^nyquist_compliant:\s*true\s*$/m;
+const LIVE_AUDIT_TRAIL = /^## Validation Audit\b/m;
+
+const isPromoted = (body) => {
+  const fm = String(body).match(LIVE_FRONTMATTER);
+  return fm ? LIVE_PROMOTED_FLAG.test(fm[1]) : false;
+};
+const hasAuditTrail = (body) => LIVE_AUDIT_TRAIL.test(String(body));
+
+function liveValidationFiles(planningRoot) {
+  const phasesDir = path.join(planningRoot, 'phases');
+  const found = [];
+  for (const entry of fs.readdirSync(phasesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const phaseDir = path.join(phasesDir, entry.name);
+    for (const file of fs.readdirSync(phaseDir)) {
+      if (file.endsWith('-VALIDATION.md')) {
+        found.push(path.join(phaseDir, file));
+      }
+    }
+  }
+  return found;
+}
+
+describe('nyquist rot guard: no compliance flag in the tree stands without an audit trail', () => {
+  test(
+    'every promoted phase carries a "## Validation Audit" section',
+    { skip: PLANNING_ROOT ? false : NO_LIVE_TREE },
+    () => {
+      const forged = [];
+      for (const file of liveValidationFiles(PLANNING_ROOT)) {
+        const body = fs.readFileSync(file, 'utf8');
+        if (isPromoted(body) && !hasAuditTrail(body)) {
+          forged.push(path.relative(PLANNING_ROOT, file));
+        }
+      }
+      assert.deepStrictEqual(
+        forged,
+        [],
+        `a phase claiming compliance with no record of earning it is a false statement about release readiness: ${forged.join(', ')} — run the validation gate and let it promote the flag against evidence, or set the field back to false`,
+      );
+    },
+  );
+
+  test(
+    'the sweep is looking at something',
+    { skip: PLANNING_ROOT ? false : NO_LIVE_TREE },
+    () => {
+      const files = liveValidationFiles(PLANNING_ROOT);
+      assert.ok(
+        files.length > 0,
+        'no VALIDATION.md was found at all — the walk is pointed at the wrong directory and the guard above is vacuous',
+      );
+      const promoted = files.filter((f) =>
+        isPromoted(fs.readFileSync(f, 'utf8')),
+      );
+      assert.ok(
+        promoted.length > 0,
+        'no promoted phase was found — a mis-anchored pattern matches nothing and passes the guard above green forever, which is exactly the decorative-contract failure this file rules out elsewhere',
+      );
+    },
+  );
+
+  test('the promotion predicate discriminates', () => {
+    const earned = validationMd({
+      compliant: true,
+      rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+      sections: [...AUDIT_TRAIL, ...SIGN_OFF_CHECKLIST],
+    });
+    const forged = validationMd({
+      compliant: true,
+      rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+      sections: SIGN_OFF_CHECKLIST,
+    });
+    const checklistOnly = validationMd({
+      compliant: false,
+      rows: [mapRow('REQ-ONE', '`node --test tests/real.test.cjs`')],
+      sections: SIGN_OFF_CHECKLIST,
+    });
+
+    assert.ok(isPromoted(earned), 'a frontmatter flag reading true is a promotion');
+    assert.ok(isPromoted(forged), 'the trail is a separate question from the flag');
+    assert.ok(
+      checklistOnly.includes('`nyquist_compliant: true` set in frontmatter'),
+      'the counterfactual must actually carry the checklist line, or the case is untested',
+    );
+    assert.ok(
+      !isPromoted(checklistOnly),
+      'an unticked sign-off box is not a promotion — reading it as one is the miscount that returns four times the real number',
+    );
+
+    assert.ok(hasAuditTrail(earned), 'the dated trail is what the guard accepts');
+    assert.ok(
+      !hasAuditTrail(forged),
+      'a file with a flag and no trail must fail the trail check, or the guard passes on the only shape it exists to catch',
+    );
+    assert.ok(
+      !hasAuditTrail('Discussion of the ## Validation Audit section follows.\n'),
+      'prose naming the heading is not the heading — the check is anchored to the start of a line',
     );
   });
 });
