@@ -524,6 +524,16 @@ These read your planning documents against each other and report where they disa
 - **W023** — `ROADMAP.md` disagrees with itself: a plan-count header that does not match the plan list below it, a phase section with no checklist entry or a checklist entry with no section, or one phase number used twice.
 - **W024** — `STATE.md` disagrees with itself: a status saying work is in flight when the current phase is finished and verified, or velocity figures that do not match the metrics table. `gsd-tools state update-progress` fixes the second.
 
+### `/gsd:health` Reports W009, W026 or W027
+
+Three checks read the Nyquist validation gate — whether a phase has a validation contract, whether the evidence it cites exists, and whether a compliance claim has anything behind it. None is repairable, because each needs a validation run to settle.
+
+**W009 — a phase executed and has no `VALIDATION.md`.** The check fires on a phase directory holding at least one `-SUMMARY.md` with no `-VALIDATION.md` next to it. Run `/gsd:validate-phase [N]`: it reconstructs the strategy from the phase's own artifacts, so you do not re-plan anything. A phase that has been planned but not executed is deliberately not flagged — there is nothing to validate yet.
+
+**W026 — a verification-map row cites a test file that is not there.** Resolution is against `git ls-tree HEAD`, not against your working directory, and the difference is the point: a file only you have is not evidence anyone else can reproduce. This is a real failure mode rather than a hypothetical one — a test file was cited by a phase's map with a line count and two commit SHAs long after a squash made the commit that added it unreachable, and every `test -f`-shaped check would have passed the whole time. Fix the row in whichever direction the evidence points: re-point it at the test that does exist, write the test it names, or demote it to pending. Rows that cite no path at all — manual verifications, anchors into a document — are never flagged.
+
+**W027 — a phase claims compliance it did not earn.** Frontmatter reads `nyquist_compliant: true` and the file has no `## Validation Audit` section, which means nothing records the flag ever being earned. This is reported as an **error**, not a warning, because it is a false statement about release readiness rather than untidiness. Either run `/gsd:validate-phase [N]` and let it promote the flag against an audit trail, or set the field back to `false`. Two shapes are deliberately quiet: the template's sign-off checklist line (`- [ ] nyquist_compliant: true set in frontmatter`), because the check reads the frontmatter block and not the body; and a phase reading `false` *with* an audit trail, which is a phase that was validated, had gaps found, and was correctly not promoted. That is the gate working.
+
 ### Need to Change Something After Execution
 
 Do not re-run `/gsd:execute-phase`. Use `/gsd:quick` for targeted fixes, or `/gsd:verify-work` to systematically identify and fix issues through UAT.
