@@ -241,7 +241,10 @@ const INJECTION_PATTERNS_TIERED = [
   // Base64 + execute combination: "decode and execute base64payload"
   // Attackers encode malicious payloads to bypass pattern detection
   {
-    pattern: /(?:decode|base64)[^.]{0,30}(?:execute|follow|apply|run)/i,
+    // \b is load-bearing: without it the alternation matches the tail of a
+    // longer identifier — `isClaudeCode` ends in "deCode" — so any text naming
+    // an identifier of that shape near run/apply/follow/execute was flagged.
+    pattern: /\b(?:decode|base64)[^.]{0,30}(?:execute|follow|apply|run)/i,
     confidence: 'medium',
     id: 'OBFUSC-BASE64-EXEC',
     description: 'base64+execute obfuscation',
