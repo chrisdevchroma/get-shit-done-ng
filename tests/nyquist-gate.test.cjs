@@ -51,6 +51,8 @@ const PLAN_PHASE = readDoc('gsd-ng/workflows/plan-phase.md');
 const VALIDATE_PHASE = readDoc('gsd-ng/workflows/validate-phase.md');
 const VALIDATE_COMMAND = readDoc('commands/gsd/validate-phase.md');
 const PLANNER_AGENT = readDoc('agents/gsd-planner.md');
+const EVIDENCE_TIERS_REF = readDoc('gsd-ng/references/nyquist-evidence-tiers.md');
+const VALIDATION_TEMPLATE = readDoc('gsd-ng/templates/VALIDATION.md');
 
 // The routing edge belongs in the phase-completion region, not anywhere in a
 // 1100-line workflow. Anchoring here is what stops a stray mention elsewhere
@@ -120,6 +122,52 @@ const COUNTERFACTUALS = {
   plannerProhibition:
     'Never write `nyquist_compliant: true`. Only validate-phase promotes the flag, and only against an audit trail.',
 
+  // Promotion conditioned on a judgement the run made for itself. The words are
+  // reassuring and the property is gone — this is the shape the invariant has to
+  // exclude, not an obviously broken one.
+  judgementPromotes:
+    'Batch mode may write the compliance flag true once the run has judged the remaining rows acceptable.',
+
+  // The invariant as stated: one condition, and it needs no judgement.
+  invariantStated: [
+    'Batch mode may write the compliance flag true **only** on the all-rows-green path.',
+    'Any path involving a judgement call routes to the queue.',
+  ].join('\n'),
+
+  // A tier definition with the first two clauses and neither the self-test nor
+  // the exclusion list. Everything it says is true; what it omits is the tier.
+  tierWithoutSelfTest: [
+    'TIER-M — a grep contract over markdown is admissible evidence when it has',
+    'a required-content assertion and a forbidden-content assertion against the',
+    'file it names.',
+  ].join('\n'),
+
+  // The sign-off checklist item the template used to ship. An unanchored count
+  // over the tree reads this blank checkbox as a promotion.
+  templateSignOffLiteral: '- [ ] `nyquist_compliant: true` set in frontmatter',
+
+  // The prohibition with no reason attached. A rule whose cost is visible and
+  // whose reason is not is the kind that gets optimized away.
+  plannerRuleWithoutReason:
+    'Never write `nyquist_compliant: true`. Only validate-phase promotes the flag.',
+
+  // Step 6 with the trail mandated on update and silently absent from creation.
+  // A whole-file search for the trail passes against this; only a search
+  // anchored inside each state's section catches it.
+  trailOnUpdateOnly: [
+    '**State B (create):**',
+    '',
+    '1. Read the template',
+    '2. Write the file',
+    '',
+    '**State A (update):**',
+    '',
+    '1. Update the map',
+    '2. Append the `## Validation Audit {date}` trail below',
+    '',
+    '**The audit trail, appended on every run:**',
+  ].join('\n'),
+
   // A rewrite of the validation workflow that dropped the auditor spawn and the
   // audit-trail template along with the sections around them.
   strippedWorkflow: [
@@ -162,6 +210,22 @@ function regionsAround(text, anchor, radius = 600) {
 function someRegion(text, anchor, pattern, radius) {
   assert.ok(!pattern.flags.includes('g'), 'co-occurrence pattern must not be global');
   return regionsAround(text, anchor, radius).some((r) => pattern.test(r));
+}
+
+// The slice between two literal markers. Contracts on a document that has two
+// parallel branches must assert inside each branch: a requirement satisfied
+// once, in the branch that already had it, reads as satisfied everywhere when
+// the search is whole-file.
+function sectionBetween(text, startMarker, endMarker) {
+  const start = text.indexOf(startMarker);
+  const end = text.indexOf(endMarker);
+  assert.ok(start !== -1, `section start marker missing: ${startMarker}`);
+  assert.ok(end !== -1, `section end marker missing: ${endMarker}`);
+  assert.ok(
+    start < end,
+    `section markers out of order — ${startMarker} must precede ${endMarker}`,
+  );
+  return text.slice(start, end);
 }
 
 // ─── Routing edge ────────────────────────────────────────────────────────────
@@ -442,6 +506,261 @@ describe('nyquist gate: the planner may not certify its own output', () => {
       unnegatedComplianceDirectives(COUNTERFACTUALS.plannerSelfCert).length,
       1,
       'the detector must catch a plain instruction to self-certify',
+    );
+  });
+});
+
+// ─── The never-promote-on-judgement invariant ────────────────────────────────
+//
+// Batch mode not calling the question tool is the easy half. The half that
+// erodes is the property underneath it: a run that cannot ask is under pressure
+// to decide, and deciding is exactly what it has no standing to do.
+
+const PROMOTE_ONLY_ON_GREEN =
+  /may (?:write|promote)[^\n]{0,80}\bonly\b[^\n]{0,80}(?:all-rows-green|all rows green|every row green|no-judgement)/i;
+const JUDGEMENT_ROUTES_AWAY =
+  /judge?ment[^\n]{0,60}(?:routes? to|goes to|is queued|defer)/i;
+
+describe('nyquist gate: promotion never rests on a judgement the run made', () => {
+  test('the workflow states the invariant, not merely the flag', () => {
+    assert.match(
+      VALIDATE_PHASE,
+      PROMOTE_ONLY_ON_GREEN,
+      'the one path on which an unattended run may promote must be named, or every path is arguable',
+    );
+    assert.match(
+      VALIDATE_PHASE,
+      JUDGEMENT_ROUTES_AWAY,
+      'the workflow must say where a judgement call goes instead',
+    );
+  });
+
+  test('nothing pairs the batch flag with the waiver branch', () => {
+    assert.doesNotMatch(
+      VALIDATE_PHASE,
+      BATCH_AUTO_WAIVES,
+      'the waiver branch is the one option the interactive prompt exists to authorize — an unattended run may not take it',
+    );
+  });
+
+  test('the invariant patterns discriminate', () => {
+    assert.match(COUNTERFACTUALS.invariantStated, PROMOTE_ONLY_ON_GREEN);
+    assert.match(COUNTERFACTUALS.invariantStated, JUDGEMENT_ROUTES_AWAY);
+    assert.doesNotMatch(
+      COUNTERFACTUALS.judgementPromotes,
+      PROMOTE_ONLY_ON_GREEN,
+      'promotion after the run judged the rows acceptable must not read as the invariant',
+    );
+    assert.doesNotMatch(
+      COUNTERFACTUALS.judgementPromotes,
+      JUDGEMENT_ROUTES_AWAY,
+      'judging rows is not routing them away',
+    );
+  });
+});
+
+// ─── The evidence tiers ──────────────────────────────────────────────────────
+//
+// A tier that quietly widens is worse than no tier: it relabels the same
+// unverified rows as verified ones. The four clauses and the exclusion list are
+// what stop the widening, so both are asserted by name.
+
+const TIER_CLAUSES = {
+  'required-content': /required-content/i,
+  'forbidden-content': /forbidden-content/i,
+  'discrimination self-test': /discrimination self-test/i,
+  'resolvable subject': /git ls-tree HEAD/,
+};
+const ALL_FOUR_REQUIRED = /all four/i;
+const THREE_IS_NOT_A_PASS = /three of four is not a pass/i;
+const EXISTS_SYNC_INADMISSIBLE = /fs\.existsSync[^\n]{0,60}\balone\b/i;
+
+describe('nyquist gate: the evidence tier is written down and bounded', () => {
+  test('all four clauses are named', () => {
+    for (const [name, pattern] of Object.entries(TIER_CLAUSES)) {
+      assert.match(
+        EVIDENCE_TIERS_REF,
+        pattern,
+        `clause "${name}" must be stated — a tier missing a clause is a tier without it`,
+      );
+    }
+    assert.match(
+      EVIDENCE_TIERS_REF,
+      ALL_FOUR_REQUIRED,
+      'the clauses must be required together, not offered as a menu',
+    );
+    assert.match(
+      EVIDENCE_TIERS_REF,
+      THREE_IS_NOT_A_PASS,
+      'the near-miss case is the one that gets argued, so it is stated outright',
+    );
+  });
+
+  test('the exclusion list keeps existence checks out', () => {
+    assert.match(
+      EVIDENCE_TIERS_REF,
+      EXISTS_SYNC_INADMISSIBLE,
+      'an existence check is the cheapest thing that looks like a test — dropping it from the list is how the tier widens',
+    );
+  });
+
+  test('the tier patterns discriminate', () => {
+    assert.match(COUNTERFACTUALS.tierWithoutSelfTest, TIER_CLAUSES['required-content']);
+    assert.match(COUNTERFACTUALS.tierWithoutSelfTest, TIER_CLAUSES['forbidden-content']);
+    assert.doesNotMatch(
+      COUNTERFACTUALS.tierWithoutSelfTest,
+      TIER_CLAUSES['discrimination self-test'],
+      'two clauses stated well must not satisfy a check for the third',
+    );
+    assert.doesNotMatch(
+      COUNTERFACTUALS.tierWithoutSelfTest,
+      EXISTS_SYNC_INADMISSIBLE,
+      'a definition with no exclusion list must fail the exclusion check',
+    );
+    assert.doesNotMatch(
+      'the helper calls fs.existsSync before reading the file',
+      EXISTS_SYNC_INADMISSIBLE,
+      'incidental prose naming the call is not a ruling on it',
+    );
+  });
+});
+
+// ─── The template's frontmatter surface ──────────────────────────────────────
+
+const FLAG_AUTHORED_FALSE = /^nyquist_compliant: false$/m;
+const PROMOTED_LITERAL = /nyquist_compliant:\s*true/;
+const MANUAL_ONLY_COUNT = /^manual_only_count:/m;
+const EVIDENCE_TIERS_FIELD = /^evidence_tiers:/m;
+const TIER_M_DOCUMENTED = /`TIER-M`/;
+
+describe('nyquist gate: the template ships a decomposable claim', () => {
+  test('the compliance claim decomposes', () => {
+    assert.match(
+      VALIDATION_TEMPLATE,
+      MANUAL_ONLY_COUNT,
+      'compliance stays honest by staying measurable — the carve-out count is published',
+    );
+    assert.match(VALIDATION_TEMPLATE, EVIDENCE_TIERS_FIELD);
+    assert.match(
+      VALIDATION_TEMPLATE,
+      TIER_M_DOCUMENTED,
+      'a row cannot record a tier the template does not document',
+    );
+    assert.match(
+      VALIDATION_TEMPLATE,
+      FLAG_AUTHORED_FALSE,
+      'the file is authored uncompliant; only the validation run promotes it',
+    );
+  });
+
+  test('the body ships no bare promoted literal', () => {
+    assert.doesNotMatch(
+      VALIDATION_TEMPLATE,
+      PROMOTED_LITERAL,
+      'the sign-off checklist item made an unanchored count over the tree report roughly four times the real number, and it misled an audit before it was found',
+    );
+  });
+
+  test('the literal pattern discriminates', () => {
+    assert.match(
+      COUNTERFACTUALS.templateSignOffLiteral,
+      PROMOTED_LITERAL,
+      'the pattern must catch the checklist form, which is where it actually appeared',
+    );
+    assert.doesNotMatch(
+      '- [ ] Compliance flag promoted by validate-phase (never set by hand)',
+      PROMOTED_LITERAL,
+      'the reworded item must not read as the literal it replaced',
+    );
+  });
+});
+
+// ─── The audit trail, per state ──────────────────────────────────────────────
+//
+// Its universal absence is the single artifact that proved the gate had stopped
+// running, and a promoted phase without one is now an error. Mandating it on
+// update alone would have the reconstruction path manufacture a fresh violation
+// on every file it wrote — so each state is asserted inside its own section.
+
+const STATE_B_START = '**State B (create):**';
+const STATE_A_START = '**State A (update):**';
+const TRAIL_SECTION_START = '**The audit trail, appended on every run:**';
+const TRAIL_MANDATE = /Append the `## Validation Audit \{date\}` trail/;
+
+describe('nyquist gate: the audit trail is mandated on both states', () => {
+  test('state B, the creation path, appends a trail', () => {
+    const stateB = sectionBetween(VALIDATE_PHASE, STATE_B_START, STATE_A_START);
+    assert.match(
+      stateB,
+      TRAIL_MANDATE,
+      'a reconstructed file with no trail is indistinguishable from a forged flag, and reports as one',
+    );
+  });
+
+  test('state A, the update path, appends a trail', () => {
+    const stateA = sectionBetween(VALIDATE_PHASE, STATE_A_START, TRAIL_SECTION_START);
+    assert.match(
+      stateA,
+      TRAIL_MANDATE,
+      'a run that changed nothing and a run that never happened are otherwise the same file',
+    );
+  });
+
+  test('the section anchoring is what makes the pair meaningful', () => {
+    const cf = COUNTERFACTUALS.trailOnUpdateOnly;
+    assert.match(
+      cf,
+      TRAIL_MANDATE,
+      'a whole-file search passes against a document that mandates the trail on one branch only',
+    );
+    assert.doesNotMatch(
+      sectionBetween(cf, STATE_B_START, STATE_A_START),
+      TRAIL_MANDATE,
+      'anchored inside the creation branch, the same document fails — this is the entire difference',
+    );
+    assert.match(
+      sectionBetween(cf, STATE_A_START, TRAIL_SECTION_START),
+      TRAIL_MANDATE,
+      'and the branch that does mandate it still passes, so the anchoring is not just stricter everywhere',
+    );
+  });
+});
+
+// ─── The planner prohibition carries its reason ──────────────────────────────
+
+const PROHIBITION_REASON =
+  /(?:cannot have verified anything|nothing has been built yet)/i;
+const PROMOTING_AUTHORITY = /validate-phase[^\n]{0,80}promote|promote[^\n]{0,80}validate-phase/i;
+
+describe('nyquist gate: the planner prohibition is stated with its reason', () => {
+  test('the rule names why, and names who may promote instead', () => {
+    assert.match(
+      PLANNER_AGENT,
+      PROHIBITION_REASON,
+      'a rule whose cost is visible and whose reason is not is the kind that gets optimized away',
+    );
+    assert.match(
+      PLANNER_AGENT,
+      PROMOTING_AUTHORITY,
+      'a prohibition with no named alternative reads as an oversight to route around',
+    );
+  });
+
+  test('the reason pattern discriminates', () => {
+    assert.doesNotMatch(
+      COUNTERFACTUALS.plannerRuleWithoutReason,
+      PROHIBITION_REASON,
+      'the bare rule must not satisfy a check for the reason',
+    );
+    assert.match(
+      COUNTERFACTUALS.plannerRuleWithoutReason,
+      PROMOTING_AUTHORITY,
+      'the authority arm must accept the bare rule, or it is testing the reason twice',
+    );
+    assert.match(
+      COUNTERFACTUALS.plannerProhibition,
+      PROMOTING_AUTHORITY,
+      'and must accept the other stated form too',
     );
   });
 });

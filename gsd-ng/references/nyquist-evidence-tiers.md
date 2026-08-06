@@ -35,8 +35,8 @@ TIER-A-only rule those requirements can never be verified and the phases that ow
 never be compliant. TIER-M closes that hole — narrowly, because a bad grep contract is worse
 than no test at all.
 
-**A grep contract is admissible only when all four clauses hold. Three of four is not a
-pass.**
+**A grep contract is admissible only when all four clauses below hold.**
+**Three of four is not a pass.**
 
 ### Clause 1 — required-content assertion
 
