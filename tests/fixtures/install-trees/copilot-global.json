@@ -15,7 +15,7 @@
   "agents/gsd-ui-researcher.agent.md": "67803d5c603e4d688ed34583a67654a123d84500ba892a57e337d236f246507e",
   "agents/gsd-verifier.agent.md": "d27f5ef0da3ad33509a24fb6b009a8a1f212a9969380c887464bd32ad9f8604f",
   "copilot-instructions.md": "6768640bf8733c75dcb4b692fec06ec8d4c9d2635a9b8f665a56d36f4d7c65ec",
-  "gsd-file-manifest.json": "d420a5eefee4aaf9859bb818d06b4ee9aea6b6f17f0e28386ddca830ea924276",
+  "gsd-file-manifest.json": "c10268a5528734bb67936dd4d11c66cc6761aab51b2994240d59519be4e0cb9d",
   "gsd-ng/.runtime": "d0bcfb0a7f01f8c99ee38ae32bcb9f147262bda68d71fa994c04532714d5628c",
   "gsd-ng/VERSION": "7fd54b9b63ceb6b690e91f8575186a7ef09149ba4baa217268d270383307e814",
   "gsd-ng/bin/gsd": "0c76870ddf4fead3872aa0d7e90f57ae1d36899397757370b16a0030ca7b7d87",
@@ -145,7 +145,7 @@
   "gsd-ng/workflows/transition.md": "238d66b6c3fda596d30ec060d369cba0f8cb7be0d2bc6ecc2835edf53d8f8448",
   "gsd-ng/workflows/ui-phase.md": "53e542ae5e72c4e0fdd2b40f6301b3093751da867a990ccc51fb532a4111c0e2",
   "gsd-ng/workflows/ui-review.md": "f8a9e90bca709058bf2a00a3b1977a7206e2cea57c0ca360e0be87273b492081",
-  "gsd-ng/workflows/validate-phase.md": "e858b3fa3dc219565ea8ae887a50ee867ec99edbf42eba565be8e38947193d95",
+  "gsd-ng/workflows/validate-phase.md": "ab7e569bfebb88adfcac11a7c0286c2e59b7ead6c08b92d61f7adac31645bb5c",
   "gsd-ng/workflows/verify-phase.md": "3692d33160e324dfa6c0ee47aa54671bad6efd2e10b328076b3b3cf926ce1748",
   "gsd-ng/workflows/verify-work.md": "c214fb5f02120d28633046d7d112e4f64a1179fd63d0bf2b4f10ee3810fb0ab5",
   "skills/gsd-add-phase/SKILL.md": "34ce971cbe1a2c2170c809525fd82e7ddce2baad260a21a075bc50c25ad4e72d",
@@ -186,6 +186,6 @@
   "skills/gsd-ui-phase/SKILL.md": "7e53fa560bf81a8ec22da7a39a8756371ff3ce366e24d32a84d0d54a17c6f450",
   "skills/gsd-ui-review/SKILL.md": "b556dc4b20ecd82ff2d07335b7518dbc0078e17a5f23c998721233901f987d94",
   "skills/gsd-update/SKILL.md": "90dff341bd920c4fa9eee5bc668ee1ab4d322a2a3e93e538965766b8565ead91",
-  "skills/gsd-validate-phase/SKILL.md": "186b55d2bc792612f382c164cb9d50a7d64202820279a6ac20dd659e9bf3bf1a",
+  "skills/gsd-validate-phase/SKILL.md": "78ee0dfce29a36c62f3c3f53519358c73efe70ddac173798efa26e2a6d793e10",
   "skills/gsd-verify-work/SKILL.md": "4a8bce3a464513d1f9ed95feadc89de45b3401838ac8711ec2651e8e5581ca49"
 }

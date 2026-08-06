@@ -1,7 +1,7 @@
 ---
 name: gsd:validate-phase
 description: Retroactively audit and fill Nyquist validation gaps for a completed phase
-argument-hint: "[phase number]"
+argument-hint: "[phase number] [--batch]"
 allowed-tools:
   - Read
   - Write
@@ -29,10 +29,16 @@ Output: updated VALIDATION.md + generated test files.
 
 <context>
 Phase: $ARGUMENTS — optional, defaults to last completed phase.
+
+`--batch` — run non-interactively. The question gate is skipped, not auto-answered: a run
+without a human present has no authority to grant a waiver, so anything needing one is
+appended to `.planning/nyquist-adjudication.md` and the phase is left uncompliant. Used by
+unattended chains and by any run covering more phases than a person will sit through.
 </context>
 
 <tool_usage>
-CRITICAL: You MUST use the {{USER_QUESTION_TOOL}} tool for ALL user choices in this workflow. NEVER output plain-text menus, lettered lists (a/b/c), or numbered option lists. Every decision point requires a real {{USER_QUESTION_TOOL}} tool call with the questions parameter.
+CRITICAL: You MUST use the {{USER_QUESTION_TOOL}} tool for ALL user choices in this workflow —
+except under `--batch`, where no user is present and no choice may be made on their behalf. NEVER output plain-text menus, lettered lists (a/b/c), or numbered option lists. Every decision point requires a real {{USER_QUESTION_TOOL}} tool call with the questions parameter.
 
 The {{USER_QUESTION_TOOL}} tool schema:
 ```json
