@@ -1258,15 +1258,22 @@ function findStateContradictions(cwd, content) {
 // names a bare basename in a File Exists cell ("config.test.cjs: yes"), which
 // mentions a file without claiming a location, and there is nothing to resolve a
 // bare name against. Only a path claims "the evidence is here".
+const PATH_SEGMENT = '[A-Za-z0-9_.-]+';
+const TEST_FILE_NAME = [
+  PATH_SEGMENT + '[.](test|spec)[.](c|m)?[jt]sx?',
+  'test_' + PATH_SEGMENT + '[.]py',
+  PATH_SEGMENT + '_test[.](py|go|rb)',
+].join('|');
 const CITED_TEST_FILE = new RegExp(
-  String.raw`(?:[A-Za-z0-9_.-]+\/)+(?:` +
-    String.raw`[A-Za-z0-9_.-]+\.(?:test|spec)\.(?:c|m)?[jt]sx?` +
-    String.raw`|test_[A-Za-z0-9_.-]+\.py` +
-    String.raw`|[A-Za-z0-9_.-]+_test\.(?:py|go|rb)` +
-    String.raw`)`,
+  '(?:' + PATH_SEGMENT + '/)+(?:' + TEST_FILE_NAME + ')',
   'g',
 );
 
+// The map is read as a markdown table rather than parsed as one: the heading
+// opens the region, the next heading of any level closes it, and the alignment
+// row between the header and the body is skipped. Older validation files carry
+// columns in a different order and a few carry extra ones, so the requirement
+// column is located by its header text on each file rather than by index.
 const VALIDATION_MAP_HEADING = /^##\s+Per-Task Verification Map\s*$/;
 const MARKDOWN_TABLE_SEPARATOR = /^\|[\s\-|:]+\|$/;
 
