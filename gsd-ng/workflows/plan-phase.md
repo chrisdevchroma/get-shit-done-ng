@@ -382,33 +382,34 @@ Task(
 
 ## 5.5. Create Validation Strategy
 
-Skip if `nyquist_validation_enabled` is false OR `research_enabled` is false.
+Skip if `nyquist_validation_enabled` is false.
 
-If `research_enabled` is false and `nyquist_validation_enabled` is true: warn "Nyquist validation enabled but research disabled — VALIDATION.md cannot be created without RESEARCH.md. Plans will lack validation requirements (Dimension 8)." Continue to step 6.
-
-**But Nyquist is not applicable for this run** when all of the following are true:
-- `research_enabled` is false
-- `has_research` is false
-- no `--research` flag was provided
-
-In that case: **skip validation-strategy creation entirely**. Do **not** expect `RESEARCH.md` or `VALIDATION.md` for this run, and continue to Step 6.
+Research is **not** a precondition. The validation strategy is written on every run where the
+Nyquist toggle is on. Research only changes where the per-task map is sourced from — a phase
+planned without it still gets a VALIDATION.md, because a phase with no validation contract is
+exactly what the health checks report as a defect later.
 
 ```bash
 grep -l "## Validation Architecture" "${PHASE_DIR}"/*-RESEARCH.md 2>/dev/null
 ```
 
-**If found:**
 1. Read template: `~/.claude/gsd-ng/templates/VALIDATION.md`
 2. Write to `${PHASE_DIR}/${PADDED_PHASE}-VALIDATION.md` (use Write tool)
 3. Fill frontmatter: `{N}` → phase number, `{phase-slug}` → slug, `{date}` → current date
-4. Verify:
+4. Populate the Per-Task Verification Map, two paths, one outcome:
+   - **Research found** — source the map from the RESEARCH.md `## Validation Architecture` section, as before.
+   - **No research found** — reconstruct the map from `${PHASE_DIR}/*-PLAN.md`: one row per task, requirement from the plan's `requirements:` frontmatter, command from the task's `<automated>` verify block, `⬜ pending` status. Where a task has no automated verify, leave the command cell `—` rather than inventing one.
+5. If the map was reconstructed from plans, mark the provenance so it is legible: put `plan-sourced` in each such row's **Test Type** cell, and add this line directly under the `## Per-Task Verification Map` heading:
+
+   `> Per-task map reconstructed from PLAN files — no RESEARCH.md validation architecture was available. Rows marked plan-sourced carry the plan's own verify commands and have not been checked against a test-infrastructure survey.`
+
+   A map built from plans is thinner than one derived from research. Saying so is the difference between a weaker artifact and a misleading one.
+6. Verify:
 ```bash
 test -f "${PHASE_DIR}/${PADDED_PHASE}-VALIDATION.md" && echo "VALIDATION_CREATED=true" || echo "VALIDATION_CREATED=false"
 ```
-5. If `VALIDATION_CREATED=false`: STOP — do not proceed to Step 6
-6. If `commit_docs`: `commit "docs(phase-${PHASE}): add validation strategy"`
-
-**If not found:** Warn and continue — plans may fail Dimension 8.
+7. If `VALIDATION_CREATED=false`: STOP — do not proceed to Step 6
+8. If `commit_docs`: `commit "docs(phase-${PHASE}): add validation strategy"`
 
 ## 6. Check Existing Plans
 
@@ -435,21 +436,17 @@ GAP_RESEARCH_PATH=$(node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" init-get "$INI
 
 ## 7.5. Verify Nyquist Artifacts
 
-Skip if `nyquist_validation_enabled` is false OR `research_enabled` is false.
+Skip if `nyquist_validation_enabled` is false.
 
-Also skip if all of the following are true:
-- `research_enabled` is false
-- `has_research` is false
-- no `--research` flag was provided
-
-In that no-research path, Nyquist artifacts are **not required** for this run.
+This is the verification step for §5.5, so it carries the same condition. Gating it on research
+as well would make it pass vacuously on exactly the runs §5.5's fix is for.
 
 ```bash
 VALIDATION_EXISTS=$(ls "${PHASE_DIR}"/*-VALIDATION.md 2>/dev/null | head -1)
 ```
 
-If missing and Nyquist is still enabled/applicable — ask user:
-1. Re-run: `{{COMMAND_PREFIX}}plan-phase {PHASE} --research`
+If missing — ask user:
+1. Re-run: `{{COMMAND_PREFIX}}plan-phase {PHASE}` — §5.5 writes the file with or without research
 2. Disable Nyquist with the exact command:
    `node "$HOME/.claude/gsd-ng/bin/gsd-tools.cjs" config-set workflow.nyquist_validation false`
 3. Continue anyway (plans fail Dimension 8)
