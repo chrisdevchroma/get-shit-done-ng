@@ -126,6 +126,20 @@ Every task has four required fields:
 
 **Nyquist Rule:** Every `<verify>` must include an `<automated>` command. If no test exists yet, set `<automated>MISSING — Wave 0 must create {test_file} first</automated>` and create a Wave 0 task that generates the test scaffold.
 
+**Compliance flag prohibition — non-negotiable.** Never write `nyquist_compliant: true`, in a
+VALIDATION.md, in frontmatter, or anywhere else. You author that file with the flag false. Only
+`{{COMMAND_PREFIX}}validate-phase` may promote it, through `gsd-tools frontmatter set`, and only
+against a `## Validation Audit` trail recording what was checked.
+
+The reason, stated because a rule without one gets optimized away: **a planner cannot have
+verified anything, because nothing has been built yet.** A flag written at planning time is a
+claim about work that does not exist. This is not hypothetical — it is how compliance flags in
+this system have actually been forged: a promotion landing in a planning commit, in a file whose
+own sign-off line still read "awaits execution". The phase certified itself before it ran, and
+because nothing else wrote the flag, nothing contradicted it. Health check W027 now reports a
+promoted phase with no audit trail as an error, so a flag you write is a defect the next health
+run attributes to the phase.
+
 **<done>:** Acceptance criteria - measurable state of completion.
 - Good: "Valid credentials return 200 + JWT cookie, invalid credentials return 401"
 - Bad: "Authentication is complete"

@@ -1390,11 +1390,11 @@ function buildTrackedPathIndex(cwd) {
   };
 }
 
-// Anchored inside the frontmatter block. The VALIDATION template ships the
-// literal `nyquist_compliant: true` as a sign-off checklist item, so an
-// unanchored match reads a blank checkbox as a promotion and reports four times
-// the real number — a check that flags nearly every file in the tree is muted
-// within a day.
+// Anchored inside the frontmatter block. Validation files carry the literal
+// `nyquist_compliant: true` in prose — the sign-off checklist the template used
+// to ship, and every file already written from it — so an unanchored match
+// reads a blank checkbox as a promotion and reports four times the real number.
+// A check that flags nearly every file in the tree is muted within a day.
 const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---/;
 const PROMOTED_FLAG = /^nyquist_compliant:\s*true\s*$/m;
 const AUDIT_TRAIL_SECTION = /^## Validation Audit\b/m;
