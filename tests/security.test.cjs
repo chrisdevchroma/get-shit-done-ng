@@ -994,6 +994,41 @@ describe('Phase 61 markdown-link injection rules', () => {
     );
   });
 
+  test('MD-LINK-JS-SCHEME FP: the word javascript in a link target is not the scheme', () => {
+    // The rule must fire on the scheme position only. A link to a page about
+    // JavaScript, and prose naming the scheme outside any link, are both benign.
+    for (const benign of [
+      '[JavaScript guide](https://example.com/javascript/intro)',
+      '![JS logo](https://cdn.example.com/javascript-logo.png)',
+      'Never put a javascript: URL in a link target.',
+    ]) {
+      const result = scanForInjection(benign);
+      assert.ok(
+        !result.blocked.some((b) => b.includes('MD-LINK-JS-SCHEME')),
+        'MD-LINK-JS-SCHEME fired outside the scheme position on ' +
+          `${benign}: ${JSON.stringify(result.blocked)}`,
+      );
+    }
+  });
+
+  test('MD-LINK-USERINFO FP: a port, or an @ after the host, is not userinfo', () => {
+    // The rule requires colon-separated credentials before the @, all within
+    // the authority. A host:port, and an @ that appears in the path or query,
+    // must not read as userinfo.
+    for (const benign of [
+      '[api](https://example.com:8443/v1/status)',
+      '[contact](https://example.com/mail@team)',
+      '[issue](https://tracker.test/issues?assignee=user@example.com)',
+    ]) {
+      const result = scanForInjection(benign);
+      assert.ok(
+        !result.blocked.some((b) => b.includes('MD-LINK-USERINFO')),
+        `MD-LINK-USERINFO fired without userinfo credentials on ${benign}: ` +
+          JSON.stringify(result.blocked),
+      );
+    }
+  });
+
   test('false positive: SVG referenced by file path (not data: URI) is safe', () => {
     // Proves the data: rule never touches path references
     const result = scanForInjection('See assets/terminal.svg for the diagram');

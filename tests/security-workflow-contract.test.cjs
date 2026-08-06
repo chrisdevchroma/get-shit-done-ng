@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 const {
   wrapUntrustedContent,
   stripUntrustedWrappers,
+  INJECTION_PATTERNS_TIERED,
 } = require('../gsd-ng/bin/lib/security.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -396,6 +397,213 @@ describe('SEC40-RULETWO-WF: the import-issue approval gate', () => {
       control,
       /Unknown flag/,
       'arg validation did not reject an unknown flag — the check above is vacuous',
+    );
+  });
+});
+
+// ── The markdown-link rules section of the reference document ────────────────
+//
+// A grep contract over markdown, written to the four admissibility clauses in
+// gsd-ng/references/nyquist-evidence-tiers.md: a required-content arm anchored
+// to one section, a forbidden-content arm for each way the section could
+// contradict the scanner, and a discrimination self-test that runs every
+// pattern against a synthetic counterfactual it must reject or catch.
+//
+// The document is the only place the tier assignments are explained to a
+// reader, and a wrong tier there is worse than silence: it tells someone the
+// advisory rule blocks CI, or that a script-bearing MIME type is safe-listed.
+
+const MDLINK_HEADING = '## Markdown Link Injection Rules';
+
+// A rule id paired with a tier inside one table row. Prose that merely names
+// the rules does not satisfy it.
+function tierRow(id, tier) {
+  return new RegExp('\\|\\s*`' + id + '`\\s*\\|\\s*' + tier + '\\s*\\|');
+}
+
+// The safe-list note must state the verdict on the script-bearing MIME type,
+// not merely mention it.
+const SVG_IS_FLAGGED = /image\/svg\+xml[\s\S]{0,200}are flagged/;
+
+// The advisory rule's routing, stated together with its tier.
+const ADVISORY_ROUTES_TO_FINDINGS =
+  /medium\s*\/\s*advisory[\s\S]{0,120}findings\[\]/;
+
+// The emit shape callers depend on, with the normalization suffix.
+const EMIT_SHAPE = /`RULE-ID: description`/;
+const EVASION_SUFFIX = /`\[homoglyph-evasion\]`\s+is appended/;
+
+// Forbidden arms. Each is a way the section could be rewritten into a
+// statement the scanner does not implement.
+const FORBIDDEN = {
+  // The advisory rule promoted to a blocking tier in the table.
+  advisoryRowSaysHigh: tierRow('AT-FILE-CREDENTIAL-PATH', 'high'),
+  // A blocking rule demoted in the table.
+  linkRowSaysMedium: /\|\s*`MD-LINK-[A-Z-]+`\s*\|\s*medium\s*\|/,
+  // The script-bearing MIME type inside the permitted enumeration. Bounded to
+  // one sentence so the real note — which names it after the enumeration
+  // ends, as the thing that is flagged — does not match.
+  svgInSafeList: /(?:permitted|safe-?list(?:ed)?)[^.]{0,120}image\/svg\+xml/i,
+  // The emit format the labelling work replaced.
+  legacyEmit: /pattern\.toString\(\)/,
+};
+
+// Synthetic counterfactuals, kept together so the self-tests read as a block
+// and cannot be dropped quietly one at a time.
+const COUNTERFACTUALS = {
+  // Names every rule, assigns no tiers.
+  noTiers: [
+    'The rules are MD-LINK-JS-SCHEME, MD-LINK-DATA-SCHEME, MD-LINK-USERINFO,',
+    'MD-LINK-TOKEN-IN-QUERY and AT-FILE-CREDENTIAL-PATH.',
+  ].join('\n'),
+  // Mentions the MIME type without stating the verdict.
+  svgMentioned: 'SVG assets in this repo are referenced by file path.',
+  // Safe-lists it.
+  svgSafeListed:
+    'Only these MIME types are permitted inside `data:` URIs: `image/png`, `image/svg+xml`.',
+  // Promotes the advisory rule.
+  advisoryHigh: '| `AT-FILE-CREDENTIAL-PATH` | high | `@~/.ssh/id_rsa` | n/a |',
+  // Demotes a blocking rule.
+  linkMedium: '| `MD-LINK-JS-SCHEME` | medium | `[x](javascript:0)` | n/a |',
+  // Describes the pre-labelling emit shape.
+  legacyEmit: 'Each entry carries the pattern source via `pattern.toString()`.',
+};
+
+describe('MDLINK-DOC: the markdown-link rules section documents what the scanner does', () => {
+  const section = sectionBody(readPayload(REFERENCE_REL), MDLINK_HEADING);
+
+  test('MDLINK-DOC-01: the section exists and is anchored', () => {
+    assert.ok(
+      section,
+      `the reference document lost its "${MDLINK_HEADING}" section`,
+    );
+  });
+
+  test('MDLINK-DOC-02: every rule is documented at the tier the scanner gives it', () => {
+    const documented = [
+      'MD-LINK-JS-SCHEME',
+      'MD-LINK-DATA-SCHEME',
+      'MD-LINK-USERINFO',
+      'MD-LINK-TOKEN-IN-QUERY',
+      'AT-FILE-CREDENTIAL-PATH',
+    ];
+    for (const id of documented) {
+      const entry = INJECTION_PATTERNS_TIERED.find((e) => e.id === id);
+      assert.ok(entry, `the scanner no longer defines ${id}`);
+      assert.match(
+        section,
+        tierRow(id, entry.confidence),
+        `the section must document ${id} at tier ${entry.confidence}, which is ` +
+          'the tier the scanner assigns it',
+      );
+    }
+  });
+
+  test('MDLINK-DOC-03: the safe-list note states the verdict on the script-bearing type', () => {
+    assert.match(
+      section,
+      SVG_IS_FLAGGED,
+      'the note must say the script-bearing MIME type is flagged, not merely name it',
+    );
+    assert.doesNotMatch(
+      section,
+      FORBIDDEN.svgInSafeList,
+      'nothing may add a script-bearing MIME type to the permitted enumeration',
+    );
+  });
+
+  test('MDLINK-DOC-04: the advisory rule is documented as advisory, and stays that way', () => {
+    assert.match(
+      section,
+      ADVISORY_ROUTES_TO_FINDINGS,
+      'the tier note must pair the advisory tier with the array it routes to',
+    );
+    assert.match(
+      section,
+      /NOT a CI hard-block/,
+      'the reason the rule is advisory is that it must not block CI on our own docs',
+    );
+    assert.doesNotMatch(
+      section,
+      FORBIDDEN.advisoryRowSaysHigh,
+      'the advisory rule may not be listed at a blocking tier',
+    );
+    assert.doesNotMatch(
+      section,
+      FORBIDDEN.linkRowSaysMedium,
+      'the link rules are blocking; none may be listed as advisory',
+    );
+  });
+
+  test('MDLINK-DOC-05: the emit shape is documented, and the pre-labelling shape is gone', () => {
+    assert.match(
+      section,
+      EMIT_SHAPE,
+      'callers parse the emitted string; the section must state its shape',
+    );
+    assert.match(
+      section,
+      EVASION_SUFFIX,
+      'the normalization suffix is part of the emitted string',
+    );
+    assert.doesNotMatch(
+      section,
+      FORBIDDEN.legacyEmit,
+      'the pre-labelling emit shape may not be reinstated in the document',
+    );
+  });
+
+  test('MDLINK-DOC-06: the patterns discriminate', () => {
+    // Required arms reject text that looks right and says nothing.
+    assert.doesNotMatch(
+      COUNTERFACTUALS.noTiers,
+      tierRow('MD-LINK-JS-SCHEME', 'high'),
+      'naming the rules without tiers must not satisfy the tier assertion',
+    );
+    assert.doesNotMatch(
+      COUNTERFACTUALS.svgMentioned,
+      SVG_IS_FLAGGED,
+      'mentioning the MIME type must not satisfy the verdict assertion',
+    );
+    assert.doesNotMatch(
+      COUNTERFACTUALS.noTiers,
+      ADVISORY_ROUTES_TO_FINDINGS,
+      'naming the advisory rule must not satisfy the routing assertion',
+    );
+    assert.doesNotMatch(
+      COUNTERFACTUALS.noTiers,
+      EMIT_SHAPE,
+      'naming the rules must not satisfy the emit-shape assertion',
+    );
+
+    // Forbidden arms catch a synthetic instance of what they ban.
+    assert.match(
+      COUNTERFACTUALS.svgSafeListed,
+      FORBIDDEN.svgInSafeList,
+      'the safe-list arm must catch a script-bearing type added to the enumeration',
+    );
+    assert.match(
+      COUNTERFACTUALS.advisoryHigh,
+      FORBIDDEN.advisoryRowSaysHigh,
+      'the tier arm must catch the advisory rule promoted to blocking',
+    );
+    assert.match(
+      COUNTERFACTUALS.linkMedium,
+      FORBIDDEN.linkRowSaysMedium,
+      'the tier arm must catch a blocking rule demoted to advisory',
+    );
+    assert.match(
+      COUNTERFACTUALS.legacyEmit,
+      FORBIDDEN.legacyEmit,
+      'the emit arm must catch the pre-labelling shape',
+    );
+
+    // And a forbidden arm must not fire on the sentence that explains why the
+    // rule is advisory, which names the blocking tier in passing.
+    assert.doesNotMatch(
+      'Promoting this rule to high tier would cause CI to block our own docs.',
+      FORBIDDEN.advisoryRowSaysHigh,
+      'explaining the tier choice is not the same as assigning the wrong tier',
     );
   });
 });
