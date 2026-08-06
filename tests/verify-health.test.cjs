@@ -595,9 +595,14 @@ describe('validate health command', () => {
     // Create valid phase dir matching ROADMAP
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-a');
     fs.mkdirSync(phaseDir, { recursive: true });
-    // Add PLAN+SUMMARY so no I001
+    // Add PLAN+SUMMARY so no I001, and the VALIDATION.md an executed phase is
+    // expected to carry — without it W009 fires, which is the check working.
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(
+      path.join(phaseDir, '01-VALIDATION.md'),
+      '# Validation\n\nValidation content.\n',
+    );
 
     const result = runGsdTools('validate health', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
