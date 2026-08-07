@@ -2,7 +2,7 @@
 
 # GET SHIT DONE NG
 
-**gsd-ng is a next-generation hard fork of GSD, optimized for Claude Code and GitHub Copilot CLI.**
+**gsd-ng is a next-generation hard fork of GSD, optimized for Claude Code, GitHub Copilot CLI and OpenCode.**
 
 Forked from [open-gsd/get-shit-done-redux](https://github.com/open-gsd/get-shit-done-redux).
 
@@ -57,6 +57,7 @@ The installer prompts you to choose your install location (global or local proje
 Verify with:
 - Claude Code: `/gsd:help`
 - Copilot CLI: `gsd-help` (skills format)
+- OpenCode: `/gsd-help`
 
 ### Staying Updated
 
@@ -74,9 +75,13 @@ npx gsd-ng --runtime claude --global    # Install to ~/.claude/
 npx gsd-ng --runtime claude --local     # Install to ./.claude/
 npx gsd-ng --runtime copilot --local    # Install for Copilot CLI to ./.github/
 npx gsd-ng --runtime copilot --global   # Install for Copilot CLI to ~/.copilot/
+npx gsd-ng --runtime opencode --local   # Install for OpenCode to ./.opencode/
+npx gsd-ng --runtime opencode --global  # Install for OpenCode to ~/.config/opencode/
 ```
 
-Use `--runtime claude` or `--runtime copilot` with `--global` (`-g`) or `--local` (`-l`) to skip the interactive prompts.
+Use `--runtime claude`, `--runtime copilot` or `--runtime opencode` with `--global` (`-g`) or `--local` (`-l`) to skip the interactive prompts.
+
+An OpenCode global install honours `OPENCODE_CONFIG_DIR` if set, then `$XDG_CONFIG_HOME/opencode`, falling back to `~/.config/opencode`.
 
 </details>
 
@@ -108,9 +113,10 @@ Run from inside the target project directory (not the gsd-ng clone):
 ```bash
 node bin/install.js --runtime claude --local
 node bin/install.js --runtime copilot --local   # For Copilot CLI
+node bin/install.js --runtime opencode --local  # For OpenCode
 ```
 
-Installs to `./.claude/` (or `./.github/` for Copilot).
+Installs to `./.claude/` (`./.github/` for Copilot, `./.opencode/` for OpenCode).
 
 **5. Run tests:**
 
@@ -460,6 +466,8 @@ You're never locked in. The system adapts.
 
 ## Commands
 
+Commands are written below with the Claude Code prefix. Copilot CLI and OpenCode use `gsd-` instead of `gsd:` — `/gsd:plan-phase` is `gsd-plan-phase` as a Copilot skill and `/gsd-plan-phase` in OpenCode.
+
 ### Core Workflow
 
 | Command | What it does |
@@ -499,7 +507,7 @@ You're never locked in. The system adapts.
 | `/gsd:plan-milestone-gaps` | Create phases to close gaps from audit |
 | `/gsd:create-pr` | Create a pull request or merge request from GSD work |
 | `/gsd:squash <phase> [--strategy single\|per-plan\|logical] [--dry-run]` | Squash phase commits into clean history for code review |
-| `/gsd:validate-phase [N]` | Retroactively audit and fill Nyquist validation gaps for a completed phase |
+| `/gsd:validate-phase [N] [--batch]` | Audit and fill Nyquist validation gaps for a completed phase. Runs automatically when a phase verifies; use it directly for phases predating the gate. `--batch` works through several without stopping, queueing anything needing a judgement call rather than waiving it |
 
 ### Issue Tracking
 
@@ -580,6 +588,7 @@ These spawn additional agents during planning/execution. They improve quality bu
 | `workflow.research` | `true` | Researches domain before planning each phase |
 | `workflow.plan_check` | `true` | Verifies plans achieve phase goals before execution |
 | `workflow.verifier` | `true` | Confirms must-haves were delivered after execution |
+| `workflow.nyquist_validation` | `true` | Maps requirements to test coverage during planning, and validates the phase once verification passes |
 | `workflow.auto_advance` | `false` | Auto-chain discuss → plan → execute without stopping |
 
 Use `/gsd:settings` to toggle these, or override per-invocation:
@@ -651,6 +660,12 @@ npx gsd-ng --runtime copilot --local --uninstall
 
 # Copilot CLI - global installs
 npx gsd-ng --runtime copilot --global --uninstall
+
+# OpenCode - local installs
+npx gsd-ng --runtime opencode --local --uninstall
+
+# OpenCode - global installs
+npx gsd-ng --runtime opencode --global --uninstall
 ```
 
 This removes all GSD commands/skills, agents, hooks, and settings while preserving your other configurations.

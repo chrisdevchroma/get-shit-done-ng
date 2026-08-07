@@ -120,10 +120,14 @@ lack automated verify commands will not be approved.
 **Disable:** Set `workflow.nyquist_validation: false` in `/gsd:settings` for
 rapid prototyping phases where test infrastructure isn't the focus.
 
-### Retroactive Validation (`/gsd:validate-phase`)
+### Phase Validation (`/gsd:validate-phase`)
 
-For phases executed before Nyquist validation existed, or for existing codebases
-with only traditional test suites, retroactively audit and fill coverage gaps:
+`/gsd:execute-phase` runs this for you once a phase's verification reads
+`passed`, so a phase validates as part of finishing rather than only when you
+remember to ask. Set `workflow.nyquist_validation: false` to turn that off.
+
+Run it directly for phases executed before the gate existed, for existing
+codebases with only traditional test suites, or to re-audit after filling gaps:
 
 ```
   /gsd:validate-phase N
@@ -150,6 +154,12 @@ escalation for you to address.
 
 **When to use:** After executing phases that were planned before Nyquist was
 enabled, or after `/gsd:audit-milestone` surfaces Nyquist compliance gaps.
+
+**Working through a backlog:** `--batch` runs several phases without stopping at
+the approval gate. It never answers that gate on your behalf — a phase whose
+outcome needs a judgement call is queued in
+`.planning/nyquist-adjudication.md` for you to settle, and only an
+all-rows-green phase is promoted unattended.
 
 ---
 
@@ -297,6 +307,7 @@ The preset string becomes a first-class GSD planning artifact, reproducible acro
 | `/gsd:remove-phase [N]` | Remove future phase and renumber | Descoping a feature |
 | `/gsd:list-phase-assumptions [N]` | Preview Claude's intended approach | Before planning, to validate direction |
 | `/gsd:plan-milestone-gaps` | Create phases for audit gaps | After audit finds missing items |
+| `/gsd:validate-phase [N] [--batch]` | Audit and fill Nyquist validation gaps | Runs automatically when a phase verifies; direct for phases predating the gate |
 | `/gsd:research-phase [N]` | Deep ecosystem research only | Complex or unfamiliar domain |
 
 ### Brownfield & Utilities
