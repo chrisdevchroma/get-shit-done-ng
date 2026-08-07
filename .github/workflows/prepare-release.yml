@@ -108,6 +108,17 @@ jobs:
           DATE=$(date +%Y-%m-%d)
           sed -i "s/## \[Unreleased\]/## [Unreleased]\n\n## [$VERSION] - $DATE/" CHANGELOG.md
 
+      - name: Regenerate recorded install trees
+        # The version bump and the CHANGELOG stamp both land in the installed
+        # tree, so the four recorded trees are stale the moment this workflow
+        # edits them. Regenerating here keeps them inside the release commit;
+        # without it the branch goes red on the push this workflow makes. The
+        # test file pulls in no dependency outside the repo, so it runs before
+        # any npm install.
+        env:
+          INSTALL_TREE_REGENERATE: '1'
+        run: node --test tests/install-trees.test.cjs
+
       - name: Commit, tag, and push
         shell: bash
         env:
@@ -118,7 +129,7 @@ jobs:
         run: |
           git config user.name "$ACTOR"
           git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
-          git add package.json package-lock.json CHANGELOG.md
+          git add package.json package-lock.json CHANGELOG.md tests/fixtures/install-trees
           git commit -m "chore: release v$VERSION"
           git tag -a "v$VERSION" -m "Release v$VERSION"
           # Atomic push: branch + tag together. The RELEASE_PAT credential
