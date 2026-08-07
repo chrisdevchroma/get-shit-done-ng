@@ -3,6 +3,8 @@ phase: {N}
 slug: {phase-slug}
 status: draft
 nyquist_compliant: false
+manual_only_count: 0
+evidence_tiers: { automated: 0, tier_m: 0, manual: 0 }
 wave_0_complete: false
 created: {date}
 ---
@@ -42,6 +44,17 @@ created: {date}
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
+*Test Type: `unit` · `integration` · `smoke` · `regression` · `TIER-M` · `manual` · `plan-sourced`*
+
+*`TIER-M` is a grep contract over markdown. It is admissible evidence only when all four
+clauses in `@~/.claude/gsd-ng/references/nyquist-evidence-tiers.md` hold — required arm,
+forbidden arm, discrimination self-test, resolvable subject. Three of four is not a pass.*
+
+*`File Exists` is enforced, not decorative: health check W026 resolves every cited test path
+against `git ls-tree HEAD` and reports a row citing a file absent from the tree as phantom
+evidence. A citation that resolves only in your working directory is not evidence anyone else
+can reproduce.*
+
 ---
 
 ## Wave 0 Requirements
@@ -56,11 +69,15 @@ created: {date}
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| {behavior} | REQ-{XX} | {reason} | {steps} |
+| Behavior | Requirement | Tier | Anchor | Why Manual | Owner | Dated | Test Instructions |
+|----------|-------------|------|--------|------------|-------|-------|-------------------|
+| {behavior} | REQ-{XX} | manual | {file:anchor} | {reason} | {name} | {YYYY-MM-DD} | {steps} |
 
 *If none: "All phase behaviors have automated verification."*
+
+*A carve-out records what is unverifiable and who owns verifying it. An entry with no owner
+and no date is not a carve-out — it is a pending row wearing a different word, and it blocks
+promotion. `manual_only_count` in frontmatter must equal the number of rows here.*
 
 ---
 
@@ -71,6 +88,8 @@ created: {date}
 - [ ] Wave 0 covers all MISSING references
 - [ ] No watch-mode flags
 - [ ] Feedback latency < {N}s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [ ] Every Manual-Only row has a tier, an anchor, an owner and a date
+- [ ] `manual_only_count` and `evidence_tiers` match the tables above
+- [ ] Compliance flag promoted by `{{COMMAND_PREFIX}}validate-phase` (never set by hand, and never by the planner)
 
 **Approval:** {pending / approved YYYY-MM-DD}

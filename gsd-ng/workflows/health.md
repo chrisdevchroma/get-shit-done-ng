@@ -33,8 +33,29 @@ Parse JSON output:
 - `errors[]`: Critical issues (code, message, fix, repairable)
 - `warnings[]`: Non-critical issues
 - `info[]`: Informational notes
+- `nyquist`: The standing compliance signal — see below
 - `repairable_count`: Number of auto-fixable issues
 - `repairs_performed[]`: Actions taken if --repair was used
+
+The `nyquist` object is a census of every `*-VALIDATION.md` in `.planning/phases/`, reported
+whether or not any of W009/W026/W027 fired:
+
+| Key | Meaning |
+|-----|---------|
+| `total` | VALIDATION.md files found |
+| `compliant` | `nyquist_compliant: true` **and** a `## Validation Audit` section |
+| `forged` | promoted with no audit trail — the same files W027 reports as errors |
+| `held` | not promoted: validated with gaps, or never validated |
+| `manual_only_count` | carve-outs summed across the compliant phases |
+| `evidence_tiers` | `tier_a` / `tier_m` / `manual` rows, summed across the compliant phases |
+| `tiers_declared_by` | how many compliant phases declared a tier split at all |
+
+`compliant + forged + held == total`. A forgery is counted on its own rather than folded into
+either neighbour: it is not evidence of compliance and it is not an honest hold.
+
+`tiers_declared_by` qualifies the split. `evidence_tiers` sums the `evidence_tiers` frontmatter
+field, which postdates any phase promoted before it existed, so a compliant phase that declares
+nothing contributes zero and the split is a floor rather than a census.
 </step>
 
 <step name="format_output">
@@ -47,7 +68,12 @@ Parse JSON output:
 
 Status: HEALTHY | DEGRADED | BROKEN
 Errors: N | Warnings: N | Info: N
+Nyquist: N/M phases compliant (K held, F forged) — evidence A TIER-A / B TIER-M, C manual-only, declared by D of N
 ```
+
+Always print the Nyquist line, including when it reads `0/M`. The gate decayed from a genuine
+7-of-7 to an effective 7-of-83 because nothing ever reported the ratio; a signal shown only when
+it looks interesting is the same silence with extra steps.
 
 **If repairs were performed:**
 ```
@@ -138,7 +164,7 @@ Report final status.
 | W006 | warning | Phase in ROADMAP but no directory | No |
 | W007 | warning | Phase on disk but not in ROADMAP | No |
 | W008 | warning | config.json: workflow.nyquist_validation absent (defaults to enabled but agents may skip) | Yes |
-| W009 | warning | Phase has Validation Architecture in RESEARCH.md but no VALIDATION.md | No |
+| W009 | warning | Phase has executed plans (or a Validation Architecture in RESEARCH.md) but no VALIDATION.md | No |
 | W010 | warning | `{{PROJECT_RULES_FILE}}` not found — agents missing project instructions | Yes |
 | W011 | warning | Memory files not referenced in `{{PROJECT_RULES_FILE}}` | Yes |
 | W012 | warning | `{{PROJECT_RULES_FILE}}` references non-existent memory files | Yes |
@@ -153,6 +179,8 @@ Report final status.
 | W023 | warning | ROADMAP.md contradicts itself: plan-count header vs plan list, a details section or checklist entry without its counterpart, or a repeated phase number | No |
 | W024 | warning | STATE.md contradicts itself: an in-flight status over a finished, verified phase, or a Velocity block disagreeing with the metrics table | No |
 | W025 | warning | STATE.md missing fields its template declares | No |
+| W026 | warning | A VALIDATION.md verification-map row cites a test file that is not in the tree — the evidence does not exist | No |
+| W027 | error | A phase sets `nyquist_compliant: true` with no `## Validation Audit` section — it claims a compliance it has no record of earning | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
 | I010 | info | The resolved CWD, reported alongside E010 | No |
 
@@ -161,6 +189,23 @@ runs — a report carrying them carries nothing else.
 
 W015 and W016 are named only in comments inside the issue-tracker link check, which
 accepts `addIssue` and never calls it, so neither code can be raised today.
+
+W009, W026 and W027 read the Nyquist validation gate and are worth stating plainly:
+
+- **W009** fires on a phase directory holding at least one `-SUMMARY.md` and no `-VALIDATION.md`.
+  The summary is the noise guard — keyed on plans alone it would fire on every freshly planned
+  phase. The remedy is `{{COMMAND_PREFIX}}validate-phase {N}`, which reconstructs the strategy
+  from the phase's own artifacts.
+- **W026** resolves every test-file path cited by a verification-map row against `git ls-tree HEAD`,
+  not the working directory, and reports the ones that resolve nowhere. A file present only
+  locally is not evidence anyone else can check out. Rows that cite no path are not flagged: the
+  check punishes false claims, not honest silence.
+- **W027** is an **error**, not a warning. A phase whose frontmatter reads `nyquist_compliant: true`
+  with no `## Validation Audit` section is making a false statement about release readiness — it
+  claims a compliance it has no record of earning. Either re-run validation and earn the flag
+  against evidence, or set it back to `false`. The check reads the frontmatter block only, so the
+  template's own sign-off checklist line is not mistaken for a promotion, and a phase reading
+  `false` *with* an audit trail is the gate working correctly and is never flagged.
 
 </error_codes>
 

@@ -240,6 +240,154 @@ function touchSubmodule(workspaceDir, submodulePath) {
   );
 }
 
+// ─── .planning/ fixtures for the validate-health detectors ───────────────────
+//
+// Every health-detector test builds its own .planning/ tree in a temp dir and
+// runs the real CLI against it. A test coupled to the repository's own planning
+// data fails every time real planning work lands, which makes it useless as a
+// guard for exactly the drift it is meant to catch. These helpers live here so
+// the detector suites share one fixture shape rather than a copy each.
+
+// Baseline documents, so a fixture only has to vary the file it is about.
+const PLANNING_FIXTURE_DOCS = {
+  PROJECT_MD: [
+    '# Project: fixture',
+    '',
+    '## What This Is',
+    '',
+    'A fixture.',
+    '',
+    '## Core Value',
+    '',
+    'Fixture value.',
+    '',
+    '## Requirements',
+    '',
+    'See REQUIREMENTS.md.',
+    '',
+  ].join('\n'),
+
+  CONSISTENT_ROADMAP: [
+    '# Roadmap: fixture',
+    '',
+    '## Phases',
+    '',
+    '- [x] **Phase 1: Alpha** - First phase',
+    '- [ ] **Phase 2: Beta** - Second phase',
+    '',
+    '## Phase Details',
+    '',
+    '### Phase 1: Alpha',
+    '',
+    '**Goal:** Ship alpha',
+    '**Plans:** 1/1 plans complete',
+    '',
+    'Plans:',
+    '- [x] 01-01-PLAN.md — Alpha work',
+    '',
+    '### Phase 2: Beta',
+    '',
+    '**Goal:** Ship beta',
+    '**Plans:** 0/1 plans complete',
+    '',
+    'Plans:',
+    '- [ ] 02-01-PLAN.md — Beta work',
+    '',
+  ].join('\n'),
+
+  QUIET_STATE: [
+    '---',
+    'gsd_state_version: 1.0',
+    'milestone: v1.0',
+    'current_phase: 2',
+    'current_phase_name: beta',
+    'current_plan: 02-01',
+    'status: executing',
+    'progress:',
+    '  total_phases: 2',
+    '  completed_phases: 1',
+    '  total_plans: 2',
+    '  completed_plans: 1',
+    '  percent: 50',
+    '---',
+    '',
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    '**Progress:** [█████░░░░░] 50%',
+    '',
+  ].join('\n'),
+};
+
+/**
+ * A registry of throwaway .planning/ projects plus its own teardown.
+ *
+ * Returned rather than exported directly so each suite owns its own registry —
+ * a shared module-level list would let one file's afterEach delete another
+ * file's fixture when the runner interleaves them.
+ *
+ * @returns {{makePlanning: (files: Record<string,string>) => string, cleanupAll: () => void}}
+ */
+function createPlanningFixture() {
+  const created = [];
+  return {
+    // `files` keys are paths relative to .planning/.
+    makePlanning(files) {
+      const dir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-pdi-'));
+      created.push(dir);
+      fs.mkdirSync(path.join(dir, '.planning', 'phases'), { recursive: true });
+      for (const [rel, body] of Object.entries(files)) {
+        const abs = path.join(dir, '.planning', rel);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, body);
+      }
+      return dir;
+    },
+    cleanupAll() {
+      while (created.length > 0) cleanup(created.pop());
+    },
+  };
+}
+
+// Run the real health command against a fixture and return its parsed report.
+function planningHealth(dir) {
+  const result = spawnSync(
+    process.execPath,
+    [TOOLS_PATH, 'validate', 'health', '--json'],
+    { cwd: dir, encoding: 'utf8' },
+  );
+  assert.ok(
+    result.stdout && result.stdout.trim().startsWith('{'),
+    `health produced no JSON. stdout=${result.stdout} stderr=${result.stderr}`,
+  );
+  return JSON.parse(result.stdout);
+}
+
+// The command reports across three severity buckets. Detectors that do not pin
+// which bucket they land in are matched on code across all of them; a detector
+// whose severity is part of its contract asserts against planningHealth directly.
+function planningIssues(dir) {
+  const report = planningHealth(dir);
+  return [
+    ...(report.errors || []),
+    ...(report.warnings || []),
+    ...(report.info || []),
+  ];
+}
+
+function planningCodes(dir) {
+  return planningIssues(dir).map((i) => i.code);
+}
+
+function planningIssuesWithCode(dir, code) {
+  return planningIssues(dir).filter((i) => i.code === code);
+}
+
+function countPlanningCode(dir, code) {
+  return planningIssuesWithCode(dir, code).length;
+}
+
 /**
  * Wait for a spawned child to create its readiness flag file.
  *
@@ -310,4 +458,4 @@ async function waitForExit(child, label, timeoutMs = 30000) {
   return result;
 }
 
-module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule, waitForReadyFlag, trackExit, waitForExit };
+module.exports = { runGsdTools, createTempProject, createTempProjectWithAgents, createTempGitProject, cleanup, cleanupSubdir, resolveTmpDir, TOOLS_PATH, createSubmoduleWorkspace, touchSubmodule, waitForReadyFlag, trackExit, waitForExit, PLANNING_FIXTURE_DOCS, createPlanningFixture, planningHealth, planningIssues, planningCodes, planningIssuesWithCode, countPlanningCode };

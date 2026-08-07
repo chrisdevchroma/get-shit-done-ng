@@ -524,6 +524,30 @@ These read your planning documents against each other and report where they disa
 - **W023** — `ROADMAP.md` disagrees with itself: a plan-count header that does not match the plan list below it, a phase section with no checklist entry or a checklist entry with no section, or one phase number used twice.
 - **W024** — `STATE.md` disagrees with itself: a status saying work is in flight when the current phase is finished and verified, or velocity figures that do not match the metrics table. `gsd-tools state update-progress` fixes the second.
 
+### `/gsd:health` Reports W009, W026 or W027
+
+Three checks read the Nyquist validation gate — whether a phase has a validation contract, whether the evidence it cites exists, and whether a compliance claim has anything behind it. None is repairable, because each needs a validation run to settle.
+
+**W009 — a phase executed and has no `VALIDATION.md`.** The check fires on a phase directory holding at least one `-SUMMARY.md` with no `-VALIDATION.md` next to it. Run `/gsd:validate-phase [N]`: it reconstructs the strategy from the phase's own artifacts, so you do not re-plan anything. A phase that has been planned but not executed is deliberately not flagged — there is nothing to validate yet.
+
+**W026 — a verification-map row cites a test file that is not there.** Resolution is against `git ls-tree HEAD`, not against your working directory, and the difference is the point: a file only you have is not evidence anyone else can reproduce. This is a real failure mode rather than a hypothetical one — a test file was cited by a phase's map with a line count and two commit SHAs long after a squash made the commit that added it unreachable, and every `test -f`-shaped check would have passed the whole time. Fix the row in whichever direction the evidence points: re-point it at the test that does exist, write the test it names, or demote it to pending. Rows that cite no path at all — manual verifications, anchors into a document — are never flagged.
+
+**W027 — a phase claims compliance it did not earn.** Frontmatter reads `nyquist_compliant: true` and the file has no `## Validation Audit` section, which means nothing records the flag ever being earned. This is reported as an **error**, not a warning, because it is a false statement about release readiness rather than untidiness. Either run `/gsd:validate-phase [N]` and let it promote the flag against an audit trail, or set the field back to `false`. Two shapes are deliberately quiet: the template's sign-off checklist line (`- [ ] nyquist_compliant: true set in frontmatter`), because the check reads the frontmatter block and not the body; and a phase reading `false` *with* an audit trail, which is a phase that was validated, had gaps found, and was correctly not promoted. That is the gate working.
+
+### Reading the Nyquist Line in `/gsd:health`
+
+Every health run prints the compliance census, whether or not anything is wrong with it:
+
+```
+Nyquist: 8/77 phases compliant (69 held, 0 forged) — evidence 18 TIER-A / 1 TIER-M, 1 manual-only, declared by 1 of 8
+```
+
+**`compliant`** counts phases whose `VALIDATION.md` reads `nyquist_compliant: true` *and* carries a `## Validation Audit` section. **`forged`** is the same file with the flag and no trail, counted separately rather than folded in — it is neither evidence of compliance nor an honest hold, and it is what W027 raises as an error. **`held`** is everything else: validated with gaps found, or never validated at all.
+
+**Why the tier split is printed next to the ratio.** "N compliant" where the evidence is mostly TIER-M grep contracts over prompt text is a materially different claim from N backed by executable tests, and an aggregate that hides the difference gets quoted as if it did not. `declared by D of N` is the honesty qualifier on the split itself: it sums the `evidence_tiers` frontmatter field, which is newer than some of the phases that earned the flag, so a compliant phase declaring nothing contributes zero and the split reads as a floor.
+
+**What to do about a low ratio.** Usually nothing urgent. A ratio of 8/77 says 69 phases have never been through the gate, which is a backlog rather than a defect — `forged` at 0 is the load-bearing number, because it is the one that means no phase is claiming something it cannot show. Work the backlog with `/gsd:validate-phase [N]` on the phases whose coverage you actually want to trust, and watch the ratio move.
+
 ### Need to Change Something After Execution
 
 Do not re-run `/gsd:execute-phase`. Use `/gsd:quick` for targeted fixes, or `/gsd:verify-work` to systematically identify and fix issues through UAT.

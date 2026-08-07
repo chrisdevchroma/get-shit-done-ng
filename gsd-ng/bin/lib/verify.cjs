@@ -1251,6 +1251,197 @@ function findStateContradictions(cwd, content) {
   return found;
 }
 
+// ─── Nyquist validation evidence ─────────────────────────────────────────────
+
+// A path-shaped citation whose basename follows a test-file convention. The
+// leading `(?:…/)+` is required, not decorative: VALIDATION.md prose routinely
+// names a bare basename in a File Exists cell ("config.test.cjs: yes"), which
+// mentions a file without claiming a location, and there is nothing to resolve a
+// bare name against. Only a path claims "the evidence is here".
+const PATH_SEGMENT = '[A-Za-z0-9_.-]+';
+const TEST_FILE_NAME = [
+  PATH_SEGMENT + '[.](test|spec)[.](c|m)?[jt]sx?',
+  'test_' + PATH_SEGMENT + '[.]py',
+  PATH_SEGMENT + '_test[.](py|go|rb)',
+].join('|');
+const CITED_TEST_FILE = new RegExp(
+  '(?:' + PATH_SEGMENT + '/)+(?:' + TEST_FILE_NAME + ')',
+  'g',
+);
+
+// The map is read as a markdown table rather than parsed as one: the heading
+// opens the region, the next heading of any level closes it, and the alignment
+// row between the header and the body is skipped. Older validation files carry
+// columns in a different order and a few carry extra ones, so the requirement
+// column is located by its header text on each file rather than by index.
+const VALIDATION_MAP_HEADING = /^##\s+Per-Task Verification Map\s*$/;
+const MARKDOWN_TABLE_SEPARATOR = /^\|[\s\-|:]+\|$/;
+
+/**
+ * Test-file paths cited by the Per-Task Verification Map, with the requirement
+ * each was cited for.
+ *
+ * Scoped to the map rather than the whole document because the map is the part
+ * that claims a requirement is covered. A Wave 0 checklist naming a file yet to
+ * be written is a plan, not a claim, and flagging it would punish the one
+ * section that is honest about what does not exist yet.
+ *
+ * @param {string} content - VALIDATION.md contents
+ * @returns {Array<{path: string, requirement: string}>} One entry per distinct path
+ */
+function citedTestFiles(content) {
+  const lines = String(content || '').split(/\r?\n/);
+  const start = lines.findIndex((l) => VALIDATION_MAP_HEADING.test(l));
+  if (start < 0) return [];
+
+  const seen = new Map();
+  let requirementColumn = -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^##\s/.test(line)) break;
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = trimmed.split('|').map((c) => c.trim());
+    if (requirementColumn < 0 && cells.some((c) => /^Requirement$/i.test(c))) {
+      requirementColumn = cells.findIndex((c) => /^Requirement$/i.test(c));
+      continue;
+    }
+    if (MARKDOWN_TABLE_SEPARATOR.test(trimmed)) continue;
+
+    const matches = trimmed.match(CITED_TEST_FILE);
+    if (!matches) continue;
+    const requirement =
+      (requirementColumn >= 0 && cells[requirementColumn]) || 'unnamed row';
+    for (const p of matches) if (!seen.has(p)) seen.set(p, requirement);
+  }
+  return [...seen].map(([p, requirement]) => ({ path: p, requirement }));
+}
+
+/**
+ * Resolver for evidence citations, backed by `git ls-tree HEAD`.
+ *
+ * Resolution is against the tree, not the working directory. A file present
+ * only locally is not evidence anyone else can reproduce, and that difference is
+ * not hypothetical: a test file cited by a phase's validation map with a line
+ * count and two commit SHAs turned out to live only on a branch that a squash
+ * had made unreachable. Every existsSync-shaped check passed the day it was
+ * written and passed silently ever after.
+ *
+ * Submodules are commit entries in the superproject's tree, so their contents
+ * are absent from its listing; each one is listed separately and prefixed.
+ *
+ * Matching accepts any tracked path ending at the citation, because rows
+ * routinely prefix a command with `cd <subdir> &&` and nothing in the row
+ * records the directory it was meant to run from. Deliberately permissive: what
+ * is being caught is a citation that resolves nowhere at all.
+ *
+ * @param {string} cwd - Project root
+ * @returns {{available: boolean, resolves: (p: string) => boolean}}
+ */
+function buildTrackedPathIndex(cwd) {
+  const listed = execGit(cwd, ['ls-tree', '-r', '--name-only', 'HEAD']);
+  if (listed.exitCode !== 0) {
+    return {
+      available: false,
+      resolves: (p) => fs.existsSync(path.join(cwd, p)),
+    };
+  }
+
+  const byBasename = new Map();
+  const add = (p) => {
+    const base = p.slice(p.lastIndexOf('/') + 1);
+    if (!byBasename.has(base)) byBasename.set(base, []);
+    byBasename.get(base).push(p);
+  };
+  for (const line of listed.stdout.split('\n')) {
+    const p = line.trim();
+    if (p) add(p);
+  }
+
+  const entries = execGit(cwd, ['ls-tree', '-r', 'HEAD']);
+  if (entries.exitCode === 0) {
+    for (const line of entries.stdout.split('\n')) {
+      const m = line.match(/^160000\s+commit\s+\S+\t(.+)$/);
+      if (!m) continue;
+      const sub = m[1];
+      const inner = execGit(path.join(cwd, sub), [
+        'ls-tree',
+        '-r',
+        '--name-only',
+        'HEAD',
+      ]);
+      if (inner.exitCode !== 0) continue;
+      for (const l of inner.stdout.split('\n')) {
+        const p = l.trim();
+        if (p) add(sub + '/' + p);
+      }
+    }
+  }
+
+  return {
+    available: true,
+    resolves(cited) {
+      const candidates = byBasename.get(
+        cited.slice(cited.lastIndexOf('/') + 1),
+      );
+      if (!candidates) return false;
+      return candidates.some((p) => p === cited || p.endsWith('/' + cited));
+    },
+  };
+}
+
+// Anchored inside the frontmatter block. Validation files carry the literal
+// `nyquist_compliant: true` in prose — the sign-off checklist the template used
+// to ship, and every file already written from it — so an unanchored match
+// reads a blank checkbox as a promotion and reports four times the real number.
+// A check that flags nearly every file in the tree is muted within a day.
+const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---/;
+const PROMOTED_FLAG = /^nyquist_compliant:\s*true\s*$/m;
+const AUDIT_TRAIL_SECTION = /^## Validation Audit\b/m;
+
+/**
+ * A VALIDATION.md's frontmatter block, or null when it has none.
+ *
+ * @param {string} content - VALIDATION.md contents
+ * @returns {string|null}
+ */
+function frontmatterBlock(content) {
+  const fm = String(content || '').match(FRONTMATTER_BLOCK);
+  return fm ? fm[1] : null;
+}
+
+const MANUAL_ONLY_FIELD = /^manual_only_count:\s*"?(\d+)"?\s*$/m;
+const EVIDENCE_TIERS_FIELD = /^evidence_tiers:\s*(.+?)\s*$/m;
+
+/**
+ * The decomposition behind one phase's compliance claim: how many behaviors it
+ * carved out as manual, and how its evidence splits across the tiers.
+ *
+ * Read with anchored patterns rather than a YAML parse because the field
+ * survives in two shapes — the template ships `{ automated: 0, tier_m: 0,
+ * manual: 0 }` as a flow mapping and `frontmatter set` rewrites it as a quoted
+ * string when it promotes a phase. Both carry the same three numbers, and a
+ * reader that accepts only one of them reports zeros for precisely the phases
+ * the gate has promoted.
+ *
+ * @param {string} block - the frontmatter block, as returned by frontmatterBlock
+ * @returns {{manualOnlyCount: number, tierA: number, tierM: number, manualRows: number}}
+ */
+function readEvidenceClaim(block) {
+  const manualOnly = block.match(MANUAL_ONLY_FIELD);
+  const tiers = (block.match(EVIDENCE_TIERS_FIELD) || [])[1] || '';
+  const tier = (pattern) => {
+    const m = tiers.match(pattern);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  return {
+    manualOnlyCount: manualOnly ? parseInt(manualOnly[1], 10) : 0,
+    tierA: tier(/\bautomated:\s*(\d+)/),
+    tierM: tier(/\btier_m:\s*(\d+)/),
+    manualRows: tier(/\bmanual:\s*(\d+)/),
+  };
+}
+
 /**
  * Health check, and the repairs it decides on.
  *
@@ -1532,28 +1723,140 @@ function runHealth(cwd, options) {
     }
   } catch {}
 
-  // ─── Check 7b: Nyquist VALIDATION.md consistency ────────────────────────
+  // ─── Check 7b: Nyquist validation strategy, evidence and compliance flag ──
+  //
+  // Three defects, one phase-directory walk. They share it because they share a
+  // subject: what a phase claims about its own validation, and whether anything
+  // backs the claim.
+  //
+  // W009 keys off an executed phase rather than off research. The old condition
+  // — research naming a Validation Architecture with no VALIDATION.md — had
+  // occurred zero times, because the workflow that wrote one wrote the other.
+  // The failure that does occur is a phase that executed and has no validation
+  // contract at all, and the check was structurally blind to it. The summary
+  // requirement is the noise guard: keyed on plans alone this fires on every
+  // freshly planned phase, and a check that fires on healthy states gets muted.
+  const trackedPaths = { index: null };
+  const resolveTracked = () => {
+    if (!trackedPaths.index) trackedPaths.index = buildTrackedPathIndex(cwd);
+    return trackedPaths.index;
+  };
+  // The standing compliance signal. The gate decayed from a genuine 7-of-7 to
+  // an effective 7-of-83 over 76 phases because nothing ever reported the
+  // ratio: every individual forgery was invisible and the aggregate was never
+  // computed at all. It is published here so a second decay is a number that
+  // moves rather than a silence.
+  //
+  // The tier split is what keeps the headline honest. "N compliant" where most
+  // of the evidence is grep contracts proxying over prompt text is a materially
+  // different claim from one backed by executable tests, and an aggregate that
+  // hides the difference will eventually be quoted as if it did not.
+  const nyquist = {
+    total: 0,
+    compliant: 0,
+    forged: 0,
+    held: 0,
+    manual_only_count: 0,
+    evidence_tiers: { tier_a: 0, tier_m: 0, manual: 0 },
+    tiers_declared_by: 0,
+  };
   try {
     const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
     for (const e of phaseEntries) {
       if (!e.isDirectory()) continue;
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, e.name));
-      const hasResearch = phaseFiles.some((f) => f.endsWith('-RESEARCH.md'));
-      const hasValidation = phaseFiles.some((f) =>
+      const phaseDir = path.join(phasesDir, e.name);
+      const phaseFiles = fs.readdirSync(phaseDir);
+      const validations = phaseFiles.filter((f) =>
         f.endsWith('-VALIDATION.md'),
       );
-      if (hasResearch && !hasValidation) {
-        const researchFile = phaseFiles.find((f) => f.endsWith('-RESEARCH.md'));
-        const researchContent = fs.readFileSync(
-          path.join(phasesDir, e.name, researchFile),
-          'utf-8',
+      const phaseNumber = (e.name.match(/^(\d+[A-Z]?(?:\.\d+)*)/i) || [])[1];
+      const validateRemedy = `Run /gsd:validate-phase ${phaseNumber || '{N}'} — it reconstructs the strategy from the phase's own artifacts`;
+
+      if (validations.length === 0) {
+        const executed = phaseFiles.some(
+          (f) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md',
         );
-        if (researchContent.includes('## Validation Architecture')) {
+        const legacyResearch = phaseFiles
+          .filter((f) => f.endsWith('-RESEARCH.md'))
+          .some((f) =>
+            (safeReadFile(path.join(phaseDir, f)) || '').includes(
+              '## Validation Architecture',
+            ),
+          );
+        if (executed || legacyResearch) {
+          const because = executed
+            ? 'has executed plans'
+            : 'has a Validation Architecture in RESEARCH.md';
           addIssue(
             'warning',
             'W009',
-            `Phase ${e.name}: has Validation Architecture in RESEARCH.md but no VALIDATION.md`,
-            'Re-run /gsd:plan-phase with --research to regenerate',
+            `Phase ${e.name}: ${because} but no VALIDATION.md`,
+            validateRemedy,
+          );
+        }
+      }
+
+      for (const file of validations) {
+        const body = safeReadFile(path.join(phaseDir, file));
+        if (body === null) continue;
+
+        // W026 — a row naming a green test that is not in the tree is a false
+        // negative in the release-readiness signal, and worse than a pending
+        // row: a pending row is honest about knowing nothing.
+        const cited = citedTestFiles(body);
+        if (cited.length > 0) {
+          const index = resolveTracked();
+          for (const { path: cite, requirement } of cited) {
+            if (index.resolves(cite)) continue;
+            const degraded = index.available
+              ? ''
+              : ' (git unavailable — resolved against the working directory only, so a file present locally but unreachable from HEAD would not be reported)';
+            addIssue(
+              'warning',
+              'W026',
+              `Phase ${e.name}: ${file} cites ${cite} as evidence for ${requirement}, but no such path is in the tree${degraded}`,
+              'Re-point the row at the test that exists, author the test it names, or demote the row to pending — a citation nobody can check out is not evidence',
+            );
+          }
+        }
+
+        // The three terminal states a phase can be in, counted once. A promoted
+        // phase with no trail is neither compliant nor merely held: it is the
+        // forgery W027 reports, and folding it into either bucket is how the
+        // ratio stopped meaning anything the first time.
+        const block = frontmatterBlock(body);
+        const promoted = block !== null && PROMOTED_FLAG.test(block);
+        const audited = AUDIT_TRAIL_SECTION.test(body);
+        nyquist.total += 1;
+        if (promoted && audited) {
+          nyquist.compliant += 1;
+          const claim = readEvidenceClaim(block);
+          nyquist.manual_only_count += claim.manualOnlyCount;
+          nyquist.evidence_tiers.tier_a += claim.tierA;
+          nyquist.evidence_tiers.tier_m += claim.tierM;
+          nyquist.evidence_tiers.manual += claim.manualRows;
+          // The split is a sum over what the compliant phases declare, and the
+          // field postdates the phases that earned the flag first. Publishing
+          // how many of them declared it is what stops the sum being read as a
+          // census of all of them.
+          if (claim.tierA || claim.tierM || claim.manualRows) {
+            nyquist.tiers_declared_by += 1;
+          }
+        } else if (promoted) {
+          nyquist.forged += 1;
+        } else {
+          nyquist.held += 1;
+        }
+
+        // W027 — an error, not a warning. A phase claiming compliance with no
+        // audit trail is a false statement about release readiness, and a
+        // warning is dismissible.
+        if (promoted && !audited) {
+          addIssue(
+            'error',
+            'W027',
+            `Phase ${e.name}: ${file} sets nyquist_compliant: true but carries no "## Validation Audit" section — the phase claims a compliance it has no record of earning`,
+            `${validateRemedy}, or set nyquist_compliant back to false until it does`,
           );
         }
       }
@@ -2296,6 +2599,7 @@ function runHealth(cwd, options) {
     errors,
     warnings,
     info,
+    nyquist,
     repairable_count: repairableCount,
     repairs_performed: repairActions.length > 0 ? repairActions : undefined,
   });

@@ -16,138 +16,21 @@
 
 const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert');
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const { resolveTmpDir, cleanup, TOOLS_PATH } = require('./helpers.cjs');
+const {
+  PLANNING_FIXTURE_DOCS,
+  createPlanningFixture,
+  planningCodes: codes,
+  planningIssuesWithCode: withCode,
+  countPlanningCode: countCode,
+} = require('./helpers.cjs');
 
 // ─── Fixture harness ──────────────────────────────────────────────────────────
 
-const created = [];
+const { makePlanning, cleanupAll } = createPlanningFixture();
 
-afterEach(() => {
-  while (created.length > 0) cleanup(created.pop());
-});
+afterEach(cleanupAll);
 
-// Build a throwaway project whose .planning/ holds exactly the files a test
-// names. `files` keys are paths relative to .planning/.
-function makePlanning(files) {
-  const dir = fs.mkdtempSync(path.join(resolveTmpDir(), 'gsd-pdi-'));
-  created.push(dir);
-  fs.mkdirSync(path.join(dir, '.planning', 'phases'), { recursive: true });
-  for (const [rel, body] of Object.entries(files)) {
-    const abs = path.join(dir, '.planning', rel);
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, body);
-  }
-  return dir;
-}
-
-function health(dir) {
-  const result = spawnSync(
-    process.execPath,
-    [TOOLS_PATH, 'validate', 'health', '--json'],
-    { cwd: dir, encoding: 'utf8' },
-  );
-  assert.ok(
-    result.stdout && result.stdout.trim().startsWith('{'),
-    `health produced no JSON. stdout=${result.stdout} stderr=${result.stderr}`,
-  );
-  return JSON.parse(result.stdout);
-}
-
-// The command reports across three severity buckets; the detectors under test
-// do not pin which bucket they land in, so match on code across all of them.
-function issues(dir) {
-  const report = health(dir);
-  return [
-    ...(report.errors || []),
-    ...(report.warnings || []),
-    ...(report.info || []),
-  ];
-}
-
-function codes(dir) {
-  return issues(dir).map((i) => i.code);
-}
-
-function withCode(dir, code) {
-  return issues(dir).filter((i) => i.code === code);
-}
-
-function countCode(dir, code) {
-  return withCode(dir, code).length;
-}
-
-// Baseline documents so a fixture only has to vary the file it is about.
-const PROJECT_MD = [
-  '# Project: fixture',
-  '',
-  '## What This Is',
-  '',
-  'A fixture.',
-  '',
-  '## Core Value',
-  '',
-  'Fixture value.',
-  '',
-  '## Requirements',
-  '',
-  'See REQUIREMENTS.md.',
-  '',
-].join('\n');
-
-const CONSISTENT_ROADMAP = [
-  '# Roadmap: fixture',
-  '',
-  '## Phases',
-  '',
-  '- [x] **Phase 1: Alpha** - First phase',
-  '- [ ] **Phase 2: Beta** - Second phase',
-  '',
-  '## Phase Details',
-  '',
-  '### Phase 1: Alpha',
-  '',
-  '**Goal:** Ship alpha',
-  '**Plans:** 1/1 plans complete',
-  '',
-  'Plans:',
-  '- [x] 01-01-PLAN.md — Alpha work',
-  '',
-  '### Phase 2: Beta',
-  '',
-  '**Goal:** Ship beta',
-  '**Plans:** 0/1 plans complete',
-  '',
-  'Plans:',
-  '- [ ] 02-01-PLAN.md — Beta work',
-  '',
-].join('\n');
-
-const QUIET_STATE = [
-  '---',
-  'gsd_state_version: 1.0',
-  'milestone: v1.0',
-  'current_phase: 2',
-  'current_phase_name: beta',
-  'current_plan: 02-01',
-  'status: executing',
-  'progress:',
-  '  total_phases: 2',
-  '  completed_phases: 1',
-  '  total_plans: 2',
-  '  completed_plans: 1',
-  '  percent: 50',
-  '---',
-  '',
-  '# Project State',
-  '',
-  '## Current Position',
-  '',
-  '**Progress:** [█████░░░░░] 50%',
-  '',
-].join('\n');
+const { PROJECT_MD, CONSISTENT_ROADMAP, QUIET_STATE } = PLANNING_FIXTURE_DOCS;
 
 // Assemble a REQUIREMENTS.md from checkbox lines and traceability rows.
 function requirementsMd(checkboxes, rows) {

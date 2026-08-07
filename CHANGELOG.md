@@ -8,9 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A phase now runs its Nyquist validation as part of finishing, instead of only when someone remembered to ask. When verification passes, `/gsd:execute-phase` routes into `/gsd:validate-phase`; set `workflow.nyquist_validation` to false to keep the old behaviour. `/gsd:validate-phase` also takes a batch mode for working through several phases without stopping — an unresolved gap there is queued for adjudication, never waived on your behalf.
+
+- Phases whose deliverable is documentation can now be validated on evidence rather than assertion. A new evidence-tier reference defines what counts, including a grep-contract tier for work that ships as markdown, and the planner may no longer certify its own output as compliant.
+
+- `/gsd:health` reports three things about that gate: a phase with executed plans but no `VALIDATION.md` (W009, widened from the old research-only shape), a validation row citing a test file that is not in the tree (W026), and a phase claiming `nyquist_compliant: true` with no audit record behind it (W027, an error rather than a warning).
+
 - `/gsd:health` now reports planning documents that disagree with themselves: requirements whose tracking contradicts their own checkboxes (W019), roadmaps whose plan counts, entries and phase numbers do not line up (W023), and state files whose status or progress no longer matches what they record (W024). W019 and W023 are reported, not repaired.
 
 ### Fixed
+
+- A phase gets its validation strategy even when research is switched off. Creating `VALIDATION.md` was gated on research being enabled as well as validation, at both places `/gsd:plan-phase` decides to skip it, so turning research off silently took validation with it.
 
 - The velocity figures in a project's state file are kept up to date. `state update-progress` recalculates them; before, they were written once when the file was created and never revised.
 
