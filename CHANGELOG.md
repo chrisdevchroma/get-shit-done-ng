@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The installer advertises OpenCode. `--help` listed `claude or copilot` as the runtime choices and gave no OpenCode example, and the startup banner named Claude Code alone, so the only way to discover the third runtime was the interactive prompt — which has offered it all along, since it is generated from the runtime registry. Nothing about installing changed; it is now findable without running the installer blind.
+
+- The README and user guide cover OpenCode: install and uninstall commands for both scopes, where a global install resolves (`OPENCODE_CONFIG_DIR`, then `$XDG_CONFIG_HOME/opencode`, then `~/.config/opencode`), the `/gsd-help` verification command, and a note that Copilot CLI and OpenCode use a `gsd-` command prefix where Claude Code uses `gsd:`.
+
+- The docs describe phase validation as it now works. `/gsd:validate-phase` was written up as a retroactive tool for phases predating the gate, which stopped being the whole story once it began running automatically on a passing verification. The `workflow.nyquist_validation` toggle was missing from the README settings table entirely, and batch mode was undocumented.
+
 ## [1.0.0-dev.23] - 2026-08-07
 
 ### Added
