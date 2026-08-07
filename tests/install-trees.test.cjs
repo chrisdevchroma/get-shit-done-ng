@@ -21,8 +21,13 @@
  * run-to-run variance:
  *   - gsd-file-manifest.json carries a wall-clock timestamp, replaced with a
  *     fixed string.
- *   - gsd-ng/VERSION carries a build-metadata suffix on dev checkouts, which
- *     is stripped back to the base version.
+ *   - gsd-ng/VERSION and the manifest's copy of it hold the version, which
+ *     changes on every release; replaced outright. That the two agree with
+ *     each other and with the install banner is asserted directly in the
+ *     installer suite, not through these hashes.
+ *   - gsd-ng/CHANGELOG.md holds release notes, which change on most pull
+ *     requests; the body is replaced and the file's presence is what is
+ *     recorded.
  *   - a global claude install bakes its absolute target path into the
  *     settings.json hook commands, so the temp dir path is replaced with a
  *     token.
@@ -48,8 +53,11 @@ const BASE_TMPDIR = resolveTmpDir();
 
 const MANIFEST_RELPATH = 'gsd-file-manifest.json';
 const VERSION_RELPATH = 'gsd-ng/VERSION';
+const CHANGELOG_RELPATH = 'gsd-ng/CHANGELOG.md';
 const TIMESTAMP_PLACEHOLDER = 'RECORDED';
 const VERSION_HASH_PLACEHOLDER = 'RECORDED_VERSION_HASH';
+const VERSION_PLACEHOLDER = 'RECORDED_VERSION';
+const CHANGELOG_PLACEHOLDER = 'RECORDED_CHANGELOG_BODY';
 const TMPDIR_PLACEHOLDER = '<RECORDED_TMPDIR>';
 const EMPTY_DIFF = { changed: [], added: [], removed: [] };
 
@@ -75,24 +83,31 @@ function normalizeContent(relpath, buf, replacePaths) {
   if (relpath === MANIFEST_RELPATH) {
     const parsed = JSON.parse(text);
     parsed.timestamp = TIMESTAMP_PLACEHOLDER;
-    // The manifest records the same build-metadata-suffixed version as
-    // gsd-ng/VERSION, and on a dev checkout that suffix is the current commit
-    // sha — so without the same strip applied below, every commit invalidates
-    // all four recorded trees and the tripwire reports nothing but itself. The
-    // manifest's own hash of gsd-ng/VERSION carries the suffix too and cannot
-    // be recomputed here, so it is replaced outright; that file is captured as
-    // its own tree entry, stripped, and a real version change still shows there.
+    // The version and the changelog body move on their own schedule — the
+    // first on every release, the second on most pull requests — and neither
+    // is what this tree is watching. Left in, they invalidate all four
+    // recorded trees for a reason that has nothing to do with what the
+    // installer places where, and the tripwire reports nothing but itself.
+    // Both stay present as tree entries, so a file appearing, vanishing or
+    // moving still shows. That the version agrees across VERSION, the banner
+    // and this manifest is asserted directly in the installer suite.
     if (typeof parsed.version === 'string') {
-      parsed.version = parsed.version.split('+')[0];
+      parsed.version = VERSION_PLACEHOLDER;
     }
-    if (parsed.files && typeof parsed.files[VERSION_RELPATH] === 'string') {
-      parsed.files[VERSION_RELPATH] = VERSION_HASH_PLACEHOLDER;
+    for (const relpathKey of [VERSION_RELPATH, CHANGELOG_RELPATH]) {
+      if (parsed.files && typeof parsed.files[relpathKey] === 'string') {
+        parsed.files[relpathKey] = VERSION_HASH_PLACEHOLDER;
+      }
     }
     text = JSON.stringify(parsed, null, 2);
   }
 
   if (relpath === VERSION_RELPATH) {
-    text = text.split('+')[0];
+    text = VERSION_PLACEHOLDER;
+  }
+
+  if (relpath === CHANGELOG_RELPATH) {
+    text = CHANGELOG_PLACEHOLDER;
   }
 
   for (const abs of replacePaths) {
