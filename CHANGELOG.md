@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-dev.23] - 2026-08-07
+
 ### Added
 
 - A phase now runs its Nyquist validation as part of finishing, instead of only when someone remembered to ask. When verification passes, `/gsd:execute-phase` routes into `/gsd:validate-phase`; set `workflow.nyquist_validation` to false to keep the old behaviour. `/gsd:validate-phase` also takes a batch mode for working through several phases without stopping — an unresolved gap there is queued for adjudication, never waived on your behalf.
