@@ -5,10 +5,15 @@
   "_entropy_metric": "Entropy counts are measured at stride 1 over every window alignment (scripts/fp-report.cjs, peakEntropyAnyAlignment), NOT from the detector's STEP-aligned windows. The detector still samples every 128 chars in production; only the budget measurement is alignment-invariant, so that inserting bytes anywhere in a file cannot move a borderline entry across the threshold and fail CI on an unrelated edit. Content shorter than one window is scored whole, matching the detector. KNOWN GAP: partial tail windows of longer content are excluded, because their length is a function of total content length — the same instability in another form. The detector does scan that tail, so an FP whose only high-entropy region sits in the final <256 chars is invisible to this budget. A 64-char tail can reach H=6.0 while diluting to nothing inside a 256-char window, so this is a real one-sided blind spot, accepted in exchange for a count that does not move on unrelated edits.",
   "repo_walk": {
     "corpus": {
-      "files": 220,
+      "files": 222,
       "generated": "2026-07-19",
-      "raised_from": 219,
-      "raised_justification": "hooks/gsd-hook-stdin.cjs entered a walk root when the stdin-timeout guard was deduplicated across six hooks. It scans tier clean; corpus size is the only figure that moved upward."
+      "raised_from": 220,
+      "raised_justification": "Two files, one of them not this branch's. The walk already measured 221 on develop against a recorded 220, so a file entered a scan root without the budget being restamped; this branch adds gsd-ng/references/nyquist-evidence-tiers.md, taking it to 222. Both scan tier clean, and corpus size is not gated by tests/security-fp-corpus.test.cjs — it is descriptive. Recorded here so the next reader does not attribute the whole gap to this change.",
+      "prior_entry": {
+        "files": 220,
+        "raised_from": 219,
+        "raised_justification": "hooks/gsd-hook-stdin.cjs entered a walk root when the stdin-timeout guard was deduplicated across six hooks. It scans tier clean; corpus size is the only figure that moved upward."
+      }
     },
     "pattern_fp": {
       "AT-FILE-CREDENTIAL-PATH": {
@@ -234,17 +239,17 @@
         {
           "ref": "gsd-ng/bin/lib/security.cjs",
           "max_H": 5.78,
-          "offsets": ["13953-14209"]
+          "offsets": ["14189-14445"]
         },
         {
           "ref": "gsd-ng/bin/lib/commands.cjs",
           "max_H": 5.57,
-          "offsets": ["19042-19298"]
+          "offsets": ["19229-19485"]
         },
         {
           "ref": "gsd-ng/bin/lib/verify.cjs",
-          "max_H": 5.55,
-          "offsets": ["49462-49718"]
+          "max_H": 5.57,
+          "offsets": ["30691-30947"]
         },
         {
           "ref": "scripts/capture-clean-path-evidence.cjs",
@@ -254,7 +259,7 @@
       ],
       "raised_from": 3,
       "raised_from_unit": "files",
-      "raised_justification": "verify.cjs crossed the threshold at H=5.55, four hundredths over it, when two frontmatter-field patterns were added next to the three the compliance flag already reads: a 256-char window there is now almost entirely regex literal with a few identifiers in it. The measurement is correct — that window really is dense — and it is a false positive in the sense this budget counts, because the content is the checker's own source. Recorded rather than diluted: spacing the constants apart would move the count back to 3 without changing anything about the file, which is the shape of gaming a measurement rather than reporting it. Entropy routes to findings[] and never to blocked[], so nothing about this can block an import or fail CI.",
+      "raised_justification": "verify.cjs crossed the threshold at H=5.57, seven hundredths over it, when two frontmatter-field patterns were added next to the three the compliance flag already reads: a 256-char window there is now almost entirely regex literal with a few identifiers in it. Measured at 5.55 when this was written against a base without the planning-integrity detectors; those land in the same file and take the peak window to 5.57. The measurement is correct — that window really is dense — and it is a false positive in the sense this budget counts, because the content is the checker's own source. Recorded rather than diluted: spacing the constants apart would move the count back to 3 without changing anything about the file, which is the shape of gaming a measurement rather than reporting it. Entropy routes to findings[] and never to blocked[], so nothing about this can block an import or fail CI.",
       "prior_entry": {
         "files": 3,
         "max_H": 5.78,
