@@ -91,6 +91,12 @@ function tableSectionPattern(namePattern) {
   );
 }
 
+/**
+ * Shared by the row appender and the Velocity recomputation so the two cannot
+ * anchor differently. No /g flag, so it holds no lastIndex between call sites.
+ */
+const METRICS_SECTION_PATTERN = tableSectionPattern('Performance Metrics');
+
 const BLOCKER_HEADINGS = '(?:Blockers|Blockers/Concerns|Concerns)';
 
 const QUICK_TASKS_HEADING = /###[ \t]*Quick Tasks Completed[ \t]*\r?\n/i;
@@ -644,7 +650,7 @@ function cmdStateRecordMetric(cwd, options) {
     }
 
     // Find Performance Metrics section and its table
-    const metricsPattern = tableSectionPattern('Performance Metrics');
+    const metricsPattern = METRICS_SECTION_PATTERN;
     const metricsMatch = content.match(metricsPattern);
 
     if (metricsMatch) {
@@ -673,6 +679,170 @@ function cmdStateRecordMetric(cwd, options) {
       );
     }
   });
+}
+
+/**
+ * Minutes in a duration cell, or null when it holds no duration. The column is
+ * free text: `4`, `4min`, `4 min`, `2h`, `3h20m` and `multi-session` all occur.
+ */
+function parseDurationMinutes(cell) {
+  const text = String(cell).trim().toLowerCase();
+  if (!text) return null;
+  const hours = text.match(
+    /^(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?(?:\s*(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?)?$/,
+  );
+  if (hours) {
+    return parseFloat(hours[1]) * 60 + (hours[2] ? parseFloat(hours[2]) : 0);
+  }
+  const minutes = text.match(/^(\d+(?:\.\d+)?)\s*(?:m|mins?|minutes?)?$/);
+  if (minutes) return parseFloat(minutes[1]);
+  return null;
+}
+
+/**
+ * The three numbers the Velocity block reports. `plans` counts data rows, not
+ * parseable durations — an untimed row still records a completed plan — while
+ * `timed` is the population the average divides by.
+ */
+function summarizeMetricsRows(tableBody) {
+  let plans = 0;
+  let minutes = 0;
+  let timed = 0;
+  for (const raw of tableBody.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('|')) continue;
+    const cells = line
+      .split('|')
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    if (cells.length < 2) continue;
+    // Separator rows and the template's `| - | - | - | - |` placeholder.
+    if (cells.every((cell) => cell === '' || /^:?-{3,}:?$/.test(cell)))
+      continue;
+    if (cells.every((cell) => cell === '' || cell === '-')) continue;
+    if (/none yet/i.test(line)) continue;
+    plans++;
+    const parsed = parseDurationMinutes(cells[1]);
+    if (parsed !== null) {
+      minutes += parsed;
+      timed++;
+    }
+  }
+  return { plans, minutes, timed };
+}
+
+/**
+ * Render minutes the way the Velocity block writes them: one decimal place,
+ * with a whole number left whole so `12 min` does not become `12.0 min`.
+ */
+function formatMinutes(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+const VELOCITY_LABELS = [
+  ['Total plans completed', (stats) => String(stats.plans)],
+  [
+    'Average duration',
+    (stats) => `${formatMinutes(stats.minutes / stats.timed)} min`,
+  ],
+  ['Total execution time', (stats) => `${formatMinutes(stats.minutes)} min`],
+];
+
+const VELOCITY_LABEL_PATTERNS = VELOCITY_LABELS.map(([label, render]) => [
+  label,
+  new RegExp(`^([ \\t]*-[ \\t]*${escapeRegex(label)}:[ \\t]*).*$`, 'i'),
+  render,
+]);
+
+/**
+ * The `**Velocity:**` line plus its bullet list. Apply to the section
+ * METRICS_SECTION_PATTERN captured, never to the whole document — an archived
+ * milestone carries an identical block.
+ */
+const VELOCITY_BLOCK_PATTERN =
+  /(\*\*Velocity:\*\*[ \t]*\r?\n)((?:[ \t]*-[^\r\n]*(?:\r?\n|$))*)/i;
+
+/**
+ * Rewrite the Velocity bullets inside one section, or null when the section
+ * holds no Velocity block whose labels this recognises. Lines that are not one
+ * of the three labels are passed through untouched.
+ */
+function rewriteVelocityBlock(section, stats) {
+  const match = section.match(VELOCITY_BLOCK_PATTERN);
+  if (!match) return null;
+  const eol = /\r\n/.test(match[0]) ? '\r\n' : '\n';
+  const lines = match[2].split(/\r?\n/);
+  const hadTrailingBreak = lines[lines.length - 1] === '';
+  if (hadTrailingBreak) lines.pop();
+
+  const seen = new Set();
+  const rewritten = lines.map((line) => {
+    for (const [label, pattern, render] of VELOCITY_LABEL_PATTERNS) {
+      if (!pattern.test(line)) continue;
+      seen.add(label);
+      return line.replace(
+        pattern,
+        (_match, prefix) => `${prefix}${render(stats)}`,
+      );
+    }
+    return line;
+  });
+  if (seen.size === 0) return null;
+  for (const [label, , render] of VELOCITY_LABEL_PATTERNS) {
+    if (!seen.has(label)) rewritten.push(`- ${label}: ${render(stats)}`);
+  }
+
+  const block = match[1] + rewritten.join(eol) + (hadTrailingBreak ? eol : '');
+  return section.replace(VELOCITY_BLOCK_PATTERN, () => block);
+}
+
+/**
+ * Recompute the Velocity block from the Performance Metrics table beneath it,
+ * which is appended to on every plan completion. When that table is absent,
+ * empty, or holds nothing timed, the block is left as-is with a reason rather
+ * than overwritten with zeros.
+ */
+function stateRecomputeVelocity(content) {
+  const metricsPattern = METRICS_SECTION_PATTERN;
+  const metricsMatch = content.match(metricsPattern);
+  if (!metricsMatch) {
+    return {
+      content,
+      updated: false,
+      reason: 'Performance Metrics section not found in STATE.md',
+    };
+  }
+
+  const stats = summarizeMetricsRows(metricsMatch[2]);
+  if (stats.plans === 0 || stats.timed === 0) {
+    return {
+      content,
+      updated: false,
+      reason: 'Performance Metrics table holds no timed rows to recompute from',
+    };
+  }
+
+  const rewritten = rewriteVelocityBlock(metricsMatch[1], stats);
+  if (rewritten === null) {
+    return {
+      content,
+      updated: false,
+      reason: 'Velocity block not found in the Performance Metrics section',
+    };
+  }
+
+  return {
+    content: content.replace(
+      metricsPattern,
+      (_match, _header, body) => `${rewritten}${body}`,
+    ),
+    updated: true,
+    stats,
+    expected: VELOCITY_LABELS.map(
+      ([label, render]) => `${label}: ${render(stats)}`,
+    ),
+  };
 }
 
 function cmdStateUpdateProgress(cwd) {
@@ -712,26 +882,62 @@ function cmdStateUpdateProgress(cwd) {
     const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(barWidth - filled);
     const progressStr = `[${bar}] ${percent}%`;
 
+    // The Velocity block is recomputed in the same pass as the bar: both are
+    // derived numbers about the same progress, and folding them into one write
+    // keeps them from disagreeing between two commands.
+    const velocity = stateRecomputeVelocity(content);
+    content = velocity.content;
+
     const withProgress = stateReplaceField(content, 'Progress', progressStr);
-    if (withProgress !== null) {
-      content = withProgress;
-      writeStateMd(statePath, content, cwd);
+    const progressUpdated = withProgress !== null;
+    if (progressUpdated) content = withProgress;
+
+    if (!progressUpdated && !velocity.updated) {
       output(
         {
-          updated: true,
-          percent,
-          completed: totalSummaries,
-          total: totalPlans,
-          bar: progressStr,
+          updated: false,
+          reason: 'Progress field not found in STATE.md',
+          velocity_updated: false,
+          velocity_reason: velocity.reason,
         },
-        progressStr,
-      );
-    } else {
-      output(
-        { updated: false, reason: 'Progress field not found in STATE.md' },
         'false',
       );
+      return;
     }
+
+    writeStateMd(statePath, content, cwd);
+
+    // Post-write readback, same as cmdStateUpdate: a recomputation reported as
+    // done but not actually on disk is how these numbers became untrustworthy
+    // in the first place.
+    let velocityUpdated = velocity.updated;
+    let velocityReason = velocity.reason;
+    if (velocityUpdated) {
+      const written = fs.readFileSync(statePath, 'utf-8');
+      const absent = velocity.expected.filter(
+        (line) => !written.includes(line),
+      );
+      if (absent.length > 0) {
+        velocityUpdated = false;
+        velocityReason = `velocity block did not persist after write: ${absent.join('; ')}`;
+      }
+    }
+
+    output(
+      {
+        updated: progressUpdated,
+        ...(progressUpdated
+          ? {}
+          : { reason: 'Progress field not found in STATE.md' }),
+        percent,
+        completed: totalSummaries,
+        total: totalPlans,
+        bar: progressStr,
+        velocity_updated: velocityUpdated,
+        ...(velocityUpdated ? {} : { velocity_reason: velocityReason }),
+      },
+      progressUpdated ? progressStr : 'false',
+    );
   });
 }
 

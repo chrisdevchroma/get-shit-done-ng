@@ -6,7 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `/gsd:health` now reports planning documents that disagree with themselves: requirements whose tracking contradicts their own checkboxes (W019), roadmaps whose plan counts, entries and phase numbers do not line up (W023), and state files whose status or progress no longer matches what they record (W024). W019 and W023 are reported, not repaired.
+
 ### Fixed
+
+- The velocity figures in a project's state file are kept up to date. `state update-progress` recalculates them; before, they were written once when the file was created and never revised.
 
 - The injection scanner no longer reports ordinary prose as an obfuscated payload. One rule pairs a decoding keyword with an action verb inside a thirty-character window, and matched the keyword anywhere inside a longer word — `isClaudeCode` ends in one. Any planning document, summary or source comment naming an identifier of that shape near a verb like `run` or `apply` was flagged, so the advisory printed on routine commands and told the reader nothing. A word boundary is now required, and every genuine phrasing the rule was written for still matches.
 

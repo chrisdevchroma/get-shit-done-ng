@@ -516,6 +516,14 @@ Check that the plan was not too ambitious. Plans should have 2-3 tasks maximum. 
 
 Run `/gsd:progress`. It reads all state files and tells you exactly where you are and what to do next.
 
+### `/gsd:health` Reports W019, W023 or W024
+
+These read your planning documents against each other and report where they disagree. All three are reported only — `--repair` will not change them, because fixing one needs a judgement about what actually shipped.
+
+- **W019** — a requirement's checkbox is ticked but its traceability row still reads `Planned`. Decide which is right: if the phase the row maps to has a `VERIFICATION.md` reading `status: passed`, set the row to `Complete`; otherwise untick the box.
+- **W023** — `ROADMAP.md` disagrees with itself: a plan-count header that does not match the plan list below it, a phase section with no checklist entry or a checklist entry with no section, or one phase number used twice.
+- **W024** — `STATE.md` disagrees with itself: a status saying work is in flight when the current phase is finished and verified, or velocity figures that do not match the metrics table. `gsd-tools state update-progress` fixes the second.
+
 ### Need to Change Something After Execution
 
 Do not re-run `/gsd:execute-phase`. Use `/gsd:quick` for targeted fixes, or `/gsd:verify-work` to systematically identify and fix issues through UAT.

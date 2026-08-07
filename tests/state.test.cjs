@@ -1965,6 +1965,125 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       'error should mention STATE.md',
     );
   });
+
+  // The Velocity block is written once from the template and nothing recomputes
+  // it, so it reports the placeholder (or a long-stale number) for the life of
+  // the project. It is derivable from the metrics table sitting directly below
+  // it, which is appended to on every plan completion.
+
+  const velocityHeader = [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    '**Progress:** [░░░░░░░░░░] 0%',
+    '',
+    '## Performance Metrics',
+    '',
+  ];
+
+  const velocityTableHeader = [
+    '**By Phase:**',
+    '',
+    '| Phase | Plans | Total | Avg/Plan |',
+    '|-------|-------|-------|----------|',
+  ];
+
+  test('recomputes the velocity block from the metrics table', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        ...velocityHeader,
+        '**Velocity:**',
+        '- Total plans completed: [N]',
+        '- Average duration: [X] min',
+        '- Total execution time: [X.X] hours',
+        '',
+        ...velocityTableHeader,
+        '| Phase 09 P01 | 2min | 2 tasks | 2 files |',
+        '| Phase 09 P02 | 3min | 2 tasks | 1 files |',
+        '| Phase 09 P03 | 1min | 1 tasks | 1 files |',
+        '| Phase 09 P04 | 4min | 2 tasks | 2 files |',
+        '| Phase 09 P05 | 2min | 1 tasks | 1 files |',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools('state update-progress --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.velocity_updated,
+      true,
+      `velocity_updated should be true: ${result.output}`,
+    );
+
+    const updated = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    assert.ok(
+      updated.includes('Total plans completed: 5'),
+      `plan count should come from the 5 table rows:\n${updated}`,
+    );
+    assert.ok(
+      updated.includes('Total execution time: 12 min'),
+      `execution time should be the row total:\n${updated}`,
+    );
+    assert.ok(
+      updated.includes('Average duration: 2.4 min'),
+      `average should be total over row count:\n${updated}`,
+    );
+    assert.ok(
+      !updated.includes('[N]'),
+      `template placeholders should be gone:\n${updated}`,
+    );
+  });
+
+  test('leaves the velocity block alone when the metrics table is empty', () => {
+    const velocityBlock = [
+      '**Velocity:**',
+      '- Total plans completed: 4',
+      '- Average duration: 3 min',
+      '- Total execution time: 12 min',
+    ];
+    const before = [
+      ...velocityHeader,
+      ...velocityBlock,
+      '',
+      ...velocityTableHeader,
+      '| - | - | - | - |',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), before);
+
+    const result = runGsdTools('state update-progress --json', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.velocity_updated,
+      false,
+      `velocity_updated should be false: ${result.output}`,
+    );
+    assert.ok(
+      typeof output.velocity_reason === 'string' &&
+        output.velocity_reason.length > 0,
+      `a skipped recomputation must say why: ${result.output}`,
+    );
+
+    const updated = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      'utf-8',
+    );
+    for (const line of velocityBlock) {
+      assert.ok(
+        updated.includes(line),
+        `zeroing a real Velocity block is worse than leaving it stale — "${line}" was lost:\n${updated}`,
+      );
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

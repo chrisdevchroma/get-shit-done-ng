@@ -31,6 +31,7 @@ const {
   withStateLock,
   writeStateMd,
   stateApplyFieldsToSection,
+  tableSectionPattern,
 } = require('./state.cjs');
 const {
   detectWorkspaceType,
@@ -971,6 +972,285 @@ function stateBodyHasField(stateContent, fieldName) {
   ).test(body);
 }
 
+// ─── Traceability desync ──────────────────────────────────────────────────────
+
+// Requirement IDs this check does not judge. A predicate on the ID rather than
+// on position, so it stays correct as the file is rewritten.
+const TRACEABILITY_EXCLUDED_ID = /^SEC40-/;
+
+// Box state in group 1, a settled item's strikethrough in group 2, ID in group 3.
+const REQUIREMENT_CHECKBOX_LINE =
+  /^[ \t]*[-*]\s*\[([ xX])\]\s*(~~)?\s*\*\*([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+)\*\*/gm;
+
+const REQUIREMENT_ID = /^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+$/;
+
+/**
+ * The traceability table's rows, scoped to its own section so other tables in
+ * the document are not read as requirement rows.
+ *
+ * @param {string} content - REQUIREMENTS.md contents
+ * @returns {Array<{id: string, phase: string, status: string}>} One entry per row
+ */
+function parseTraceabilityRows(content) {
+  // Terminator is `(?![\s\S])`, not `$`: the `m` flag the heading anchor needs
+  // would let `$` close the section on its first blank line.
+  const section = content.match(
+    /^##[ \t]*Traceability[^\n]*\r?\n([\s\S]*?)(?=\r?\n##[ \t]|(?![\s\S]))/im,
+  );
+  if (!section) return [];
+  const rows = [];
+  for (const line of section[1].split(/\r?\n/)) {
+    if (!line.trimStart().startsWith('|')) continue;
+    // A pipe-delimited row yields an empty leading cell, so the ID is cell 1 and
+    // the status cell 3. The header and its separator fail the ID test.
+    const cells = line.split('|').map((c) => c.trim());
+    if (cells.length < 4) continue;
+    if (!REQUIREMENT_ID.test(cells[1])) continue;
+    rows.push({ id: cells[1], phase: cells[2], status: cells[3] });
+  }
+  return rows;
+}
+
+/**
+ * Requirement IDs whose traceability Status contradicts their checkbox: ticked
+ * over a status of exactly `Planned`. An unticked box over `Complete` is left
+ * alone — that is a requirement mid-phase. The status must be `Planned` on its
+ * own, so the struck settled forms (`~~Planned~~ Deferred`) do not match.
+ *
+ * @param {string} content - REQUIREMENTS.md contents
+ * @returns {string[]} The offending requirement IDs, in table order
+ */
+function findTraceabilityDesyncs(content) {
+  if (!content) return [];
+  const ticked = new Map();
+  for (const m of content.matchAll(REQUIREMENT_CHECKBOX_LINE)) {
+    ticked.set(m[3], m[1].toLowerCase() === 'x');
+  }
+  const desynced = [];
+  for (const row of parseTraceabilityRows(content)) {
+    if (TRACEABILITY_EXCLUDED_ID.test(row.id)) continue;
+    if (ticked.get(row.id) !== true) continue;
+    if (row.status.toLowerCase() !== 'planned') continue;
+    desynced.push(row.id);
+  }
+  return desynced;
+}
+
+// ─── Roadmap integrity ────────────────────────────────────────────────────────
+
+// A phase's details header. Shared by the roadmap/disk cross-check and the
+// roadmap-internal checks so the two cannot anchor differently.
+const ROADMAP_PHASE_HEADER_SOURCE = String.raw`#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:`;
+
+// The plan-count line a details section carries, in the spelling core.cjs's own
+// probe for that line accepts. Groups are the completed and total counts; a
+// section whose line omits the `N/M` pair matches nothing and is not compared.
+const ROADMAP_PLAN_COUNT_LINE =
+  /^[ \t]*\*{0,2}Plans\*{0,2}\s*:\*{0,2}[ \t]*(\d+)[ \t]*\/[ \t]*(\d+)/im;
+
+// A plan entry inside a details section. The phase checkboxes of the milestone
+// list are excluded by the `Phase N:` form they carry.
+const ROADMAP_PLAN_ENTRY = /^[ \t]*[-*]\s*\[([ xX])\](?!\s*(?:\*\*)?Phase\s)/gm;
+
+/**
+ * Each phase details section of a roadmap, as the number it declares and the
+ * text from its header up to the next one.
+ *
+ * @param {string} milestoneContent - ROADMAP.md, archived milestones stripped
+ * @returns {Array<{num: string, body: string}>} Sections in document order
+ */
+function parseRoadmapPhaseSections(milestoneContent) {
+  const pattern = new RegExp(ROADMAP_PHASE_HEADER_SOURCE, 'gi');
+  const marks = [];
+  let m;
+  while ((m = pattern.exec(milestoneContent)) !== null) {
+    marks.push({ num: m[1], index: m.index });
+  }
+  return marks.map((mark, i) => ({
+    num: mark.num,
+    body: milestoneContent.slice(
+      mark.index,
+      i + 1 < marks.length ? marks[i + 1].index : milestoneContent.length,
+    ),
+  }));
+}
+
+/**
+ * Ways a roadmap contradicts itself, independent of what is on disk:
+ *
+ *   - a plan-count header disagreeing with the plan list below it;
+ *   - a details section no milestone-checklist entry points at;
+ *   - a checklist entry with no details section;
+ *   - one phase number claimed by two checklist entries.
+ *
+ * Phase numbers are reported as the document writes them, unpadded, since that
+ * is what a reader searches for. A section listing no plans is not compared —
+ * an unplanned phase legitimately has a target and nothing under it. The
+ * checklist/section correspondence is checked only when both sides exist, so a
+ * roadmap using just one half of the format is not reported as all-broken.
+ *
+ * @param {string} content - ROADMAP.md contents
+ * @returns {Array<{message: string, fix: string}>} One entry per contradiction
+ */
+function findRoadmapContradictions(content) {
+  if (!content) return [];
+  const milestone = extractCurrentMilestone(content);
+  const sections = parseRoadmapPhaseSections(milestone);
+  const found = [];
+
+  for (const section of sections) {
+    const counts = section.body.match(ROADMAP_PLAN_COUNT_LINE);
+    if (!counts) continue;
+    const entries = [...section.body.matchAll(ROADMAP_PLAN_ENTRY)];
+    if (entries.length === 0) continue;
+    const done = entries.filter((e) => e[1].toLowerCase() === 'x').length;
+    const claimedDone = Number(counts[1]);
+    const claimedTotal = Number(counts[2]);
+    if (claimedDone !== done || claimedTotal !== entries.length) {
+      found.push({
+        message: `ROADMAP.md: phase ${section.num} claims ${claimedDone}/${claimedTotal} plans but lists ${done} ticked of ${entries.length}`,
+        fix: `Reconcile phase ${section.num} against what shipped — correct the count line, or the plan list, whichever is wrong`,
+      });
+    }
+  }
+
+  const checklist = parsePhaseCheckboxes(milestone);
+  const detailNums = new Map();
+  for (const section of sections) {
+    const key = normalizePhaseName(section.num);
+    if (!detailNums.has(key)) detailNums.set(key, section.num);
+  }
+  const checklistNums = new Map();
+  const duplicated = new Map();
+  for (const entry of checklist) {
+    const key = normalizePhaseName(entry.num);
+    if (checklistNums.has(key)) duplicated.set(key, entry.num);
+    else checklistNums.set(key, entry.num);
+  }
+
+  if (detailNums.size > 0 && checklistNums.size > 0) {
+    for (const [key, raw] of detailNums) {
+      if (!checklistNums.has(key)) {
+        found.push({
+          message: `ROADMAP.md: phase ${raw} has a details section but no entry in the milestone checklist`,
+          fix: `Add a checklist entry for phase ${raw}, or remove its details section if the phase was renamed or abandoned`,
+        });
+      }
+    }
+    for (const [key, raw] of checklistNums) {
+      if (!detailNums.has(key)) {
+        found.push({
+          message: `ROADMAP.md: phase ${raw} is in the milestone checklist but has no details section`,
+          fix: `Add a "### Phase ${raw}:" details section, or remove the checklist entry`,
+        });
+      }
+    }
+  }
+  for (const raw of duplicated.values()) {
+    found.push({
+      message: `ROADMAP.md: phase ${raw} appears more than once in the milestone checklist`,
+      fix: `Decide which entry describes the phase that shipped and renumber or remove the other — two entries under one number make the phase ambiguous to every reader of the roadmap`,
+    });
+  }
+
+  return found;
+}
+
+// ─── STATE.md self-consistency ────────────────────────────────────────────────
+
+// Status values that say work on the current phase is still happening. Anything
+// else — completed, paused, a milestone rollup — is a settled state, and a
+// settled state agreeing with finished counters is not a contradiction.
+const STATE_IN_FLIGHT_STATUS = new Set([
+  'executing',
+  'in progress',
+  'planning',
+  'ready to plan',
+  'ready to execute',
+  'discussing',
+  'verifying',
+]);
+
+const STATE_VELOCITY_PLAN_COUNT =
+  /^[ \t]*[-*]\s*Total plans completed:\s*(\d+)/im;
+
+/**
+ * The verification verdict recorded for a phase, or null when there is none.
+ *
+ * @param {string} cwd - Project root
+ * @param {string} phase - Phase number as STATE.md writes it
+ * @returns {string|null} The `status` field of the phase's VERIFICATION.md
+ */
+function readPhaseVerificationStatus(cwd, phase) {
+  const info = findPhaseInternal(cwd, phase);
+  if (!info || !info.found) return null;
+  const dir = path.join(cwd, info.directory);
+  let files;
+  try {
+    files = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const file = files.find(
+    (f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md',
+  );
+  if (!file) return null;
+  const fm = extractFrontmatter(safeReadFile(path.join(dir, file)) || '');
+  return fm && fm.status ? String(fm.status).trim().toLowerCase() : null;
+}
+
+/**
+ * Ways STATE.md contradicts itself: a `status` claiming work is in flight when
+ * every plan of the current phase has a summary and that phase's verification
+ * passed, and a Velocity block whose plan count disagrees with the metrics
+ * table. The passed verification is required as a second signal — summary
+ * counts go equal the moment the last one lands, before the phase is done.
+ *
+ * @param {string} cwd - Project root
+ * @param {string} content - STATE.md contents
+ * @returns {Array<{message: string, fix: string}>} One entry per contradiction
+ */
+function findStateContradictions(cwd, content) {
+  if (!content) return [];
+  const found = [];
+  const fm = extractFrontmatter(content);
+  const progress = fm && fm.progress ? fm.progress : {};
+  const done = Number(progress.completed_plans);
+  const total = Number(progress.total_plans);
+  const status = fm && fm.status ? String(fm.status).trim().toLowerCase() : '';
+
+  if (
+    STATE_IN_FLIGHT_STATUS.has(status) &&
+    Number.isFinite(done) &&
+    Number.isFinite(total) &&
+    total > 0 &&
+    done >= total &&
+    fm.current_phase !== undefined &&
+    readPhaseVerificationStatus(cwd, String(fm.current_phase)) === 'passed'
+  ) {
+    found.push({
+      message: `STATE.md: status reads "${fm.status}" while phase ${fm.current_phase} has all ${total} plans summarised and a passed verification`,
+      fix: 'Advance STATE.md to the next phase, or set status to what the phase actually reached — the counters and the verification both say the work finished',
+    });
+  }
+
+  const claimed = content.match(STATE_VELOCITY_PLAN_COUNT);
+  const metrics = content.match(tableSectionPattern('Performance Metrics'));
+  if (claimed && metrics) {
+    const rows = metrics[2]
+      .split(/\r?\n/)
+      .filter((l) => l.trimStart().startsWith('|')).length;
+    if (rows > 0 && Number(claimed[1]) !== rows) {
+      found.push({
+        message: `STATE.md: the Velocity block reports ${claimed[1]} plans completed while the Performance Metrics table holds ${rows} rows`,
+        fix: 'Run `gsd-tools state update-progress` to recompute the Velocity block from the metrics table',
+      });
+    }
+  }
+
+  return found;
+}
+
 /**
  * Health check, and the repairs it decides on.
  *
@@ -1006,6 +1286,7 @@ function runHealth(cwd, options) {
     state: statePath,
     config: configPath,
     phases: phasesDir,
+    requirements: requirementsPath,
   } = planningPaths(cwd);
 
   const errors = [];
@@ -1285,7 +1566,7 @@ function runHealth(cwd, options) {
     const roadmapContentRaw = fs.readFileSync(roadmapPath, 'utf-8');
     const roadmapContent = extractCurrentMilestone(roadmapContentRaw);
     const roadmapPhases = new Set();
-    const phasePattern = /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:/gi;
+    const phasePattern = new RegExp(ROADMAP_PHASE_HEADER_SOURCE, 'gi');
     let m;
     while ((m = phasePattern.exec(roadmapContent)) !== null) {
       roadmapPhases.add(m[1]);
@@ -1678,6 +1959,54 @@ function runHealth(cwd, options) {
       }
     } catch {
       // Corrupt log file — skip silently
+    }
+  }
+
+  // --- Check 19: traceability Status contradicts its requirement checkbox ---
+  //
+  // Reported, never repaired. The flip itself is mechanical, but it may only be
+  // made on two signals — the ticked box *and* a passed verification for the
+  // phase the row maps to — and this run cannot carry that. A repair here writes
+  // REQUIREMENTS.md, whose lock must be taken outside the STATE.md lock this
+  // whole run holds; taking it inside inverts the ordering, and taking no lock
+  // at all is the unserialised rewrite the check exists to catch. A repair that
+  // flipped rows on the ticked box alone would turn one command into a way to
+  // relabel unbuilt work as shipped, which is worse than no repair.
+  if (fs.existsSync(requirementsPath)) {
+    for (const id of findTraceabilityDesyncs(safeReadFile(requirementsPath))) {
+      addIssue(
+        'warning',
+        'W019',
+        `REQUIREMENTS.md: ${id} is ticked off but its traceability row still reads Planned`,
+        `Check whether ${id} shipped — the phase its row maps to should have a VERIFICATION.md reading passed. If it did, set the row Status to Complete; if it did not, untick the checkbox instead`,
+      );
+    }
+  }
+
+  // --- Check 23: the roadmap contradicts itself ---
+  //
+  // Reported, never repaired. Every shape here needs a judgement about what
+  // actually shipped that the document alone cannot supply: whether a details
+  // section with no checklist entry means the phase was abandoned or renamed,
+  // whether a repeated number is a bookkeeping slip or a step genuinely skipped.
+  // A rewrite of roadmap titles and counts without that judgement is the same
+  // unattended write these checks exist to surface.
+  if (fs.existsSync(roadmapPath)) {
+    for (const hit of findRoadmapContradictions(safeReadFile(roadmapPath))) {
+      addIssue('warning', 'W023', hit.message, hit.fix);
+    }
+  }
+
+  // --- Check 24: STATE.md contradicts itself ---
+  //
+  // Reported, never repaired, for the reason the roadmap check is: deciding what
+  // `status` should read means knowing whether the phase completed or was
+  // abandoned, and a Velocity block recomputed from a table this run did not
+  // verify would replace one unfounded number with another. Rewriting state
+  // frontmatter unattended is where this whole class of corruption starts.
+  if (fs.existsSync(statePath)) {
+    for (const hit of findStateContradictions(cwd, safeReadFile(statePath))) {
+      addIssue('warning', 'W024', hit.message, hit.fix);
     }
   }
 

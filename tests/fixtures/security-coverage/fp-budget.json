@@ -228,7 +228,7 @@
       }
     },
     "entropy_fp": {
-      "files": 3,
+      "files": 4,
       "max_H": 5.78,
       "examples": [
         {
@@ -242,19 +242,29 @@
           "offsets": ["19042-19298"]
         },
         {
+          "ref": "gsd-ng/bin/lib/verify.cjs",
+          "max_H": 5.55,
+          "offsets": ["30720-30976"]
+        },
+        {
           "ref": "scripts/capture-clean-path-evidence.cjs",
           "max_H": 5.52,
           "offsets": ["1700-1956"]
         }
       ],
+      "raised_from": 3,
+      "raised_justification": "Shortening prose comments in verify.cjs left the remaining bytes denser in regex literals, so its peak window rose to 5.55 against a 5.5 threshold — the requirement-ID and checkbox patterns sitting adjacent. Same cause as the 5.59 entry below. Entropy routes to findings[] and cannot fail CI.",
+      "prior_entry_2": {
+      "files": 3,
       "raised_from": 1,
-      "raised_from_unit": "files (the prior 5.59 raised_from recorded max_H, not a count — see history below)",
-      "raised_justification": "Not a regression — the metric changed. This count was previously measured from the detector's own STEP-aligned windows, which made it a function of byte offset rather than of content: inserting 7 blank bytes at the top of an otherwise untouched commands.cjs moved it across the threshold, because the 256-char window re-aligned over the pre-existing YAML_TIMESTAMP block at line ~711. Any edit above a dense region could flip the count, so the budget is now measured by scripts/fp-report.cjs at stride 1 (peakEntropyAnyAlignment) — the peak over all alignments, which no byte shift can change. On this corpus that reports 3 files where the anchored measurement reported 1. It is NOT a general upper bound on the detector: partial tail windows are excluded (see _entropy_metric), and a file whose only high-entropy region is a short tail is flagged by the detector but not counted here. All three files were verified present at the unmodified HEAD (f022bf6) under the new metric with the same max_H values; commands.cjs reports a shifted window (19029 at HEAD) only because this change edits that file. Entropy routes to findings[] and can never block an import or fail CI.",
+      "raised_from_unit": "files (the prior 5.59 raised_from recorded max_H, not a count)",
+      "raised_justification": "Not a regression — the metric changed. The count came from the detector's step-aligned windows, making it a function of byte offset rather than content, so any edit above a dense region could flip it. It is now measured by scripts/fp-report.cjs at stride 1 (peakEntropyAnyAlignment), the peak over all alignments, which no byte shift can change; that reports 3 files where the anchored measurement reported 1. Not a general upper bound on the detector: partial tail windows are excluded, see _entropy_metric. Entropy routes to findings[] and cannot fail CI.",
       "prior_entry": {
         "files": 1,
         "max_H": 5.75,
         "raised_from": 5.59,
         "raised_justification": "Deleting 42 redundant English-prose comments from security.cjs raised that file byte entropy, since what remains is denser in regex literals. Still one file flagged; entropy routes to findings[] and can never block or fail CI."
+      }
       }
     }
   },
